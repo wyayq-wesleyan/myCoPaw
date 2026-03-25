@@ -18,6 +18,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from urllib.parse import unquote, urlparse
 
 from agentscope_runtime.engine.schemas.agent_schemas import RunStatus
 
@@ -52,6 +53,50 @@ _RESET = "\033[0m" if _USE_COLOR else ""
 
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+def _is_local_media_ref(value: Any) -> bool:
+    """Return True when value points to a local file path."""
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    if not s:
+        return False
+    lower = s.lower()
+    if lower.startswith(("http://", "https://", "data:")):
+        return False
+    return (
+        lower.startswith("file:")
+        or (s.startswith("/") and not s.startswith("//"))
+        or (len(s) >= 2 and s[1] == ":" and s[0].isalpha())
+    )
+
+
+def _stored_media_name(value: str) -> str:
+    """Extract stored media filename from local path or file URL."""
+    s = value.strip()
+    if s.lower().startswith("file:"):
+        parsed = urlparse(s)
+        s = unquote(parsed.path or "")
+    return os.path.basename(s.rstrip("/")) or "file"
+
+
+def _normalize_stream_payload(value: Any) -> Any:
+    """Rewrite local media refs in streamed events to stored filenames."""
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"file_url", "image_url", "video_url", "audio_url", "data"}:
+                if _is_local_media_ref(item):
+                    normalized[key] = _stored_media_name(item)
+                else:
+                    normalized[key] = _normalize_stream_payload(item)
+            else:
+                normalized[key] = _normalize_stream_payload(item)
+        return normalized
+    if isinstance(value, list):
+        return [_normalize_stream_payload(item) for item in value]
+    return value
 
 
 class ConsoleChannel(BaseChannel):
@@ -320,10 +365,14 @@ class ConsoleChannel(BaseChannel):
                     ev_type,
                 )
 
-                if hasattr(event, "model_dump_json"):
-                    data = event.model_dump_json()
+                if hasattr(event, "model_dump"):
+                    data_obj = _normalize_stream_payload(
+                        event.model_dump(mode="json"),
+                    )
+                    data = json.dumps(data_obj, ensure_ascii=False)
                 elif hasattr(event, "json"):
-                    data = event.json()
+                    data_obj = _normalize_stream_payload(json.loads(event.json()))
+                    data = json.dumps(data_obj, ensure_ascii=False)
                 else:
                     data = json.dumps({"text": str(event)})
                 yield f"data: {data}\n\n"

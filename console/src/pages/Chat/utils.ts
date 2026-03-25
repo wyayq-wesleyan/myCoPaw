@@ -122,10 +122,13 @@ export function buildModelError(): Response {
 
 /** Convert file URL to stored name format for backend. */
 export function toStoredName(v: string): string {
+  if (!v) return v;
   const m1 = v.match(/\/console\/files\/[^/]+\/(.+)$/);
   if (m1) return m1[1];
-  const m2 = v.match(/^[^/]+\/(.+)$/);
+  const m2 = v.match(/^file:\/\/.*\/([^/]+)$/);
   if (m2) return m2[1];
+  const m3 = v.match(/^[^/]+\/(.+)$/);
+  if (m3) return m3[1];
   return v;
 }
 
@@ -136,6 +139,8 @@ export function normalizeContentUrls(part: any): any {
     p.image_url = toStoredName(p.image_url);
   if (p.type === "file" && typeof p.file_url === "string")
     p.file_url = toStoredName(p.file_url);
+  if (p.type === "audio" && typeof p.audio_url === "string")
+    p.data = toStoredName(p.audio_url);
   if (p.type === "audio" && typeof p.data === "string")
     p.data = toStoredName(p.data);
   if (p.type === "video" && typeof p.video_url === "string")

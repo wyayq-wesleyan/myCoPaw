@@ -1,0 +1,332 @@
+ARG PYTHON_IMAGE=m.daocloud.io/docker.io/library/python:3.11-slim-bookworm
+FROM ${PYTHON_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG TARGETARCH
+ARG APT_MIRROR=mirrors.aliyun.com
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV TZ=Asia/Shanghai
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV HADOOP_HOME=/opt/hadoop
+ENV HIVE_HOME=/opt/hive
+ENV ORACLE_HOME=/opt/oracle/instantclient
+ENV TNS_ADMIN=/opt/oracle/network/admin
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient:/usr/local/lib
+ENV PATH=/opt/hadoop/bin:/opt/hadoop/sbin:/opt/hive/bin:/opt/oracle/instantclient:${PATH}
+
+RUN set -eux; \
+    sed -i "s@http://deb.debian.org/debian@https://${APT_MIRROR}/debian@g" /etc/apt/sources.list.d/debian.sources; \
+    sed -i "s@http://security.debian.org/debian-security@https://${APT_MIRROR}/debian-security@g" /etc/apt/sources.list.d/debian.sources; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        dbus-x11 \
+        ffmpeg \
+        fonts-dejavu-core \
+        fonts-liberation \
+        fonts-noto-cjk \
+        fonts-noto-color-emoji \
+        fonts-wqy-microhei \
+        fonts-wqy-zenhei \
+        gcc \
+        gettext-base \
+        git \
+        gnupg \
+        graphviz \
+        libreoffice \
+        libreoffice-java-common \
+        libaio1 \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libc6-dev \
+        libcairo2 \
+        libcups2 \
+        libdrm2 \
+        libffi-dev \
+        libgbm1 \
+        libglib2.0-0 \
+        libgssapi-krb5-2 \
+        libgtk-3-0 \
+        libkrb5-dev \
+        libmagic1 \
+        libnsl2 \
+        libnss3 \
+        libpango-1.0-0 \
+        libpq-dev \
+        libsqlite3-dev \
+        libssl-dev \
+        libu2f-udev \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libxrandr2 \
+        libxslt1-dev \
+        libxtst6 \
+        locales \
+        make \
+        nodejs \
+        npm \
+        openjdk-17-jre-headless \
+        pandoc \
+        poppler-utils \
+        procps \
+        supervisor \
+        tesseract-ocr \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-eng \
+        unixodbc \
+        unixodbc-dev \
+        unzip \
+        vim \
+        wget \
+        xauth \
+        xfce4 \
+        xvfb \
+        zip \
+    ; \
+    if [ -d "/usr/lib/jvm/java-17-openjdk-${TARGETARCH}" ]; then \
+        ln -sfn "/usr/lib/jvm/java-17-openjdk-${TARGETARCH}" /usr/lib/jvm/default-java; \
+    elif [ -d "/usr/lib/jvm/java-17-openjdk-arm64" ]; then \
+        ln -sfn /usr/lib/jvm/java-17-openjdk-arm64 /usr/lib/jvm/default-java; \
+    elif [ -d "/usr/lib/jvm/java-17-openjdk-amd64" ]; then \
+        ln -sfn /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/default-java; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*; \
+    apt-get clean
+
+RUN set -eux; \
+    python -m pip install --no-cache-dir --upgrade \
+        pip \
+        setuptools \
+        wheel \
+    ; \
+    python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" \
+        --trusted-host "${PIP_TRUSTED_HOST}" \
+        aiofiles \
+        beautifulsoup4 \
+        duckdb \
+        fastapi \
+        flask \
+        flask-cors \
+        hdfs \
+        httpx \
+        jinja2 \
+        lxml \
+        markitdown[pptx] \
+        matplotlib \
+        numpy \
+        openpyxl \
+        oracledb \
+        orjson \
+        pandas \
+        pdf2image \
+        pdfplumber \
+        pillow \
+        playwright \
+        polars \
+        pyarrow \
+        pydantic \
+        pypdf \
+        pypdfium2 \
+        pymongo \
+        pymysql \
+        pyodbc \
+        psycopg2-binary \
+        pyspark \
+        python-docx \
+        python-multipart \
+        python-pptx \
+        pytesseract \
+        pyyaml \
+        redis \
+        requests \
+        scipy \
+        scikit-learn \
+        seaborn \
+        sqlalchemy \
+        tabulate \
+        uvicorn[standard] \
+        xlsxwriter \
+        xlrd \
+        xlwt \
+    ; \
+    python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" \
+        --trusted-host "${PIP_TRUSTED_HOST}" \
+        'pyhive[hive_pure_sasl]' \
+        impyla \
+    ; \
+    npm config set registry "${NPM_REGISTRY}"; \
+    npm install -g docx pptxgenjs; \
+    python -m playwright install chromium
+
+RUN python - <<'PY'
+from pathlib import Path
+import site
+
+site_packages = next(
+    Path(path) for path in site.getsitepackages() if path.endswith("site-packages")
+)
+shim_path = site_packages / "cx_Oracle.py"
+shim_path.write_text(
+    '"""Compatibility shim for legacy cx_Oracle imports."""\n'
+    "import oracledb as _oracledb\n"
+    "from oracledb import *\n"
+    "__all__ = getattr(_oracledb, '__all__', [])\n"
+    "__version__ = getattr(_oracledb, '__version__', '')\n",
+    encoding="utf-8",
+)
+print(f'Created compatibility shim: {shim_path}')
+PY
+
+COPY deploy/offline-assets/ /tmp/offline-assets/
+
+RUN set -eux; \
+    assets_root="/tmp/offline-assets/${TARGETARCH}"; \
+    common_root="/tmp/offline-assets/common"; \
+    mkdir -p "${assets_root}/hadoop" "${assets_root}/hive" "${assets_root}/oracle"; \
+    mkdir -p "${common_root}/hadoop" "${common_root}/hive"; \
+    mkdir -p /opt/hadoop /opt/hive /opt/oracle; \
+    hadoop_pkg="$(find "${assets_root}/hadoop" "${common_root}/hadoop" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+    if [ -n "${hadoop_pkg}" ]; then \
+        tar -xzf "${hadoop_pkg}" -C /opt; \
+        extracted_dir="$(tar -tzf "${hadoop_pkg}" | head -n 1 | cut -d/ -f1)"; \
+        if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+            rm -rf /opt/hadoop; \
+            ln -s "/opt/${extracted_dir}" /opt/hadoop; \
+        fi; \
+    fi; \
+    hive_pkg="$(find "${assets_root}/hive" "${common_root}/hive" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+    if [ -n "${hive_pkg}" ]; then \
+        tar -xzf "${hive_pkg}" -C /opt; \
+        extracted_dir="$(tar -tzf "${hive_pkg}" | head -n 1 | cut -d/ -f1)"; \
+        if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+            rm -rf /opt/hive; \
+            ln -s "/opt/${extracted_dir}" /opt/hive; \
+        fi; \
+    fi; \
+    oracle_basic="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*basic*.zip' | head -n 1 || true)"; \
+    oracle_sdk="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*sdk*.zip' | head -n 1 || true)"; \
+    if [ "${TARGETARCH}" = "amd64" ]; then \
+        if [ -z "${oracle_basic}" ]; then \
+            echo "Oracle Instant Client basic package is required under deploy/offline-assets/${TARGETARCH}/oracle/" >&2; \
+            exit 1; \
+        fi; \
+        if ! echo "${oracle_basic}" | grep -Eiq '11(\\.|_|g|[0-9])'; then \
+            echo "For amd64, please provide Oracle 11g Instant Client package." >&2; \
+            echo "Current package: ${oracle_basic}" >&2; \
+            exit 1; \
+        fi; \
+        unzip -q "${oracle_basic}" -d /opt/oracle; \
+        if [ -n "${oracle_sdk}" ]; then \
+            unzip -q "${oracle_sdk}" -d /opt/oracle; \
+        fi; \
+        instantclient_dir="$(find /opt/oracle -maxdepth 1 -mindepth 1 -type d -name 'instantclient*' | head -n 1 || true)"; \
+        if [ -n "${instantclient_dir}" ]; then \
+            rm -rf /opt/oracle/instantclient; \
+            ln -s "${instantclient_dir}" /opt/oracle/instantclient; \
+            if [ -f "${instantclient_dir}/libclntsh.so.11.1" ] && [ ! -e "${instantclient_dir}/libclntsh.so" ]; then \
+                ln -s "${instantclient_dir}/libclntsh.so.11.1" "${instantclient_dir}/libclntsh.so"; \
+            fi; \
+            if [ -f "${instantclient_dir}/libocci.so.11.1" ] && [ ! -e "${instantclient_dir}/libocci.so" ]; then \
+                ln -s "${instantclient_dir}/libocci.so.11.1" "${instantclient_dir}/libocci.so"; \
+            fi; \
+        fi; \
+        if [ ! -e /opt/oracle/instantclient/libclntsh.so ] && [ ! -e /opt/oracle/instantclient/libclntsh.so.11.1 ]; then \
+            echo "Oracle Instant Client libraries were not installed correctly." >&2; \
+            exit 1; \
+        fi; \
+    else \
+        echo "Skip Oracle client installation for ${TARGETARCH}."; \
+    fi; \
+    rm -rf /tmp/offline-assets
+
+RUN python - <<'PY'
+from importlib.util import find_spec
+
+mods = [
+    "aiofiles",
+    "bs4",
+    "cx_Oracle",
+    "duckdb",
+    "fastapi",
+    "flask",
+    "flask_cors",
+    "hdfs",
+    "httpx",
+    "impala",
+    "jinja2",
+    "lxml",
+    "markitdown",
+    "matplotlib",
+    "numpy",
+    "openpyxl",
+    "oracledb",
+    "orjson",
+    "pandas",
+    "playwright",
+    "PIL",
+    "polars",
+    "pyarrow",
+    "pydantic",
+    "pypdf",
+    "pdfplumber",
+    "pdf2image",
+    "pymongo",
+    "pymysql",
+    "pyodbc",
+    "pyhive",
+    "psycopg2",
+    "pyspark",
+    "multipart",
+    "docx",
+    "pptx",
+    "pytesseract",
+    "redis",
+    "requests",
+    "scipy",
+    "seaborn",
+    "sklearn",
+    "sqlalchemy",
+    "tabulate",
+    "thrift",
+    "thrift_sasl",
+    "uvicorn",
+    "xlsxwriter",
+]
+missing = [m for m in mods if find_spec(m) is None]
+if missing:
+    raise SystemExit(f"Missing python modules: {missing}")
+print("base python dependency smoke test OK")
+PY
+
+RUN python - <<'PY'
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+    )
+    page = browser.new_page()
+    page.goto("data:text/html,<html><body><h1>base-ok</h1></body></html>")
+    assert "base-ok" in page.content()
+    browser.close()
+print("base playwright chromium smoke test OK")
+PY

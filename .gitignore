@@ -15,6 +15,7 @@ cookbook/_build
 # production
 /build
 dist/
+dist/docker-images/
 .wheelshim/
 # Console frontend build (generated in Docker/CI, do not commit)
 src/copaw/console/dist/
@@ -40,6 +41,10 @@ __pycache__/
 *.rdb
 *.egg-info/
 *.zip
+deploy/offline-assets/**/*.tar
+deploy/offline-assets/**/*.tar.gz
+deploy/offline-assets/**/*.tgz
+deploy/offline-assets/**/*.zip
 config.json
 
 # IDEs and editors

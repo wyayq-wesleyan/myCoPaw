@@ -8,6 +8,8 @@ with integrated tools, skills, and memory management.
 import asyncio
 import logging
 import os
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Type, TYPE_CHECKING
 
@@ -908,9 +910,33 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             await self.print(msg)
             return msg
 
+        # Fast-path for common Excel generation requests.
+        if self._looks_like_excel_generation_request(query):
+            excel_msg = await self._generate_excel_file_directly(query or "")
+            if excel_msg is not None:
+                await self.print(excel_msg, True)
+                await self.memory.add(excel_msg)
+                return excel_msg
+
         # Normal message processing
         logger.info("CoPawAgent.reply: max_iters=%s", self.max_iters)
-        return await super().reply(msg=msg, structured_model=structured_model)
+        response = await super().reply(msg=msg, structured_model=structured_model)
+
+        # Post-fallback: some local models explain tool intent but never call.
+        if (
+            self._looks_like_excel_generation_request(query)
+            and not self._recent_messages_contain_file_block()
+        ):
+            excel_msg = await self._generate_excel_file_directly(
+                query or "",
+                fallback_note=True,
+            )
+            if excel_msg is not None:
+                await self.print(excel_msg, True)
+                await self.memory.add(excel_msg)
+                return excel_msg
+
+        return response
 
     async def interrupt(self, msg: Msg | list[Msg] | None = None) -> None:
         """Interrupt the current reply process and wait for cleanup."""
@@ -927,3 +953,187 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                     "Exception occurred during interrupt cleanup",
                     exc_info=True,
                 )
+
+    @staticmethod
+    def _looks_like_excel_generation_request(query: str | None) -> bool:
+        """Detect direct requests that ask us to generate an Excel file."""
+        if not query:
+            return False
+
+        normalized = query.lower()
+        spreadsheet_words = (
+            "excel",
+            "xlsx",
+            ".xlsx",
+            "电子表格",
+            "工作簿",
+            "表格",
+        )
+        action_words = (
+            "生成",
+            "创建",
+            "做一个",
+            "导出",
+            "输出",
+            "发我",
+            "下载",
+            "create",
+            "generate",
+            "make",
+            "build",
+            "export",
+        )
+        howto_words = ("怎么", "如何", "教程", "teach me", "how to")
+
+        has_sheet_word = any(word in normalized for word in spreadsheet_words)
+        has_action_word = any(word in normalized for word in action_words)
+        looks_like_howto = any(word in normalized for word in howto_words)
+        asks_for_delivery = any(
+            word in normalized for word in ("下载", "发我", "download", "send")
+        )
+
+        if not (has_sheet_word and has_action_word):
+            return False
+        if looks_like_howto and not asks_for_delivery:
+            return False
+        return True
+
+    def _recent_messages_contain_file_block(self, tail: int = 8) -> bool:
+        """Check recent memory for file blocks to avoid duplicate fallback."""
+        recent = self.memory.content[-tail:] if self.memory.content else []
+        for mem_msg, _marks in reversed(recent):
+            content = getattr(mem_msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            if any(
+                isinstance(block, dict) and block.get("type") == "file"
+                for block in content
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _infer_excel_columns(query: str) -> list[str]:
+        """Infer column names from simple prompts like: 两列（任务,负责人）."""
+        pattern = re.search(r"列[（(]([^()（）]+)[)）]", query)
+        if pattern:
+            raw = pattern.group(1)
+            cols = [c.strip() for c in re.split(r"[,，、/|]", raw) if c.strip()]
+            if cols:
+                return cols
+        return ["任务", "负责人"]
+
+    @staticmethod
+    def _infer_excel_row_count(query: str, default_rows: int = 3) -> int:
+        """Infer requested row count (e.g. '三行' or '3 rows')."""
+        num_match = re.search(r"(\d+)\s*(?:行|rows?)", query, re.IGNORECASE)
+        if num_match:
+            return max(1, min(int(num_match.group(1)), 2000))
+
+        cn_map = {
+            "一": 1,
+            "二": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+            "十": 10,
+        }
+        cn_match = re.search(r"([一二三四五六七八九十])\s*行", query)
+        if cn_match:
+            return cn_map.get(cn_match.group(1), default_rows)
+        return default_rows
+
+    @staticmethod
+    def _sample_value(column: str, index: int) -> str:
+        column_lower = column.lower()
+        if "负责" in column or "owner" in column_lower:
+            return f"成员{index}"
+        if "时间" in column or "date" in column_lower:
+            return datetime.now().strftime("%Y-%m-%d")
+        if "状态" in column or "status" in column_lower:
+            return "待处理"
+        return f"{column}{index}"
+
+    @staticmethod
+    def _normalize_tool_response_blocks(tool_response: Any) -> list[dict]:
+        """Convert ToolResponse blocks to plain dict blocks for Msg."""
+        raw_blocks = getattr(tool_response, "content", None) or []
+        normalized: list[dict] = []
+        for block in raw_blocks:
+            if isinstance(block, dict):
+                normalized.append(block)
+                continue
+            model_dump = getattr(block, "model_dump", None)
+            if callable(model_dump):
+                normalized.append(model_dump(exclude_none=True))
+                continue
+            to_dict = getattr(block, "dict", None)
+            if callable(to_dict):
+                normalized.append(to_dict(exclude_none=True))
+                continue
+            normalized.append({"type": "text", "text": str(block)})
+        return normalized
+
+    async def _generate_excel_file_directly(
+        self,
+        query: str,
+        fallback_note: bool = False,
+    ) -> Msg | None:
+        """Create a simple .xlsx and return it as downloadable file blocks."""
+        try:
+            from openpyxl import Workbook
+        except Exception:
+            logger.exception("Excel fallback unavailable: openpyxl import failed")
+            return None
+
+        workspace_dir = Path(self._workspace_dir or WORKING_DIR)
+        output_dir = workspace_dir / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = output_dir / f"generated_{ts}.xlsx"
+
+        columns = self._infer_excel_columns(query)
+        row_count = self._infer_excel_row_count(query)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws.append(columns)
+        for i in range(1, row_count + 1):
+            ws.append([self._sample_value(col, i) for col in columns])
+        wb.save(file_path)
+
+        tool_response = await send_file_to_user(str(file_path))
+        normalized_blocks = self._normalize_tool_response_blocks(tool_response)
+        file_blocks = [
+            block
+            for block in normalized_blocks
+            if isinstance(block, dict) and block.get("type") == "file"
+        ]
+        text_blocks = [
+            block
+            for block in normalized_blocks
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and block.get("text") != "File sent successfully."
+        ]
+        blocks = (text_blocks + file_blocks) or normalized_blocks
+        if fallback_note:
+            blocks.insert(
+                0,
+                {
+                    "type": "text",
+                    "text": (
+                        "模型未成功触发工具调用，已自动完成 Excel 生成并提供下载。"
+                    ),
+                },
+            )
+        else:
+            blocks.insert(0, {"type": "text", "text": "Excel 已生成，点击即可下载。"})
+
+        return Msg(self.name, blocks, "assistant")

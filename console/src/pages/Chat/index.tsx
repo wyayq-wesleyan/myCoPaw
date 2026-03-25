@@ -198,6 +198,98 @@ function useMultimodalCapabilities(
   return multimodalCaps;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function toStoredConsoleName(value: string): string {
+  if (!value) return value;
+  const m1 = value.match(/\/console\/files\/[^/]+\/(.+)$/);
+  if (m1) return m1[1];
+  const m2 = value.match(/^file:\/\/.*\/([^/]+)$/);
+  if (m2) return m2[1];
+  const m3 = value.match(/^[^/]+\/(.+)$/);
+  if (m3) return m3[1];
+  return value;
+}
+
+function rewriteStreamFileUrls(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => rewriteStreamFileUrls(item));
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const record = { ...value };
+  const urlFields = ["file_url", "image_url", "audio_url", "video_url", "data"];
+
+  for (const field of urlFields) {
+    const current = record[field];
+    if (typeof current !== "string" || !current.startsWith("file://")) {
+      continue;
+    }
+    record[field] = chatApi.fileUrl(toStoredConsoleName(current));
+  }
+
+  for (const key of Object.keys(record)) {
+    record[key] = rewriteStreamFileUrls(record[key]);
+  }
+
+  return record;
+}
+
+function transformSseStream(
+  stream: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      const reader = stream.getReader();
+      let buffer = "";
+
+      const flushChunk = (chunk: string) => {
+        const normalized = chunk.replace(/\r\n/g, "\n");
+        const lines = normalized.split("\n");
+        const rewritten = lines.map((line) => {
+          if (!line.startsWith("data: ")) return line;
+          const payload = line.slice(6);
+          try {
+            const parsed = JSON.parse(payload);
+            return `data: ${JSON.stringify(rewriteStreamFileUrls(parsed))}`;
+          } catch {
+            return line;
+          }
+        });
+        controller.enqueue(encoder.encode(rewritten.join("\n")));
+      };
+
+      const pump = (): void => {
+        void reader.read().then(({ done, value }) => {
+          if (done) {
+            if (buffer) flushChunk(buffer);
+            controller.close();
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() ?? "";
+          for (const part of parts) {
+            flushChunk(`${part}\n\n`);
+          }
+          pump();
+        });
+      };
+
+      pump();
+    },
+  });
+}
+
 function RuntimeLoadingBridge({
   bridgeRef,
 }: {
@@ -417,7 +509,15 @@ export default function ChatPage() {
         signal: data.signal,
       });
 
-      return response;
+      if (!response.ok || !response.body || !requestBody.session_id) {
+        return response;
+      }
+
+      return new Response(transformSseStream(response.body), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     },
     [],
   );

@@ -25,10 +25,18 @@ CODING_DASHSCOPE_BASE_URL = "https://coding.dashscope.aliyuncs.com/v1"
 class OpenAIProvider(Provider):
     """Provider implementation for OpenAI API and compatible endpoints."""
 
+    def _effective_api_key(self) -> str:
+        """Return a usable API key for OpenAI-compatible clients.
+
+        Some local/self-hosted OpenAI-compatible services do not require a
+        real key, but the OpenAI SDK still expects a non-empty value.
+        """
+        return (self.api_key or "").strip() or "copaw-local"
+
     def _client(self, timeout: float = 5) -> AsyncOpenAI:
         return AsyncOpenAI(
             base_url=self.base_url,
-            api_key=self.api_key,
+            api_key=self._effective_api_key(),
             timeout=timeout,
         )
 
@@ -156,7 +164,7 @@ class OpenAIProvider(Provider):
         return OpenAIChatModelCompat(
             model_name=model_id,
             stream=True,
-            api_key=self.api_key,
+            api_key=self._effective_api_key(),
             stream_tool_parsing=False,
             client_kwargs=client_kwargs,
             generate_kwargs=self.generate_kwargs,

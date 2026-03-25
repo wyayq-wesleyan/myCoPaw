@@ -1,15 +1,27 @@
+ARG BASE_IMAGE=py311-base:1.0.0
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+
 # -----------------------------------------------------------------------------
 # Stage 1: build console frontend (dist not committed in repo).
 # -----------------------------------------------------------------------------
-FROM agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/node:slim AS console-builder
+FROM ${BASE_IMAGE} AS console-builder
 WORKDIR /app
 COPY console /app/console
-RUN cd /app/console && npm ci --include=dev && npm run build
+ARG NPM_REGISTRY
+RUN npm config set registry ${NPM_REGISTRY} \
+ && cd /app/console \
+ && npm ci --include=dev \
+ && npm run build
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime image with Python, Chromium, and app.
 # -----------------------------------------------------------------------------
-FROM agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/node:slim
+FROM ${BASE_IMAGE}
+ARG BASE_IMAGE
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
 
 # ENV variables
 ENV NODE_ENV=production
@@ -24,69 +36,63 @@ ENV COPAW_DISABLED_CHANNELS=${COPAW_DISABLED_CHANNELS}
 ARG COPAW_ENABLED_CHANNELS=""
 ENV COPAW_ENABLED_CHANNELS=${COPAW_ENABLED_CHANNELS}
 
-ARG DEBIAN_FRONTEND=noninteractive
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-RUN apt-get update && apt-get install -y --fix-missing \
-    curl  \
-    python3  \
-    python3-pip  \
-    python3-venv \
-    build-essential  \
-    libssl-dev  \
-    git  \
-    supervisor  \
-    vim  \
-    gettext-base \
-    xfce4 \
-    xfce4-terminal \
-    xvfb \
-    dbus-x11 \
-    fonts-wqy-zenhei \
-    fonts-wqy-microhei \
-  && rm -rf /var/lib/apt/lists/* \
-  && apt-get clean
-
-
-RUN apt-get update && apt-get install -y --fix-missing \
-    chromium \
-    chromium-sandbox \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxi6 \
-    libxtst6 \
-    libnss3 \
-    libglib2.0-0 \
-    libdrm2 \
-    libgbm1 \
-    libasound2 \
-    fonts-liberation \
-    libu2f-udev \
-  && rm -rf /var/lib/apt/lists/* \
-  && apt-get clean
-
-
-RUN sed -i 's/^CHROMIUM_FLAGS=""/CHROMIUM_FLAGS="--no-sandbox"/' /usr/bin/chromium
-
-# Playwright: use system Chromium (already installed above).
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
-# Avoid Playwright downloading its own browser when executable_path is used.
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 # Indicate running in container (used e.g. for Chromium --no-sandbox).
 ENV COPAW_RUNNING_IN_CONTAINER=1
 
 WORKDIR ${WORKSPACE_DIR}
 
-RUN python3 -m venv venv
-ENV PATH="/app/venv/bin:$PATH"
-
 COPY pyproject.toml setup.py README.md ./
 COPY src ./src
 # Inject console dist from build stage (repo does not commit dist).
 COPY --from=console-builder /app/console/dist/ ./src/copaw/console/
-RUN pip install --no-cache-dir .[ollama]
+RUN pip install --no-cache-dir --index-url ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} .[ollama] \
+ && pip install --no-cache-dir --index-url ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} reportlab \
+ && python - <<'PY'
+from pathlib import Path
+
+stream_path = Path(
+    "/usr/local/lib/python3.11/site-packages/"
+    "agentscope_runtime/adapters/agentscope/stream.py"
+)
+text = stream_path.read_text(encoding="utf-8")
+old = "                                if completed_content.text:\n                                    yield completed_content.completed()\n"
+new = "                                completed_text = getattr(completed_content, \"text\", None)\n                                if completed_text:\n                                    yield completed_content.completed()\n"
+if old not in text:
+    raise SystemExit(f"Expected patch target not found in {stream_path}")
+stream_path.write_text(text.replace(old, new), encoding="utf-8")
+print(f"Patched {stream_path}")
+PY
+
+RUN python - <<'PY'
+from importlib.util import find_spec
+mods = [
+    "playwright",
+    "markitdown",
+    "openpyxl",
+    "pypdf",
+    "pdfplumber",
+    "pdf2image",
+    "pytesseract",
+    "pypdfium2",
+    "docx",
+    "pptx",
+]
+missing = [m for m in mods if find_spec(m) is None]
+if missing:
+    raise SystemExit(f"Missing python modules: {missing}")
+print("offline python dependency smoke test OK")
+PY
+
+RUN pandoc --version | head -n 1 \
+ && soffice --version \
+ && pdftotext -v | head -n 1 \
+ && pdftoppm -v | head -n 1 \
+ && tesseract --version | head -n 1 \
+ && node --version \
+ && npm --version
 
 # Init working dir with default config.json and HEARTBEAT.md (build time).
 RUN copaw init --defaults --accept-security

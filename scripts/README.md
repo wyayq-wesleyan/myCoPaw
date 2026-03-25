@@ -20,11 +20,53 @@ bash scripts/website_build.sh
 
 ## Build Docker image
 
+### Fetch offline client archives
+
+```bash
+bash scripts/fetch_offline_clients.sh [arm64|amd64]
+```
+
+- Downloads official Apache Hadoop/Hive archives into
+  `deploy/offline-assets/<arch>/`.
+- Uses mainland mirrors first (TUNA/Aliyun/HuaweiCloud), then falls back to
+  Apache archive.
+- Oracle packages still need manual download into
+  `deploy/offline-assets/<arch>/oracle/`.
+
+### Build reusable base image
+
+```bash
+bash scripts/docker_build_base.sh [IMAGE_TAG] [EXTRA_ARGS...]
+```
+
+- Default tag: `py311-base:1.0.0`. Uses `deploy/Dockerfile.base`.
+- The base image includes Python 3.11, common data/web/file-processing packages,
+  Playwright Chromium, LibreOffice/OCR tooling, Node.js/npm, and optional
+  offline client install hooks for Hadoop/Hive/Oracle.
+- The base image preloads broad Python dependencies for generated scripts,
+  including `oracledb`, `pyhive[hive_pure_sasl]`, `impyla`,
+  `psycopg2-binary`, `matplotlib`, `scikit-learn`, and document/database tools.
+- Legacy `import cx_Oracle` is supported via a compatibility shim that maps to
+  `oracledb`.
+- `amd64`: Oracle Instant Client basic package is required and should use Oracle
+  11g-compatible package naming.
+- `arm64`: Oracle package is optional (build skips Oracle installation).
+- Oracle packages should be placed under `deploy/offline-assets/<arch>/oracle/`
+  before building.
+- Set `PLATFORM=linux/arm64` or `PLATFORM=linux/amd64` when building for a
+  specific architecture.
+- Put offline client archives under `deploy/offline-assets/<arch>/` before
+  building the base image.
+
+### Build CoPaw application image
+
 ```bash
 bash scripts/docker_build.sh [IMAGE_TAG] [EXTRA_ARGS...]
 ```
 
-- Default tag: `copaw:latest`. Uses `deploy/Dockerfile` (multi-stage: builds console then Python app).
+- Default tag: `copaw:latest`. Uses `deploy/Dockerfile` and expects a reusable
+  base image first.
+- Override the base image with `BASE_IMAGE=<tag> bash scripts/docker_build.sh`.
 - Example: `bash scripts/docker_build.sh myreg/copaw:v1 --no-cache`.
 
 ## Run Test
