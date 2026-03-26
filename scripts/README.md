@@ -46,6 +46,9 @@ bash scripts/docker_build_base.sh [IMAGE_TAG] [EXTRA_ARGS...]
 - The base image preloads broad Python dependencies for generated scripts,
   including `oracledb`, `pyhive[hive_pure_sasl]`, `impyla`,
   `psycopg2-binary`, `matplotlib`, `scikit-learn`, and document/database tools.
+- It also includes common ops/runtime libraries such as `paramiko`, `fabric`,
+  `sshtunnel`, `celery`, `kafka-python`, `elasticsearch`, `boto3`, `minio`,
+  `python-dotenv`, and retry/config helpers.
 - Legacy `import cx_Oracle` is supported via a compatibility shim that maps to
   `oracledb`.
 - `amd64`: Oracle Instant Client basic package is required and should use Oracle

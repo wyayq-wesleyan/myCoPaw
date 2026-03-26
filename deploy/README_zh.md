@@ -11,6 +11,7 @@
    - 预装 `oracledb`、`pyhive[hive_pure_sasl]`、`impyla` 等数据库 /
      大数据依赖
    - 提供 `cx_Oracle` 兼容导入层，减少旧脚本报错
+   - 额外覆盖 SSH/自动化运维、对象存储、消息队列、配置管理等常见依赖
    - 预留 Hadoop 3、Hive 3 客户端的离线安装位
 2. `deploy/Dockerfile`
    - CoPaw 应用镜像
@@ -79,6 +80,9 @@ docker run -d --name mycopaw -p 8088:8088 mycopaw-offline:2.0.0
   构建过程不会主动联网下载。
 - 底座镜像预装了更完整的 Python 常用依赖，覆盖数据分析、Web/API、
   文档处理、数据库连接、大数据访问等场景。
+- 已额外纳入一批运维常用包，例如 `paramiko`、`fabric`、`sshtunnel`、
+  `celery`、`kafka-python`、`elasticsearch`、`boto3`、`minio`、
+  `python-dotenv`、`tenacity` 等。
 - Oracle 相关 Python 驱动默认提供 `oracledb`，同时兼容 `import cx_Oracle`
   的旧代码写法。
 - Hive 相关 Python 驱动使用 `pyhive[hive_pure_sasl]`，避免 `pyhive[hive]`

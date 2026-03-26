@@ -119,22 +119,34 @@ RUN set -eux; \
         --index-url "${PIP_INDEX_URL}" \
         --trusted-host "${PIP_TRUSTED_HOST}" \
         aiofiles \
+        aiohttp \
+        alembic \
+        boto3 \
         beautifulsoup4 \
+        celery \
+        cryptography \
+        dbutils \
+        elasticsearch \
         duckdb \
+        fabric \
         fastapi \
         flask \
         flask-cors \
         hdfs \
         httpx \
         jinja2 \
+        kafka-python \
         lxml \
+        loguru \
         markitdown[pptx] \
         matplotlib \
+        minio \
         numpy \
         openpyxl \
         oracledb \
         orjson \
         pandas \
+        paramiko \
         pdf2image \
         pdfplumber \
         pillow \
@@ -142,13 +154,16 @@ RUN set -eux; \
         polars \
         pyarrow \
         pydantic \
+        pydantic-settings \
         pypdf \
         pypdfium2 \
         pymongo \
+        pymssql \
         pymysql \
         pyodbc \
         psycopg2-binary \
         pyspark \
+        python-dotenv \
         python-docx \
         python-multipart \
         python-pptx \
@@ -156,11 +171,14 @@ RUN set -eux; \
         pyyaml \
         redis \
         requests \
+        schedule \
         scipy \
         scikit-learn \
         seaborn \
         sqlalchemy \
+        sshtunnel \
         tabulate \
+        tenacity \
         uvicorn[standard] \
         xlsxwriter \
         xlrd \
@@ -262,9 +280,17 @@ from importlib.util import find_spec
 
 mods = [
     "aiofiles",
+    "aiohttp",
+    "alembic",
     "bs4",
+    "boto3",
+    "celery",
+    "cryptography",
     "cx_Oracle",
+    "dbutils",
     "duckdb",
+    "elasticsearch",
+    "fabric",
     "fastapi",
     "flask",
     "flask_cors",
@@ -272,39 +298,49 @@ mods = [
     "httpx",
     "impala",
     "jinja2",
+    "kafka",
     "lxml",
+    "loguru",
     "markitdown",
     "matplotlib",
+    "minio",
     "numpy",
     "openpyxl",
     "oracledb",
     "orjson",
     "pandas",
+    "paramiko",
     "playwright",
     "PIL",
     "polars",
     "pyarrow",
     "pydantic",
+    "pydantic_settings",
     "pypdf",
     "pdfplumber",
     "pdf2image",
     "pymongo",
+    "pymssql",
     "pymysql",
     "pyodbc",
     "pyhive",
     "psycopg2",
     "pyspark",
+    "dotenv",
     "multipart",
     "docx",
     "pptx",
     "pytesseract",
     "redis",
     "requests",
+    "schedule",
     "scipy",
     "seaborn",
     "sklearn",
     "sqlalchemy",
+    "sshtunnel",
     "tabulate",
+    "tenacity",
     "thrift",
     "thrift_sasl",
     "uvicorn",
