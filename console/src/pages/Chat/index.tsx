@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import sessionApi from "./sessionApi";
 import defaultConfig, { getDefaultConfig } from "./OptionsPanel/defaultConfig";
+import { SendFileToolCard } from "./components/SendFileToolCard";
 import { chatApi } from "../../api/modules/chat";
 import { getApiUrl } from "../../api/config";
 import { buildAuthHeaders } from "../../api/authHeaders";
@@ -614,6 +615,9 @@ export default function ChatPage() {
           accept: "*/*",
           customRequest: handleFileUpload,
         },
+      },
+      customToolRenderConfig: {
+        send_file_to_user: SendFileToolCard,
       },
       session: { multiple: true, api: sessionApi },
       api: {

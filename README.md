@@ -75,6 +75,24 @@ Your Personal AI Assistant; easy to install, deploy on your own machine or on th
 
 ---
 
+## Fork Status (mycopaw)
+
+This repository is currently a localized fork based on upstream `v0.2.0.post1`, focused on offline-friendly deployment, reusable base images, and local validation on `arm64` before production `x86_64` rollout.
+
+For the current handoff summary and local development status, see:
+
+- [CHANGELOG.md](CHANGELOG.md)
+- [README_zh.md](README_zh.md)
+- [deploy/README_zh.md](deploy/README_zh.md)
+
+Current state in short:
+
+- Offline-friendly base image flow has been added around `py311-base:1.0.0`
+- Local file generation and download delivery in the console has been fixed and verified
+- Current priority is local `arm64` validation first, not production hardening yet
+
+---
+
 ## Table of Contents
 
 > **Recommended reading:**
@@ -84,6 +102,7 @@ Your Personal AI Assistant; easy to install, deploy on your own machine or on th
 > - **I don’t want to install Python**: [Script install](#script-install) handles Python automatically, or use [ModelScope one-click](https://modelscope.cn/studios/fork?target=AgentScope/CoPaw) for cloud deployment.
 
 - [News](#news)
+- [Fork Status (mycopaw)](#fork-status-mycopaw)
 - [Quick Start](#quick-start)
 - [API Key](#api-key)
 - [Local Models](#local-models)

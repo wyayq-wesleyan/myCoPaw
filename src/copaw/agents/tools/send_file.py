@@ -120,6 +120,25 @@ def _prepare_downloadable_copy(file_path: str) -> Path:
     return dest
 
 
+def _resolve_file_path(file_path: str) -> Path:
+    """Resolve file path, falling back to the active workspace for relative paths."""
+    normalized = Path(
+        os.path.expanduser(unicodedata.normalize("NFC", file_path)),
+    )
+    if normalized.exists():
+        return normalized.resolve()
+
+    if not normalized.is_absolute():
+        workspace_dir = Path(
+            get_current_workspace_dir() or WORKING_DIR,
+        ).expanduser()
+        workspace_candidate = workspace_dir / normalized
+        if workspace_candidate.exists():
+            return workspace_candidate.resolve()
+
+    return normalized
+
+
 def _build_console_download_markdown(path: Path) -> str:
     """Build a markdown download link for the console UI."""
     agent_id = os.environ.get("COPAW_AGENT_ID", "default") or "default"
@@ -141,10 +160,9 @@ async def send_file_to_user(
             The tool response containing the file or an error message.
     """
 
-    # Normalize the path: expand ~ and fix Unicode normalization differences
-    # (e.g. macOS stores filenames as NFD but paths from the LLM arrive as NFC,
-    # causing os.path.exists to return False for files that do exist).
-    file_path = os.path.expanduser(unicodedata.normalize("NFC", file_path))
+    # Normalize the path and, for relative paths, prefer the active workspace.
+    file_path_obj = _resolve_file_path(file_path)
+    file_path = str(file_path_obj)
 
     if not os.path.exists(file_path):
         return ToolResponse(

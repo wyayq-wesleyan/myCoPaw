@@ -75,6 +75,74 @@
 
 ---
 
+## 当前改造状态（mycopaw）
+
+本仓库当前不是单纯跟随上游的源码镜像，而是在上游 `v0.2.0.post1` 基础上，为“可在中国大陆网络环境准备依赖、并最终部署到离线内网 Ubuntu 服务器”这个目标做的本地化改造分支。
+
+建议继续开发前先看这两个文件：
+
+- 本地分支变更记录：[`CHANGELOG.md`](CHANGELOG.md)
+- 离线镜像与客户端打包说明：[`deploy/README_zh.md`](deploy/README_zh.md)
+
+### 当前基础
+
+- 当前开发分支：`codex/upgrade-v0.2.0.post1`
+- 上游基线版本：`v0.2.0.post1`
+- 当前策略：先把本机 `arm64` 测试链路跑通，再考虑离线 `x86_64` 生产适配
+
+### 这条分支已经做过的主要工作
+
+- 已把旧的离线部署、本地化下载、文件投递相关改造合并回 `v0.2.0.post1`
+- 已补齐一套可复用的基础镜像方案，默认底座镜像名为 `py311-base:1.0.0`
+- 已新增离线构建脚本与客户端准备脚本，统一围绕 `deploy/offline-assets/<arch>/` 管理
+- 已在基础镜像中预装大量 Python 依赖，覆盖数据分析、数据处理、Web/API 开发、数据库连接、文档处理、浏览器自动化等常见场景
+- 已在基础镜像里预留 Hadoop / Hive / Oracle Instant Client 的离线安装钩子，并优先使用中国大陆镜像源下载依赖
+
+### 当前已经打通的本机能力
+
+- `arm64` 本机环境下，CoPaw 控制台的基本聊天链路已可用
+- 宿主机本地模型服务已验证可以被容器访问；当前本机调试使用的是通过 `host.docker.internal` 访问宿主机模型 API 的方式
+- `send_file_to_user` 的相对路径问题已修复：Agent 在工作区里生成的文件，不必再强制改成绝对路径才能发送
+- 控制台文件下载链路已打通：生成文件后，会通过 `/api/console/files/{agent_id}/{filename}` 提供下载
+- 聊天前端已补充 `send_file_to_user` 的专用展示卡片，页面上会直接显示下载入口，而不再只是“已发送文件”的工具输出文字
+
+### 当前底座镜像现状
+
+基础镜像位于 [`deploy/Dockerfile.base`](deploy/Dockerfile.base)，当前特点如下：
+
+- Python 版本基于 3.11
+- 浏览器自动化能力基于 Playwright Chromium
+- 已预装 `oracledb`，并提供 `cx_Oracle` 兼容导入 shim
+- 已预装 `pyhive[hive_pure_sasl]`、`impyla`、`pyspark`、`pyarrow`、`pandas`、`numpy`、`sqlalchemy`、`fastapi`、`flask`、`redis`、`pymysql`、`psycopg2-binary`、`pyodbc`、`pymssql` 等常用依赖
+- 已设置 `HADOOP_HOME`、`HIVE_HOME`、`ORACLE_HOME`、`TNS_ADMIN`、`LD_LIBRARY_PATH` 等环境变量
+- `amd64` 构建时要求提供 Oracle 11g Instant Client 离线包
+- `arm64` 当前可先不打 Oracle 客户端，以便优先完成本机链路验证
+
+### 目前仍然是“阶段性完成”的地方
+
+- 当前更偏向“本机 arm 测通”，还没有完成最终的内网生产交付形态
+- 当前运行中的本机测试容器包含手工同步进去的修复，用于快速验证功能；后续仍需要把这些修复重新烘焙回正式镜像
+- `x86_64` 生产环境的 Oracle 11g、Hive 3、Hadoop 3 联调还没有完整走完
+- 生产环境强调“不重复构建”，因此后续应以底座镜像为中心，把依赖和离线资产准备流程固化
+- 工作区文件生命周期目前只完成了生成文件的基础清理能力，尚未形成完整的“可视化文件管理/回收”方案
+
+### 已确认的注意事项
+
+- 生成文件下载目前依赖 `send_file_to_user`
+- 生成文件清理策略由以下环境变量控制：
+  - `COPAW_GENERATED_FILE_TTL_HOURS`
+  - `COPAW_GENERATED_FILE_MAX_FILES`
+  - `COPAW_GENERATED_FILE_MAX_TOTAL_MB`
+- 若后续继续做 Oracle / Hive 3 的“本机模拟生产环境”，需要注意多数更贴近生产的镜像主要面向 `amd64`，在 `arm64` 本机上通常需要走 `linux/amd64` 模式模拟
+
+### 下一步建议
+
+- 先把当前已验证通过的下载链路、文件投递修复重新构建进正式 `arm64` 测试镜像
+- 为 Oracle / Hive 3 本地模拟环境补一份独立的 `docker compose`
+- 等本机功能确认稳定后，再整理 `x86_64` 离线生产镜像、离线包和部署步骤
+
+---
+
 ## 目录
 
 > **推荐阅读：**
@@ -84,6 +152,7 @@
 > - **我不想装 Python**：[脚本安装](#脚本安装) 自动管理 Python，或使用 [魔搭一键配置](https://modelscope.cn/studios/fork?target=AgentScope/CoPaw) 云端部署。
 
 - [新闻](#新闻)
+- [当前改造状态（mycopaw）](#当前改造状态mycopaw)
 - [快速开始](#快速开始)
 - [API Key](#api-key)
 - [本地模型](#本地模型)
