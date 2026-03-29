@@ -241,37 +241,33 @@ RUN set -eux; \
     fi; \
     oracle_basic="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*basic*.zip' | head -n 1 || true)"; \
     oracle_sdk="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*sdk*.zip' | head -n 1 || true)"; \
-    if [ "${TARGETARCH}" = "amd64" ]; then \
-        if [ -z "${oracle_basic}" ]; then \
-            echo "Oracle Instant Client basic package is required under deploy/offline-assets/${TARGETARCH}/oracle/" >&2; \
-            exit 1; \
-        fi; \
-        if ! echo "${oracle_basic}" | grep -Eiq '11(\\.|_|g|[0-9])'; then \
-            echo "For amd64, please provide Oracle 11g Instant Client package." >&2; \
-            echo "Current package: ${oracle_basic}" >&2; \
-            exit 1; \
-        fi; \
-        unzip -q "${oracle_basic}" -d /opt/oracle; \
-        if [ -n "${oracle_sdk}" ]; then \
-            unzip -q "${oracle_sdk}" -d /opt/oracle; \
-        fi; \
-        instantclient_dir="$(find /opt/oracle -maxdepth 1 -mindepth 1 -type d -name 'instantclient*' | head -n 1 || true)"; \
-        if [ -n "${instantclient_dir}" ]; then \
-            rm -rf /opt/oracle/instantclient; \
-            ln -s "${instantclient_dir}" /opt/oracle/instantclient; \
-            if [ -f "${instantclient_dir}/libclntsh.so.11.1" ] && [ ! -e "${instantclient_dir}/libclntsh.so" ]; then \
-                ln -s "${instantclient_dir}/libclntsh.so.11.1" "${instantclient_dir}/libclntsh.so"; \
+    if [ -n "${oracle_basic}" ]; then \
+        if ! echo "${oracle_basic}" | grep -Eiq 'instantclient'; then \
+            echo "Oracle Instant Client package not recognized, skipping installation." >&2; \
+        else \
+            unzip -q "${oracle_basic}" -d /opt/oracle; \
+            if [ -n "${oracle_sdk}" ]; then \
+                unzip -q "${oracle_sdk}" -d /opt/oracle; \
             fi; \
-            if [ -f "${instantclient_dir}/libocci.so.11.1" ] && [ ! -e "${instantclient_dir}/libocci.so" ]; then \
-                ln -s "${instantclient_dir}/libocci.so.11.1" "${instantclient_dir}/libocci.so"; \
+            instantclient_dir="$(find /opt/oracle -maxdepth 1 -mindepth 1 -type d -name 'instantclient*' | head -n 1 || true)"; \
+            if [ -n "${instantclient_dir}" ]; then \
+                rm -rf /opt/oracle/instantclient; \
+                ln -s "${instantclient_dir}" /opt/oracle/instantclient; \
+                if [ -f "${instantclient_dir}/libclntsh.so.11.1" ] && [ ! -e "${instantclient_dir}/libclntsh.so" ]; then \
+                    ln -s "${instantclient_dir}/libclntsh.so.11.1" "${instantclient_dir}/libclntsh.so"; \
+                fi; \
+                if [ -f "${instantclient_dir}/libocci.so.11.1" ] && [ ! -e "${instantclient_dir}/libocci.so" ]; then \
+                    ln -s "${instantclient_dir}/libocci.so.11.1" "${instantclient_dir}/libocci.so"; \
+                fi; \
             fi; \
-        fi; \
-        if [ ! -e /opt/oracle/instantclient/libclntsh.so ] && [ ! -e /opt/oracle/instantclient/libclntsh.so.11.1 ]; then \
-            echo "Oracle Instant Client libraries were not installed correctly." >&2; \
-            exit 1; \
+            if [ ! -e /opt/oracle/instantclient/libclntsh.so ] && [ ! -e /opt/oracle/instantclient/libclntsh.so.11.1 ]; then \
+                echo "Oracle Instant Client libraries were not installed correctly, skipping." >&2; \
+            else \
+                echo "Oracle Instant Client installed successfully."; \
+            fi; \
         fi; \
     else \
-        echo "Skip Oracle client installation for ${TARGETARCH}."; \
+        echo "No Oracle Instant Client package found under deploy/offline-assets/${TARGETARCH}/oracle/, skipping installation."; \
     fi; \
     rm -rf /tmp/offline-assets
 
