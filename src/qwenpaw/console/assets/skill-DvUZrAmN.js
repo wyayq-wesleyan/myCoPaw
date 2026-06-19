@@ -1,0 +1,1 @@
+const o=["https://skills.sh/","https://clawhub.ai/","https://skillsmp.com/","https://lobehub.com/","https://market.lobehub.com/","https://github.com/","https://modelscope.cn/skills/"];function h(t){return o.some(s=>t.startsWith(s))}const l="tag:";export{l as S,o as a,h as i};

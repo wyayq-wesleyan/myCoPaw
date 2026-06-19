@@ -442,8 +442,8 @@ cd console && npm ci && npm run build
 cd ..
 
 # コンソールのビルド出力をパッケージディレクトリにコピー
-mkdir -p src/copaw/console
-cp -R console/dist/. src/copaw/console/
+mkdir -p src/qwenpaw/console
+cp -R console/dist/. src/qwenpaw/console/
 
 # Pythonパッケージのインストール
 pip install -e .

@@ -8,7 +8,7 @@ Run from **repo root**.
 bash scripts/wheel_build.sh
 ```
 
-- Builds the console frontend (`console/`), copies `console/dist` to `src/copaw/console/dist`, then builds the wheel. Output: `dist/*.whl`.
+- Builds the console frontend (`console/`), copies `console/dist` to `src/qwenpaw/console/`, then builds the wheel. Output: `dist/*.whl`.
 
 ## Build website
 
@@ -51,8 +51,7 @@ bash scripts/docker_build_base.sh [IMAGE_TAG] [EXTRA_ARGS...]
   `python-dotenv`, and retry/config helpers.
 - Legacy `import cx_Oracle` is supported via a compatibility shim that maps to
   `oracledb`.
-- `amd64`: Oracle Instant Client basic package is required and should use Oracle
-  11g-compatible package naming.
+- `amd64`: Oracle Instant Client package can use 11g or 19c/21c/23c naming.
 - `arm64`: Oracle package is optional (build skips Oracle installation).
 - Oracle packages should be placed under `deploy/offline-assets/<arch>/oracle/`
   before building.
@@ -60,6 +59,16 @@ bash scripts/docker_build_base.sh [IMAGE_TAG] [EXTRA_ARGS...]
   specific architecture.
 - Put offline client archives under `deploy/offline-assets/<arch>/` before
   building the base image.
+- For final server delivery, prefer `PLATFORM=linux/amd64`.
+
+### Build x86_64 server-release images
+
+```bash
+bash scripts/docker_build_x86_release.sh [APP_VERSION]
+```
+
+- Builds the reusable base image and app image for `linux/amd64`.
+- This is the recommended path for the final Ubuntu x86_64 server delivery.
 
 ### Build CoPaw application image
 
@@ -69,6 +78,9 @@ bash scripts/docker_build.sh [IMAGE_TAG] [EXTRA_ARGS...]
 
 - Default tag: `copaw:latest`. Uses `deploy/Dockerfile` and expects a reusable
   base image first.
+- The current app image defaults to the official packaged console assets
+  shipped inside the Python package, so it no longer depends on a frontend
+  rebuild during every image build.
 - Override the base image with `BASE_IMAGE=<tag> bash scripts/docker_build.sh`.
 - Example: `bash scripts/docker_build.sh myreg/copaw:v1 --no-cache`.
 

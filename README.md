@@ -77,7 +77,7 @@ Your Personal AI Assistant; easy to install, deploy on your own machine or on th
 
 ## Fork Status (mycopaw)
 
-This repository is currently a localized fork based on upstream `v0.2.0.post1`, focused on offline-friendly deployment, reusable base images, and local validation on `arm64` before production `x86_64` rollout.
+This repository is currently a localized offline/internal-use fork. It started from upstream `v0.2.0.post1` and has now been resynced to the latest official Python core line available from the official package source: `qwenpaw 1.1.12.post1`.
 
 For the current handoff summary and local development status, see:
 
@@ -88,7 +88,9 @@ For the current handoff summary and local development status, see:
 Current state in short:
 
 - Offline-friendly base image flow has been added around `py311-base:1.0.0`
-- Local file generation and download delivery in the console has been fixed and verified
+- Latest official Python core has been imported under `src/qwenpaw`, while legacy `copaw` command compatibility is preserved
+- Multi-user authenticated deployments now isolate agents, workspaces, and generated-file previews per user
+- Local file generation and download delivery in the console has been re-applied on top of the latest upstream file-delivery flow
 - Current priority is local `arm64` validation first, not production hardening yet
 
 ---
@@ -466,8 +468,8 @@ cd console && npm ci && npm run build
 cd ..
 
 # Copy console build output to package directory
-mkdir -p src/copaw/console
-cp -R console/dist/. src/copaw/console/
+mkdir -p src/qwenpaw/console
+cp -R console/dist/. src/qwenpaw/console/
 
 # Install Python package
 pip install -e .

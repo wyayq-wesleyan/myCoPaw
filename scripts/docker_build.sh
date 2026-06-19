@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Docker image (includes console frontend build in multi-stage).
+# Build Docker image for the offline/internal edition.
 # Run from repo root: bash scripts/docker_build.sh [IMAGE_TAG] [EXTRA_ARGS...]
 # Example: bash scripts/docker_build.sh copaw:latest
 #          bash scripts/docker_build.sh myreg/copaw:v1 --no-cache
@@ -7,6 +7,10 @@
 # Build on top of a reusable base image to avoid repeated dependency downloads.
 # Build the base first when needed:
 #   bash scripts/docker_build_base.sh py311-base:1.0.0
+#
+# The current app image defaults to the official packaged console assets
+# carried in the Python package, which avoids extra frontend dependency
+# downloads during image build.
 #
 # By default the Docker image excludes imessage (macOS-only).
 # Override via:

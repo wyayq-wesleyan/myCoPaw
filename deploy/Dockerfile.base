@@ -15,10 +15,12 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV HADOOP_HOME=/opt/hadoop
 ENV HIVE_HOME=/opt/hive
+ENV HIVE2_HOME=/opt/hive2
+ENV HIVE3_HOME=/opt/hive3
 ENV ORACLE_HOME=/opt/oracle/instantclient
 ENV TNS_ADMIN=/opt/oracle/network/admin
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient:/usr/local/lib
-ENV PATH=/opt/hadoop/bin:/opt/hadoop/sbin:/opt/hive/bin:/opt/oracle/instantclient:${PATH}
+ENV PATH=/opt/hadoop/bin:/opt/hadoop/sbin:/opt/hive/bin:/opt/hive2/bin:/opt/hive3/bin:/opt/oracle/instantclient:${PATH}
 
 RUN set -eux; \
     sed -i "s@http://deb.debian.org/debian@https://${APT_MIRROR}/debian@g" /etc/apt/sources.list.d/debian.sources; \
@@ -42,6 +44,13 @@ RUN set -eux; \
         git \
         gnupg \
         graphviz \
+        default-mysql-client \
+        dnsutils \
+        inetutils-telnet \
+        iputils-ping \
+        jq \
+        ldap-utils \
+        less \
         libreoffice \
         libreoffice-java-common \
         libaio1 \
@@ -78,17 +87,24 @@ RUN set -eux; \
         libxslt1-dev \
         libxtst6 \
         locales \
+        lsof \
         make \
+        net-tools \
         nodejs \
         npm \
         openjdk-17-jre-headless \
+        openssh-client \
         pandoc \
         poppler-utils \
+        postgresql-client \
         procps \
+        redis-tools \
+        rsync \
         supervisor \
         tesseract-ocr \
         tesseract-ocr-chi-sim \
         tesseract-ocr-eng \
+        tmux \
         unixodbc \
         unixodbc-dev \
         unzip \
@@ -121,27 +137,43 @@ RUN set -eux; \
         aiofiles \
         aiohttp \
         alembic \
+        ansible-core \
         boto3 \
         beautifulsoup4 \
+        cassandra-driver \
         celery \
+        clickhouse-connect \
+        clickhouse-driver \
         cryptography \
+        dask[dataframe] \
         dbutils \
+        docker \
         elasticsearch \
         duckdb \
         fabric \
+        fastparquet \
         fastapi \
         flask \
         flask-cors \
+        fsspec \
         hdfs \
+        hvac \
         httpx \
+        influxdb-client \
         jinja2 \
+        joblib \
         kafka-python \
+        kubernetes \
         lxml \
         loguru \
         markitdown[pptx] \
         matplotlib \
         minio \
+        ncclient \
+        neo4j \
+        netmiko \
         numpy \
+        opensearch-py \
         openpyxl \
         oracledb \
         orjson \
@@ -153,14 +185,18 @@ RUN set -eux; \
         playwright \
         polars \
         pyarrow \
+        pyathena \
         pydantic \
         pydantic-settings \
         pypdf \
         pypdfium2 \
+        pyreadstat \
+        pysnmp \
         pymongo \
         pymssql \
         pymysql \
         pyodbc \
+        pyxlsb \
         psycopg2-binary \
         pyspark \
         python-dotenv \
@@ -169,17 +205,25 @@ RUN set -eux; \
         python-pptx \
         pytesseract \
         pyyaml \
+        ruamel.yaml \
         redis \
         requests \
+        s3fs \
         schedule \
+        scrapli \
         scipy \
         scikit-learn \
         seaborn \
+        snowflake-connector-python \
+        sqlmodel \
         sqlalchemy \
         sshtunnel \
         tabulate \
         tenacity \
+        trino \
         uvicorn[standard] \
+        vertica-python \
+        xmltodict \
         xlsxwriter \
         xlrd \
         xlwt \
@@ -218,9 +262,9 @@ COPY deploy/offline-assets/ /tmp/offline-assets/
 RUN set -eux; \
     assets_root="/tmp/offline-assets/${TARGETARCH}"; \
     common_root="/tmp/offline-assets/common"; \
-    mkdir -p "${assets_root}/hadoop" "${assets_root}/hive" "${assets_root}/oracle"; \
-    mkdir -p "${common_root}/hadoop" "${common_root}/hive"; \
-    mkdir -p /opt/hadoop /opt/hive /opt/oracle; \
+    mkdir -p "${assets_root}/hadoop" "${assets_root}/hive" "${assets_root}/hive2" "${assets_root}/hive3" "${assets_root}/oracle"; \
+    mkdir -p "${common_root}/hadoop" "${common_root}/hive" "${common_root}/hive2" "${common_root}/hive3"; \
+    mkdir -p /opt/hadoop /opt/hive /opt/hive2 /opt/hive3 /opt/oracle; \
     hadoop_pkg="$(find "${assets_root}/hadoop" "${common_root}/hadoop" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
     if [ -n "${hadoop_pkg}" ]; then \
         tar -xzf "${hadoop_pkg}" -C /opt; \
@@ -228,47 +272,83 @@ RUN set -eux; \
         if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
             rm -rf /opt/hadoop; \
             ln -s "/opt/${extracted_dir}" /opt/hadoop; \
+            echo "Installed Hadoop: ${extracted_dir}"; \
         fi; \
+    else \
+        echo "No Hadoop package found, skipping."; \
     fi; \
-    hive_pkg="$(find "${assets_root}/hive" "${common_root}/hive" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
-    if [ -n "${hive_pkg}" ]; then \
-        tar -xzf "${hive_pkg}" -C /opt; \
-        extracted_dir="$(tar -tzf "${hive_pkg}" | head -n 1 | cut -d/ -f1)"; \
+    # Hive 3.x (install first as default) \
+    hive3_pkg="$(find "${assets_root}/hive3" "${common_root}/hive3" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+    if [ -n "${hive3_pkg}" ]; then \
+        tar -xzf "${hive3_pkg}" -C /opt; \
+        extracted_dir="$(tar -tzf "${hive3_pkg}" | head -n 1 | cut -d/ -f1)"; \
         if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
-            rm -rf /opt/hive; \
+            rm -rf /opt/hive /opt/hive3; \
+            ln -s "/opt/${extracted_dir}" /opt/hive3; \
             ln -s "/opt/${extracted_dir}" /opt/hive; \
+            echo "Installed Hive 3.x: ${extracted_dir} -> /opt/hive"; \
         fi; \
     fi; \
+    # Hive 2.x \
+    hive2_pkg="$(find "${assets_root}/hive2" "${common_root}/hive2" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+    if [ -n "${hive2_pkg}" ]; then \
+        tar -xzf "${hive2_pkg}" -C /opt; \
+        extracted_dir="$(tar -tzf "${hive2_pkg}" | head -n 1 | cut -d/ -f1)"; \
+        if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+            rm -rf /opt/hive2; \
+            ln -s "/opt/${extracted_dir}" /opt/hive2; \
+            echo "Installed Hive 2.x: ${extracted_dir} -> /opt/hive2"; \
+        fi; \
+    fi; \
+    # Legacy hive/ directory (backward compat) \
+    if [ ! -L /opt/hive ] || [ ! -e /opt/hive ]; then \
+        hive_pkg="$(find "${assets_root}/hive" "${common_root}/hive" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+        if [ -n "${hive_pkg}" ]; then \
+            tar -xzf "${hive_pkg}" -C /opt; \
+            extracted_dir="$(tar -tzf "${hive_pkg}" | head -n 1 | cut -d/ -f1)"; \
+            if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+                rm -rf /opt/hive; \
+                ln -s "/opt/${extracted_dir}" /opt/hive; \
+                echo "Installed Hive (legacy): ${extracted_dir} -> /opt/hive"; \
+            fi; \
+        fi; \
+    fi; \
+    echo "Hive setup complete. /opt/hive -> $(readlink -f /opt/hive 2>/dev/null || echo 'not set')"; \
     oracle_basic="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*basic*.zip' | head -n 1 || true)"; \
     oracle_sdk="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*sdk*.zip' | head -n 1 || true)"; \
     if [ "${TARGETARCH}" = "amd64" ]; then \
-        if [ -z "${oracle_basic}" ]; then \
-            echo "Oracle Instant Client basic package is required under deploy/offline-assets/${TARGETARCH}/oracle/" >&2; \
-            exit 1; \
-        fi; \
-        if ! echo "${oracle_basic}" | grep -Eiq '11(\\.|_|g|[0-9])'; then \
-            echo "For amd64, please provide Oracle 11g Instant Client package." >&2; \
-            echo "Current package: ${oracle_basic}" >&2; \
-            exit 1; \
-        fi; \
-        unzip -q "${oracle_basic}" -d /opt/oracle; \
-        if [ -n "${oracle_sdk}" ]; then \
-            unzip -q "${oracle_sdk}" -d /opt/oracle; \
-        fi; \
-        instantclient_dir="$(find /opt/oracle -maxdepth 1 -mindepth 1 -type d -name 'instantclient*' | head -n 1 || true)"; \
-        if [ -n "${instantclient_dir}" ]; then \
-            rm -rf /opt/oracle/instantclient; \
-            ln -s "${instantclient_dir}" /opt/oracle/instantclient; \
-            if [ -f "${instantclient_dir}/libclntsh.so.11.1" ] && [ ! -e "${instantclient_dir}/libclntsh.so" ]; then \
-                ln -s "${instantclient_dir}/libclntsh.so.11.1" "${instantclient_dir}/libclntsh.so"; \
+        if [ -n "${oracle_basic}" ] && echo "${oracle_basic}" | grep -Eiq '11|19|21|23'; then \
+            echo "Installing Oracle Instant Client from ${oracle_basic}..."; \
+            unzip -q "${oracle_basic}" -d /opt/oracle; \
+            if [ -n "${oracle_sdk}" ]; then \
+                unzip -q "${oracle_sdk}" -d /opt/oracle; \
             fi; \
-            if [ -f "${instantclient_dir}/libocci.so.11.1" ] && [ ! -e "${instantclient_dir}/libocci.so" ]; then \
-                ln -s "${instantclient_dir}/libocci.so.11.1" "${instantclient_dir}/libocci.so"; \
+            instantclient_dir="$(find /opt/oracle -maxdepth 1 -mindepth 1 -type d -name 'instantclient*' | head -n 1 || true)"; \
+            if [ -n "${instantclient_dir}" ]; then \
+                rm -rf /opt/oracle/instantclient; \
+                ln -s "${instantclient_dir}" /opt/oracle/instantclient; \
+                for soname in libclntsh libocci; do \
+                    if [ ! -e "${instantclient_dir}/${soname}.so" ]; then \
+                        for ver in 23.1 21.1 19.1 12.1 11.1; do \
+                            if [ -f "${instantclient_dir}/${soname}.so.${ver}" ]; then \
+                                ln -s "${instantclient_dir}/${soname}.so.${ver}" "${instantclient_dir}/${soname}.so"; \
+                                break; \
+                            fi; \
+                        done; \
+                    fi; \
+                done; \
             fi; \
-        fi; \
-        if [ ! -e /opt/oracle/instantclient/libclntsh.so ] && [ ! -e /opt/oracle/instantclient/libclntsh.so.11.1 ]; then \
-            echo "Oracle Instant Client libraries were not installed correctly." >&2; \
-            exit 1; \
+            if ! find /opt/oracle/instantclient -maxdepth 1 -type f \( -name 'libclntsh.so' -o -name 'libclntsh.so.*' \) | grep -q .; then \
+                echo "Oracle Instant Client libraries were not installed correctly." >&2; \
+                exit 1; \
+            fi; \
+            echo "Oracle Instant Client installed successfully."; \
+        else \
+            if [ -n "${oracle_basic}" ]; then \
+                echo "Oracle package version not supported (need 11g or 19c/21c/23c): ${oracle_basic} - skipping."; \
+            else \
+                echo "Oracle Instant Client not found under deploy/offline-assets/${TARGETARCH}/oracle/ - skipping."; \
+            fi; \
         fi; \
     else \
         echo "Skip Oracle client installation for ${TARGETARCH}."; \
@@ -284,27 +364,42 @@ mods = [
     "alembic",
     "bs4",
     "boto3",
+    "cassandra",
     "celery",
+    "clickhouse_connect",
+    "clickhouse_driver",
     "cryptography",
     "cx_Oracle",
+    "dask",
     "dbutils",
+    "docker",
     "duckdb",
     "elasticsearch",
     "fabric",
+    "fastparquet",
     "fastapi",
     "flask",
     "flask_cors",
+    "fsspec",
     "hdfs",
     "httpx",
+    "hvac",
     "impala",
+    "influxdb_client",
     "jinja2",
+    "joblib",
     "kafka",
+    "kubernetes",
     "lxml",
     "loguru",
     "markitdown",
     "matplotlib",
     "minio",
+    "ncclient",
+    "neo4j",
+    "netmiko",
     "numpy",
+    "opensearchpy",
     "openpyxl",
     "oracledb",
     "orjson",
@@ -314,16 +409,20 @@ mods = [
     "PIL",
     "polars",
     "pyarrow",
+    "pyathena",
     "pydantic",
     "pydantic_settings",
     "pypdf",
     "pdfplumber",
     "pdf2image",
+    "pyreadstat",
+    "pysnmp",
     "pymongo",
     "pymssql",
     "pymysql",
     "pyodbc",
     "pyhive",
+    "pyxlsb",
     "psycopg2",
     "pyspark",
     "dotenv",
@@ -333,17 +432,25 @@ mods = [
     "pytesseract",
     "redis",
     "requests",
+    "ruamel.yaml",
+    "s3fs",
     "schedule",
+    "scrapli",
     "scipy",
     "seaborn",
     "sklearn",
+    "snowflake.connector",
+    "sqlmodel",
     "sqlalchemy",
     "sshtunnel",
     "tabulate",
     "tenacity",
     "thrift",
     "thrift_sasl",
+    "trino",
     "uvicorn",
+    "vertica_python",
+    "xmltodict",
     "xlsxwriter",
 ]
 missing = [m for m in mods if find_spec(m) is None]

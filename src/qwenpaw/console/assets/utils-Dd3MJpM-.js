@@ -1,0 +1,1 @@
+async function l(i){const r=[],s=i.createReader(),n=()=>new Promise((e,t)=>s.readEntries(e,t));let a;do{a=await n();for(const e of a)if(e.isFile){const t=await new Promise((o,c)=>e.file(o,c));r.push({path:e.fullPath.replace(/^\//,""),file:t})}else if(e.isDirectory){const t=await l(e);r.push(...t)}}while(a.length>0);return r}export{l as readDirEntry};

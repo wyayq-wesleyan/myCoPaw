@@ -1,22 +1,59 @@
 # Changelog
 
-This file tracks the local `mycopaw` fork on top of upstream CoPaw.
+This file tracks the local `mycopaw` fork on top of upstream CoPaw / QwenPaw.
 
 Base upstream:
 
-- `v0.2.0.post1`
-- commit `21204d6`
+- historical base: `v0.2.0.post1`
+- current official sync source: `qwenpaw 1.1.12.post1` from official PyPI package
 
-Current working branch:
-
-- `codex/upgrade-v0.2.0.post1`
-
-## [Unreleased] - 2026-03-29
+## [Unreleased] - 2026-06-19
 
 ### Added
 
-- Added a dedicated console tool card for `send_file_to_user` so generated files are shown with a clear download action in the chat UI instead of only raw tool output text.
-- Added a project status summary to `README_zh.md` for session handoff and continued development.
+- Synced the local fork to the latest official Python core available from the official package source: `qwenpaw 1.1.12.post1`.
+- Added a compatibility layout so the repo now carries:
+  - `src/qwenpaw` as the latest official primary codebase
+  - `src/copaw` as a compatibility symlink for legacy imports and tooling
+- Expanded the reusable offline base image with a broader internal-use dependency set:
+  - mainstream database drivers
+  - data engineering and file-format libraries
+  - container / Kubernetes / server-management libraries
+  - CLI tools for network, SSH, Redis, PostgreSQL, MySQL, and diagnostics
+- Updated the app image to default to the official packaged console assets instead of rebuilding frontend assets during every app image build.
+- Added a lightweight multi-user isolation layer for authenticated deployments:
+  - each registered user gets a private default agent and workspace root
+  - agent visibility, agent CRUD, active-agent resolution, and file preview are now owner-scoped
+  - generated files sent by `send_file_to_user` stay inside the active user's workspace media area
+- Added admin-only protection for global operational endpoints such as environment variables, provider management, local-model management, and backup management.
+
+### Changed
+
+- The local fork is no longer anchored only on `v0.2.0.post1`; it now tracks the newer official `QwenPaw` code line while preserving `copaw` command compatibility.
+- Oracle client handling in the base image is now broader: `amd64` can accept Oracle 11g or 19c/21c/23c Instant Client packages.
+- The offline asset flow now documents the latest official-code sync strategy and packaged console usage.
+- Authentication storage now supports multiple users instead of a single legacy account record, with username migration preserving user-owned workspaces.
+
+### Fixed
+
+- Re-applied generated-file lifecycle management on top of the latest official `send_file_to_user` implementation, so downloadable artifacts can still be copied into a managed workspace area and cleaned up over time.
+- Fixed OAuth callback handling under authenticated deployments by allowing callback endpoints to complete without a bearer token while still binding the result to the stored OAuth session state.
+- Removed a multi-user leakage fallback where MCP OAuth token persistence could previously fall back to the global active agent if the session target agent was missing.
+
+## [2026-03-30] - Offline Base Expansion
+
+### Added
+
+- Added multi-version Hive support: both Hive 2.x (2.3.9) and Hive 3.x (3.1.3) can be installed simultaneously.
+  - `deploy/offline-assets/<arch>/hive2/` for Hive 2.x packages
+  - `deploy/offline-assets/<arch>/hive3/` for Hive 3.x packages
+  - `HIVE2_HOME=/opt/hive2` and `HIVE3_HOME=/opt/hive3` environment variables
+  - Hive 3.x is installed to `/opt/hive` by default, Hive 2.x to `/opt/hive2`
+  - Runtime can switch versions via `HIVE_HOME` environment variable
+- Added Hadoop 3.0.1 support (in addition to 3.3.6) for production environment compatibility.
+- Updated `scripts/fetch_offline_clients.sh` to download Hadoop 3.3.6, Hive 2.3.9, and Hive 3.1.3 by default.
+- Updated `deploy/README_zh.md` with detailed multi-version Hive documentation.
+- Updated Oracle Instant Client requirement from 11g to 19c/21c/23c to match production environment.
 
 ### Changed
 

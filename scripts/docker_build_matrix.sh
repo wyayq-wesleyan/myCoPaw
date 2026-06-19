@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Build both arm64 and amd64 base/app images.
+# Build both amd64 and arm64 base/app images.
+# Production delivery should use the amd64 artifacts; arm64 is for local
+# Apple Silicon / ARM validation only.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +23,7 @@ build_one() {
   PLATFORM="${platform}" BASE_IMAGE="${base_tag}" bash scripts/docker_build.sh "${app_tag}"
 }
 
-build_one arm64 linux/arm64
 build_one amd64 linux/amd64
+build_one arm64 linux/arm64
 
 echo "[docker_build_matrix] Done."

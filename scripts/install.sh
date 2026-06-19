@@ -153,14 +153,14 @@ if [ -n "$EXTRAS" ]; then
     EXTRAS_SUFFIX="[$EXTRAS]"
 fi
 
-## Ensure console frontend assets are in src/copaw/console/ for source installs.
+## Ensure console frontend assets are in src/qwenpaw/console/ for source installs.
 ## Sets _CONSOLE_COPIED=1 if we populated the directory (so we can clean up).
 _CONSOLE_COPIED=0
 _CONSOLE_AVAILABLE=0
 prepare_console() {
     local repo_dir="$1"
     local console_src="$repo_dir/console/dist"
-    local console_dest="$repo_dir/src/copaw/console"
+    local console_dest="$repo_dir/src/qwenpaw/console"
 
     # Already populated
     if [ -f "$console_dest/index.html" ]; then
@@ -209,7 +209,7 @@ prepare_console() {
 cleanup_console() {
     local repo_dir="$1"
     if [ "$_CONSOLE_COPIED" = 1 ]; then
-        rm -rf "$repo_dir/src/copaw/console/"*
+        rm -rf "$repo_dir/src/qwenpaw/console/"*
     fi
 }
 
