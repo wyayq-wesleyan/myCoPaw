@@ -17,6 +17,9 @@ from ..constant import WORKING_DIR
 
 logger = logging.getLogger(__name__)
 USER_ROOT = WORKING_DIR / "users"
+MODEL_PERMISSIONS = "model_permissions"
+DISABLED_SKILLS = "disabled_skills"
+DISABLED_TOOLS = "disabled_tools"
 
 
 def _slug(username: str) -> str:
@@ -51,6 +54,58 @@ def save_user_state(username: str, state: dict) -> None:
     path = _state_path(username)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
+
+
+def _names(values: list[str] | None) -> list[str]:
+    return list(dict.fromkeys(str(value).strip() for value in values or [] if str(value).strip()))
+
+
+def get_model_permissions(username: str) -> list[dict[str, str]] | None:
+    state = load_user_state(username)
+    if MODEL_PERMISSIONS not in state:
+        return None
+    values = state.get(MODEL_PERMISSIONS, [])
+    if not isinstance(values, list):
+        return []
+    return [
+        {"provider_id": str(item["provider_id"]), "model_id": str(item["model_id"])}
+        for item in values
+        if isinstance(item, dict) and item.get("provider_id") and item.get("model_id")
+    ]
+
+
+def set_model_permissions(username: str, permissions: list[dict[str, str]] | None) -> None:
+    state = load_user_state(username)
+    if permissions is None:
+        state.pop(MODEL_PERMISSIONS, None)
+    else:
+        state[MODEL_PERMISSIONS] = [
+            {"provider_id": str(item["provider_id"]), "model_id": str(item["model_id"])}
+            for item in permissions
+            if item.get("provider_id") and item.get("model_id")
+        ]
+    save_user_state(username, state)
+
+
+def get_disabled_names(username: str, key: str) -> list[str]:
+    value = load_user_state(username).get(key, [])
+    return _names(value if isinstance(value, list) else [])
+
+
+def set_disabled_names(username: str, key: str, values: list[str] | None) -> None:
+    state = load_user_state(username)
+    state[key] = _names(values)
+    save_user_state(username, state)
+
+
+def is_model_allowed(username: str | None, provider_id: str, model_id: str) -> bool:
+    if not username:
+        return True
+    permissions = get_model_permissions(username)
+    return permissions is None or any(
+        item["provider_id"] == provider_id and item["model_id"] == model_id
+        for item in permissions
+    )
 
 
 def user_agent_ids(config, username: str | None) -> list[str]:

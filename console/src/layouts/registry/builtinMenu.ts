@@ -218,6 +218,15 @@ export const BUILTIN_MENU: MenuItem[] = [
     order: 20,
   },
   {
+    id: "core.user-management",
+    location: "primary.settings",
+    parentId: "core.settings-group",
+    label: navLabel("nav.userManagement", "用户管理"),
+    icon: SparkUserGroupLine,
+    route: "core.user-management",
+    order: 25,
+  },
+  {
     id: "core.skill-pool",
     location: "primary.settings",
     parentId: "core.settings-group",

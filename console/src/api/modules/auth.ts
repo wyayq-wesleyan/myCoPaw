@@ -1,4 +1,5 @@
 import { getApiUrl } from "../config";
+import { request } from "../request";
 
 export interface LoginResponse {
   token: string;
@@ -10,6 +11,9 @@ export interface AuthStatusResponse {
   enabled: boolean;
   has_users: boolean;
 }
+
+export interface ManagedUser { username: string; role: string; enabled: boolean }
+export interface ModelPermission { provider_id: string; model_id: string }
 
 export const authApi = {
   login: async (username: string, password: string): Promise<LoginResponse> => {
@@ -46,6 +50,23 @@ export const authApi = {
     if (!res.ok) throw new Error("Failed to check auth status");
     return res.json();
   },
+
+  getCurrentUser: () => request<ManagedUser>("/auth/me"),
+  listUsers: () => request<ManagedUser[]>("/auth/users"),
+  createUser: (username: string, password: string) =>
+    request<ManagedUser>("/auth/users", { method: "POST", body: JSON.stringify({ username, password }) }),
+  setUserStatus: (username: string, enabled: boolean) =>
+    request(`/auth/users/${encodeURIComponent(username)}/status`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+  setUserPassword: (username: string, password: string) =>
+    request(`/auth/users/${encodeURIComponent(username)}/password`, { method: "PUT", body: JSON.stringify({ password }) }),
+  deleteUser: (username: string) => request(`/auth/users/${encodeURIComponent(username)}`, { method: "DELETE" }),
+  getUserModelPermissions: (username: string) => request<{ permissions: ModelPermission[] | null }>(`/auth/users/${encodeURIComponent(username)}/model-permissions`),
+  setUserModelPermissions: (username: string, permissions: ModelPermission[] | null) =>
+    request(`/auth/users/${encodeURIComponent(username)}/model-permissions`, { method: "PUT", body: JSON.stringify({ permissions }) }),
+  getUserNamedPermissions: (username: string, kind: "skill" | "tool") =>
+    request<{ disabled: string[] }>(`/auth/users/${encodeURIComponent(username)}/${kind}-permissions`),
+  setUserNamedPermissions: (username: string, kind: "skill" | "tool", disabled: string[]) =>
+    request(`/auth/users/${encodeURIComponent(username)}/${kind}-permissions`, { method: "PUT", body: JSON.stringify({ disabled }) }),
 
   updateProfile: async (
     currentPassword: string,

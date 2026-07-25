@@ -54,6 +54,9 @@ const BackupsPage = lazyImportWithRetry("../../pages/Settings/Backups");
 const PluginManagerPage = lazyImportWithRetry(
   "../../pages/Settings/PluginManager",
 );
+const UserManagementPage = lazyImportWithRetry(
+  "../../pages/Settings/UserManagement",
+);
 const AppCenterPage = lazyImportWithRetry("../../pages/AppCenter");
 
 /**
@@ -97,6 +100,11 @@ export const BUILTIN_ROUTES: Route[] = [
   { id: "core.workspace", path: "/workspace", component: WorkspacePage },
   { id: "core.agents", path: "/agents", component: AgentsPage },
   { id: "core.models", path: "/models", component: ModelsPage },
+  {
+    id: "core.user-management",
+    path: "/user-management",
+    component: UserManagementPage,
+  },
   {
     id: "core.environments",
     path: "/environments",

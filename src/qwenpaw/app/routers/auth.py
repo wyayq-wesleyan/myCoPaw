@@ -25,6 +25,12 @@ from ..auth import (
     resolve_client_ip,
 )
 from ..rate_limiter import rate_limiter
+from ..user_space import (
+    get_disabled_names,
+    get_model_permissions,
+    set_disabled_names,
+    set_model_permissions,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -72,6 +78,19 @@ class UpdateUserStatusRequest(BaseModel):
 
 class UpdateUserPasswordRequest(BaseModel):
     password: str
+
+
+class ModelPermission(BaseModel):
+    provider_id: str
+    model_id: str
+
+
+class UpdateModelPermissionsRequest(BaseModel):
+    permissions: list[ModelPermission] | None = None
+
+
+class UpdateNamePermissionsRequest(BaseModel):
+    disabled: list[str] | None = None
 
 
 @router.post("/login")
@@ -264,6 +283,62 @@ async def delete_user(username: str, request: Request) -> dict:
 
     delete_user_data(username)
     return {"success": True}
+
+
+@router.get("/users/{username}/model-permissions")
+async def user_model_permissions(username: str, request: Request) -> dict:
+    require_admin_access(_request_username(request))
+    return {"username": username, "permissions": get_model_permissions(username)}
+
+
+@router.put("/users/{username}/model-permissions")
+async def update_model_permissions(
+    username: str,
+    req: UpdateModelPermissionsRequest,
+    request: Request,
+) -> dict:
+    require_admin_access(_request_username(request))
+    set_model_permissions(
+        username,
+        [entry.model_dump() for entry in req.permissions]
+        if req.permissions is not None
+        else None,
+    )
+    return await user_model_permissions(username, request)
+
+
+@router.get("/users/{username}/skill-permissions")
+async def user_skill_permissions(username: str, request: Request) -> dict:
+    require_admin_access(_request_username(request))
+    return {"username": username, "disabled": get_disabled_names(username, "disabled_skills")}
+
+
+@router.put("/users/{username}/skill-permissions")
+async def update_skill_permissions(
+    username: str,
+    req: UpdateNamePermissionsRequest,
+    request: Request,
+) -> dict:
+    require_admin_access(_request_username(request))
+    set_disabled_names(username, "disabled_skills", req.disabled)
+    return await user_skill_permissions(username, request)
+
+
+@router.get("/users/{username}/tool-permissions")
+async def user_tool_permissions(username: str, request: Request) -> dict:
+    require_admin_access(_request_username(request))
+    return {"username": username, "disabled": get_disabled_names(username, "disabled_tools")}
+
+
+@router.put("/users/{username}/tool-permissions")
+async def update_tool_permissions(
+    username: str,
+    req: UpdateNamePermissionsRequest,
+    request: Request,
+) -> dict:
+    require_admin_access(_request_username(request))
+    set_disabled_names(username, "disabled_tools", req.disabled)
+    return await user_tool_permissions(username, request)
 
 
 class UpdateProfileRequest(BaseModel):
