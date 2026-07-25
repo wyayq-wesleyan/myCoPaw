@@ -525,6 +525,13 @@ def auto_register_from_env() -> None:
     if not is_auth_enabled():
         return
     if has_registered_users():
+        data = _load_auth_data()
+        for username, record in _get_users(data).items():
+            if record.get("role") == "admin":
+                from .user_space import assign_unowned_agents_to_admin
+
+                assign_unowned_agents_to_admin(username)
+                break
         return
 
     username = EnvVarLoader.get_str("QWENPAW_AUTH_USERNAME", "").strip()
@@ -534,6 +541,9 @@ def auto_register_from_env() -> None:
 
     token = register_user(username, password)
     if token:
+        from .user_space import assign_unowned_agents_to_admin
+
+        assign_unowned_agents_to_admin(username)
         logger.info(
             "Auto-registered user '%s' from environment variables",
             username,
