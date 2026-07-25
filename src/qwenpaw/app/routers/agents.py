@@ -35,6 +35,12 @@ from ...agents.skill_system import SkillPoolService, get_workspace_skills_dir
 from ..agent_startup import AgentStartupStatus
 from ..multi_agent_manager import MultiAgentManager
 from ...constant import WORKING_DIR
+from ..user_space import (
+    get_request_username,
+    get_user_root,
+    require_owned_agent_id,
+    user_agent_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +223,11 @@ async def list_agents(request: Request = None) -> AgentListResponse:
     manager = (
         _get_multi_agent_manager(request) if request is not None else None
     )
-    ordered_agent_ids = _display_agent_order(config)
+    visible_agent_ids = set(user_agent_ids(config, get_request_username(request)))
+    ordered_agent_ids = [
+        agent_id for agent_id in _display_agent_order(config)
+        if agent_id in visible_agent_ids
+    ]
 
     agents = []
     for agent_id in ordered_agent_ids:
@@ -360,10 +370,19 @@ async def set_agent_pinned(
     summary="Get agent details",
     description="Get complete configuration for a specific agent",
 )
-async def get_agent(agentId: str = PathParam(...)) -> AgentProfileConfig:
+async def get_agent(
+    agentId: str = PathParam(...),
+    request: Request = None,
+) -> AgentProfileConfig:
     """Get agent configuration."""
+    config = load_config()
+    agent_id = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
     try:
-        agent_config = load_agent_config(agentId)
+        agent_config = load_agent_config(agent_id)
         return agent_config
     except (ValueError, AppBaseException) as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -420,9 +439,13 @@ async def create_agent(
     else:
         new_id = _generate_unique_id(existing_ids)
 
-    workspace_dir = Path(
-        request.workspace_dir or f"{WORKING_DIR}/workspaces/{new_id}",
-    ).expanduser()
+    username = get_request_username(http_request)
+    if username:
+        workspace_dir = get_user_root(username) / "workspaces" / new_id
+    else:
+        workspace_dir = Path(
+            request.workspace_dir or f"{WORKING_DIR}/workspaces/{new_id}",
+        ).expanduser()
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     from ...config.config import (
@@ -472,6 +495,7 @@ async def create_agent(
         id=new_id,
         workspace_dir=str(workspace_dir),
         enabled=True,
+        owner_username=username,
     )
 
     config.agents.profiles[new_id] = agent_ref

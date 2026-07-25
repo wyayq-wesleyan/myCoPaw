@@ -8,13 +8,20 @@ from pydantic import BaseModel
 from ...constant import EnvVarLoader
 from ..auth import (
     authenticate,
+    create_user_account,
+    delete_user_account,
+    get_user_info,
     has_registered_users,
     is_auth_enabled,
+    list_users,
+    require_admin_access,
     register_user,
     revoke_all_tokens,
     revoke_token,
     update_credentials,
     verify_token,
+    set_user_enabled,
+    set_user_password,
     resolve_client_ip,
 )
 from ..rate_limiter import rate_limiter
@@ -46,6 +53,25 @@ class RegisterRequest(BaseModel):
 class AuthStatusResponse(BaseModel):
     enabled: bool
     has_users: bool
+
+
+class CurrentUserResponse(BaseModel):
+    username: str
+    role: str
+    enabled: bool
+
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UpdateUserStatusRequest(BaseModel):
+    enabled: bool
+
+
+class UpdateUserPasswordRequest(BaseModel):
+    password: str
 
 
 @router.post("/login")
@@ -169,6 +195,75 @@ async def verify(request: Request):
         )
 
     return {"valid": True, "username": username}
+
+
+def _request_username(request: Request) -> str:
+    token = request.headers.get("Authorization", "")
+    username = verify_token(token[7:]) if token.startswith("Bearer ") else None
+    if username is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return username
+
+
+@router.get("/me", response_model=CurrentUserResponse)
+async def get_current_user(request: Request) -> CurrentUserResponse:
+    username = _request_username(request)
+    user = get_user_info(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return CurrentUserResponse(**user)
+
+
+@router.get("/users", response_model=list[CurrentUserResponse])
+async def get_users(request: Request) -> list[CurrentUserResponse]:
+    require_admin_access(_request_username(request))
+    return [CurrentUserResponse(**user) for user in list_users()]
+
+
+@router.post("/users", response_model=CurrentUserResponse, status_code=201)
+async def create_user(req: CreateUserRequest, request: Request) -> CurrentUserResponse:
+    require_admin_access(_request_username(request))
+    try:
+        user = create_user_account(req.username, req.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from ..user_space import ensure_user_default_agent
+
+    ensure_user_default_agent(req.username)
+    return CurrentUserResponse(**user)
+
+
+@router.patch("/users/{username}/status")
+async def update_user_status(username: str, req: UpdateUserStatusRequest, request: Request) -> dict:
+    require_admin_access(_request_username(request))
+    try:
+        set_user_enabled(username, req.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True}
+
+
+@router.put("/users/{username}/password")
+async def update_user_password(username: str, req: UpdateUserPasswordRequest, request: Request) -> dict:
+    require_admin_access(_request_username(request))
+    try:
+        set_user_password(username, req.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"success": True}
+
+
+@router.delete("/users/{username}")
+async def delete_user(username: str, request: Request) -> dict:
+    require_admin_access(_request_username(request))
+    try:
+        delete_user_account(username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from ..user_space import delete_user_data
+
+    delete_user_data(username)
+    return {"success": True}
 
 
 class UpdateProfileRequest(BaseModel):

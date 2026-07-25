@@ -1643,6 +1643,10 @@ class AgentProfileRef(BaseModel):
         default=False,
         description="Whether agent is pinned in agent selectors",
     )
+    owner_username: Optional[str] = Field(
+        default=None,
+        description="Authenticated owner in Huizhi Assistant multi-user mode",
+    )
 
 
 class PlanConfig(BaseModel):

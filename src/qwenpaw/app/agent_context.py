@@ -11,6 +11,11 @@ from typing import Optional, TYPE_CHECKING
 from fastapi import Request
 from .multi_agent_manager import MultiAgentManager
 from ..config.utils import load_config
+from .user_space import (
+    ensure_user_default_agent,
+    get_request_username,
+    require_owned_agent_id,
+)
 
 if TYPE_CHECKING:
     from .workspace import Workspace
@@ -84,21 +89,11 @@ async def get_agent_for_request(
     if not target_agent_id:
         target_agent_id = request.headers.get("X-Agent-Id")
 
-    # Load config once for fallback and validation
-    config = None
-    if not target_agent_id:
-        # Fallback to active agent from config
-        config = load_config()
-        target_agent_id = config.agents.active_agent or "default"
-
-    # Check if agent exists and is enabled
-    if config is None:
-        config = load_config()
-    if target_agent_id not in config.agents.profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{target_agent_id}' not found",
-        )
+    username = get_request_username(request)
+    if username:
+        ensure_user_default_agent(username)
+    config = load_config()
+    target_agent_id = require_owned_agent_id(config, username, target_agent_id)
 
     agent_ref = config.agents.profiles[target_agent_id]
     if not getattr(agent_ref, "enabled", True):

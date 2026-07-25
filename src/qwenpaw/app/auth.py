@@ -28,7 +28,7 @@ import secrets
 import time
 from typing import Optional
 
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..constant import SECRET_DIR, EnvVarLoader
@@ -199,7 +199,11 @@ def verify_token(token: str) -> Optional[str]:
         if jti and _is_token_revoked(jti):
             return None
 
-        return payload.get("sub")
+        username = payload.get("sub")
+        record = _get_user_record(username)
+        if not username or record is None or not bool(record.get("enabled", True)):
+            return None
+        return username
     except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
         logger.debug("Token verification failed: %s", exc)
         return None
@@ -232,6 +236,7 @@ def _load_auth_data() -> dict:
                 for field in AUTH_SECRET_FIELDS
             )
             data = decrypt_dict_fields(data, AUTH_SECRET_FIELDS)
+            data, migrated = _normalize_auth_data(data)
             if needs_rewrite:
                 try:
                     _save_auth_data(data)
@@ -241,6 +246,8 @@ def _load_auth_data() -> dict:
                         " auth.json: %s",
                         enc_err,
                     )
+            elif migrated:
+                _save_auth_data(data)
             return data
         except (json.JSONDecodeError, OSError) as exc:
             logger.error("Failed to load auth file %s: %s", AUTH_FILE, exc)
@@ -348,11 +355,133 @@ def is_auth_enabled() -> bool:
 def has_registered_users() -> bool:
     """Return ``True`` if a user has been registered."""
     data = _load_auth_data()
-    return bool(data.get("user"))
+    return bool(data.get("users"))
+
+
+def _normalize_auth_data(data: dict) -> tuple[dict, bool]:
+    """Upgrade official single-user auth.json to the offline multi-user form."""
+    changed = False
+    users = data.get("users")
+    if not isinstance(users, dict):
+        users = {}
+        changed = True
+    legacy = data.pop("user", None)
+    if isinstance(legacy, dict) and legacy.get("username"):
+        username = str(legacy["username"]).strip()
+        legacy["username"] = username
+        legacy.setdefault("role", "admin")
+        legacy.setdefault("enabled", True)
+        users.setdefault(username, legacy)
+        changed = True
+    normalized: dict[str, dict] = {}
+    for key, value in users.items():
+        if not isinstance(value, dict):
+            changed = True
+            continue
+        username = str(value.get("username") or key).strip()
+        if not username:
+            changed = True
+            continue
+        entry = dict(value)
+        entry["username"] = username
+        entry.setdefault("role", "admin" if not normalized else "user")
+        entry.setdefault("enabled", True)
+        normalized[username] = entry
+    if data.get("users") != normalized:
+        data["users"] = normalized
+        changed = True
+    return data, changed
+
+
+def _get_users(data: dict) -> dict[str, dict]:
+    normalized, changed = _normalize_auth_data(data)
+    if changed:
+        _save_auth_data(normalized)
+    return normalized["users"]
+
+
+def _get_user_record(username: str | None) -> dict | None:
+    if not username:
+        return None
+    data = _load_auth_data()
+    if data.get("_auth_load_error"):
+        return None
+    return _get_users(data).get(username)
+
+
+def get_user_info(username: str) -> dict[str, str | bool] | None:
+    record = _get_user_record(username)
+    if record is None:
+        return None
+    return {"username": username, "role": str(record.get("role", "user")), "enabled": bool(record.get("enabled", True))}
+
+
+def list_users() -> list[dict[str, str | bool]]:
+    data = _load_auth_data()
+    if data.get("_auth_load_error"):
+        return []
+    return [get_user_info(username) for username in _get_users(data) if get_user_info(username) is not None]
+
+
+def require_admin_access(username: str | None) -> None:
+    record = _get_user_record(username)
+    if not record or record.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Administrator access required")
+
+
+def create_user_account(username: str, password: str, role: str = "user") -> dict[str, str | bool]:
+    data = _load_auth_data()
+    users = _get_users(data)
+    username = username.strip()
+    if not username or not password.strip():
+        raise ValueError("Username and password are required")
+    if username in users:
+        raise ValueError("Username already exists")
+    password_hash, password_salt = _hash_password(password)
+    users[username] = {"username": username, "password_hash": password_hash, "password_salt": password_salt, "role": role, "enabled": True}
+    data["users"] = users
+    data.setdefault("jwt_secret", secrets.token_hex(32))
+    _save_auth_data(data)
+    return get_user_info(username) or {"username": username, "role": role, "enabled": True}
+
+
+def set_user_enabled(username: str, enabled: bool) -> None:
+    data = _load_auth_data()
+    users = _get_users(data)
+    if username not in users:
+        raise ValueError("User not found")
+    if users[username].get("role") == "admin" and not enabled:
+        raise ValueError("The administrator cannot be disabled")
+    users[username]["enabled"] = enabled
+    data["users"] = users
+    _save_auth_data(data)
+
+
+def set_user_password(username: str, password: str) -> None:
+    data = _load_auth_data()
+    users = _get_users(data)
+    if username not in users or not password.strip():
+        raise ValueError("User not found or password is empty")
+    users[username]["password_hash"], users[username]["password_salt"] = _hash_password(password)
+    data["users"] = users
+    _save_auth_data(data)
+
+
+def delete_user_account(username: str) -> None:
+    data = _load_auth_data()
+    users = _get_users(data)
+    record = users.get(username)
+    if record is None:
+        raise ValueError("User not found")
+    if record.get("role") == "admin":
+        raise ValueError("The administrator cannot be deleted")
+    del users[username]
+    data["users"] = users
+    _save_auth_data(data)
 
 
 # ---------------------------------------------------------------------------
-# Registration (single-user)
+# Registration
 # ---------------------------------------------------------------------------
 
 
@@ -361,7 +490,7 @@ def register_user(
     password: str,
     expiry_seconds: Optional[int] = None,
 ) -> Optional[str]:
-    """Register the single user account.
+    """Register the initial administrator account.
 
     Args:
         username: The username to register.
@@ -372,22 +501,9 @@ def register_user(
     """
     data = _load_auth_data()
 
-    # Only one user allowed
-    if data.get("user"):
+    if has_registered_users():
         return None
-
-    pw_hash, salt = _hash_password(password)
-    data["user"] = {
-        "username": username,
-        "password_hash": pw_hash,
-        "password_salt": salt,
-    }
-
-    # Ensure jwt_secret exists
-    if not data.get("jwt_secret"):
-        data["jwt_secret"] = secrets.token_hex(32)
-
-    _save_auth_data(data)
+    create_user_account(username, password, role="admin")
     logger.info("User '%s' registered", username)
     return create_token(username, expiry_seconds)
 
@@ -443,7 +559,8 @@ def update_credentials(
         expiry_seconds: Custom token expiry time in seconds.
     """
     data = _load_auth_data()
-    user = data.get("user")
+    users = _get_users(data)
+    user = next(iter(users.values()), None)
     if not user:
         return None
 
@@ -462,7 +579,8 @@ def update_credentials(
         # Rotate JWT secret to invalidate all existing sessions
         data["jwt_secret"] = secrets.token_hex(32)
 
-    data["user"] = user
+    users[user["username"]] = user
+    data["users"] = users
     _save_auth_data(data)
     logger.info("Credentials updated for user '%s'", user["username"])
     return create_token(user["username"], expiry_seconds)
@@ -486,7 +604,7 @@ def authenticate(
         expiry_seconds: Custom token expiry time in seconds.
     """
     data = _load_auth_data()
-    user = data.get("user")
+    user = _get_user_record(username)
     if not user:
         return None
     if user.get("username") != username:
