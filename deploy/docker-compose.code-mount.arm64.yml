@@ -1,0 +1,35 @@
+services:
+  qwenpaw:
+    image: "${MYCOPAW_IMAGE:-huizhi-assistant:2.0.1-arm64}"
+    container_name: huizhi-assistant
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      QWENPAW_PORT: "${COPAW_PORT:-8088}"
+      TZ: "${TZ:-Asia/Shanghai}"
+      QWENPAW_RUNNING_IN_CONTAINER: "1"
+      QWENPAW_CODE_DIR: /workspace/app
+      PYTHONPATH: /workspace/app/src
+      QWENPAW_CONSOLE_STATIC_DIR: /workspace/app/console/dist
+      QWENPAW_WORKING_DIR: /app/working
+      QWENPAW_SECRET_DIR: /app/working.secret
+      QWENPAW_BACKUP_DIR: /app/working.backups
+      HADOOP_HOME: "${HADOOP_HOME:-/opt/hadoop}"
+      HIVE_HOME: "${HIVE_HOME:-/opt/hive3}"
+      HIVE2_HOME: "${HIVE2_HOME:-/opt/hive2}"
+      HIVE3_HOME: "${HIVE3_HOME:-/opt/hive3}"
+      ORACLE_HOME: "${ORACLE_HOME:-/opt/oracle/instantclient}"
+      LD_LIBRARY_PATH: "${LD_LIBRARY_PATH:-/opt/oracle/instantclient:/usr/local/lib}"
+      QWENPAW_AUTH_ENABLED: "${QWENPAW_AUTH_ENABLED:-true}"
+      QWENPAW_AUTH_USERNAME: "${QWENPAW_AUTH_USERNAME:-admin}"
+      QWENPAW_AUTH_PASSWORD: "${QWENPAW_AUTH_PASSWORD:-Admin@123456}"
+      QWENPAW_FORCE_AUTH_ON_LOCALHOST: "${QWENPAW_FORCE_AUTH_ON_LOCALHOST:-true}"
+    volumes:
+      - ./app:/workspace/app:ro
+      - ./code-mount-entrypoint.sh:/code-mount-entrypoint.sh:ro
+      - ./data/working:/app/working
+      - ./data/working.secret:/app/working.secret
+      - ./data/backups:/app/working.backups
+    command: ["/bin/sh", "/code-mount-entrypoint.sh"]

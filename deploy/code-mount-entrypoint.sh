@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runtime entrypoint for code-mounted offline deployments.
+set -e
+
+export QWENPAW_PORT="${QWENPAW_PORT:-8088}"
+export QWENPAW_AUTH_ENABLED="${QWENPAW_AUTH_ENABLED:-true}"
+export QWENPAW_AUTH_USERNAME="${QWENPAW_AUTH_USERNAME:-admin}"
+export QWENPAW_AUTH_PASSWORD="${QWENPAW_AUTH_PASSWORD:-Admin@123456}"
+export QWENPAW_FORCE_AUTH_ON_LOCALHOST="${QWENPAW_FORCE_AUTH_ON_LOCALHOST:-true}"
+
+export QWENPAW_CODE_DIR="${QWENPAW_CODE_DIR:-/workspace/app}"
+export PYTHONPATH="${QWENPAW_CODE_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
+export QWENPAW_CONSOLE_STATIC_DIR="${QWENPAW_CONSOLE_STATIC_DIR:-${QWENPAW_CODE_DIR}/console/dist}"
+
+exec /entrypoint.sh

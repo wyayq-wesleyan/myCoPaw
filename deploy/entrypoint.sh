@@ -1,51 +1,57 @@
 #!/bin/sh
-# Substitute QWENPAW_PORT in supervisord template and start supervisord.
-# Default port 8088; override at runtime with -e QWENPAW_PORT=3000.
+# Substitute COPAW_PORT in supervisord template and start supervisord.
+# Default port 8088; override at runtime with -e COPAW_PORT=3000.
 set -e
+export COPAW_PORT="${COPAW_PORT:-8088}"
+export QWENPAW_AUTH_ENABLED="${QWENPAW_AUTH_ENABLED:-true}"
+export QWENPAW_AUTH_USERNAME="${QWENPAW_AUTH_USERNAME:-admin}"
+export QWENPAW_AUTH_PASSWORD="${QWENPAW_AUTH_PASSWORD:-Admin@123456}"
+export QWENPAW_FORCE_AUTH_ON_LOCALHOST="${QWENPAW_FORCE_AUTH_ON_LOCALHOST:-true}"
 
-is_auth_enabled() {
-  if [ "${QWENPAW_AUTH_ENABLED+x}" ]; then
-    flag="${QWENPAW_AUTH_ENABLED}"
-  else
-    flag="${COPAW_AUTH_ENABLED:-}"
-  fi
-  flag="$(printf '%s' "$flag" | tr '[:upper:]' '[:lower:]')"
-  [ "$flag" = "true" ] || [ "$flag" = "1" ] || [ "$flag" = "yes" ]
-}
+python - <<'PY'
+import json
+import os
+from pathlib import Path
 
-warn_if_auth_off_container_bind() {
-  if is_auth_enabled; then
-    return
-  fi
+working_dir = Path(
+    os.environ.get("QWENPAW_WORKING_DIR")
+    or os.environ.get("COPAW_WORKING_DIR")
+    or "/app/working",
+)
+config_path = working_dir / "config.json"
+config_path.parent.mkdir(parents=True, exist_ok=True)
 
-  cat >&2 <<EOF
-============================================================
-SECURITY NOTICE: QwenPaw is running in Docker without authentication.
+if config_path.exists():
+    try:
+        config = json.loads(config_path.read_text("utf-8"))
+    except Exception:
+        config = {}
+else:
+    config = {}
 
-QwenPaw cannot verify whether access to the service is limited to a trusted
-network. Anyone who can reach the service may access QwenPaw APIs without login.
+security = config.setdefault("security", {})
+hosts = security.get("allow_no_auth_hosts")
+if not isinstance(hosts, list):
+    hosts = ["127.0.0.1", "::1"]
 
-Recommended:
-  - Restrict access to a trusted network or protected environment.
-  - Enable authentication with QWENPAW_AUTH_ENABLED=true if untrusted users or
-    processes may reach the service.
-============================================================
-EOF
-}
+if os.environ.get("QWENPAW_FORCE_AUTH_ON_LOCALHOST", "").strip().lower() in {
+    "true",
+    "1",
+    "yes",
+}:
+    hosts = [
+        host for host in hosts
+        if host not in {"127.0.0.1", "::1", "localhost"}
+    ]
 
-# Auto-initialize if config.json is missing (bind mount with empty directory).
-if [ ! -f "${QWENPAW_WORKING_DIR}/config.json" ]; then
-  echo "⚠️  No config.json found in ${QWENPAW_WORKING_DIR}"
-  echo "📦 Running initialization..."
-  qwenpaw init --defaults --accept-security
-  echo "✅ Initialization complete!"
-else
-  echo "✓ Config found in ${QWENPAW_WORKING_DIR}, skipping initialization."
-fi
+security["allow_no_auth_hosts"] = hosts
+config_path.write_text(
+    json.dumps(config, ensure_ascii=False, indent=2),
+    encoding="utf-8",
+)
+PY
 
-export QWENPAW_PORT="${QWENPAW_PORT:-8088}"
-warn_if_auth_off_container_bind
-envsubst '${QWENPAW_PORT}' \
+envsubst '${COPAW_PORT}' \
   < /etc/supervisor/conf.d/supervisord.conf.template \
   > /etc/supervisor/conf.d/supervisord.conf
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

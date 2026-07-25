@@ -1,0 +1,491 @@
+ARG PYTHON_IMAGE=m.daocloud.io/docker.io/library/python:3.11-slim-bookworm
+FROM ${PYTHON_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG TARGETARCH
+ARG APT_MIRROR=mirrors.aliyun.com
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV TZ=Asia/Shanghai
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+ENV HADOOP_HOME=/opt/hadoop
+ENV HIVE_HOME=/opt/hive
+ENV HIVE2_HOME=/opt/hive2
+ENV HIVE3_HOME=/opt/hive3
+ENV ORACLE_HOME=/opt/oracle/instantclient
+ENV TNS_ADMIN=/opt/oracle/network/admin
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient:/usr/local/lib
+ENV PATH=/opt/hadoop/bin:/opt/hadoop/sbin:/opt/hive/bin:/opt/hive2/bin:/opt/hive3/bin:/opt/oracle/instantclient:${PATH}
+
+RUN set -eux; \
+    sed -i "s@http://deb.debian.org/debian@https://${APT_MIRROR}/debian@g" /etc/apt/sources.list.d/debian.sources; \
+    sed -i "s@http://security.debian.org/debian-security@https://${APT_MIRROR}/debian-security@g" /etc/apt/sources.list.d/debian.sources; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        dbus-x11 \
+        ffmpeg \
+        fonts-dejavu-core \
+        fonts-liberation \
+        fonts-noto-cjk \
+        fonts-noto-color-emoji \
+        fonts-wqy-microhei \
+        fonts-wqy-zenhei \
+        gcc \
+        gettext-base \
+        git \
+        gnupg \
+        graphviz \
+        default-mysql-client \
+        dnsutils \
+        inetutils-telnet \
+        iputils-ping \
+        jq \
+        ldap-utils \
+        less \
+        libreoffice \
+        libreoffice-java-common \
+        libaio1 \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libc6-dev \
+        libcairo2 \
+        libcups2 \
+        libdrm2 \
+        libffi-dev \
+        libgbm1 \
+        libglib2.0-0 \
+        libgssapi-krb5-2 \
+        libgtk-3-0 \
+        libkrb5-dev \
+        libmagic1 \
+        libnsl2 \
+        libnss3 \
+        libpango-1.0-0 \
+        libpq-dev \
+        libsqlite3-dev \
+        libssl-dev \
+        libu2f-udev \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libxrandr2 \
+        libxslt1-dev \
+        libxtst6 \
+        locales \
+        lsof \
+        make \
+        net-tools \
+        nodejs \
+        npm \
+        openjdk-17-jre-headless \
+        openssh-client \
+        pandoc \
+        poppler-utils \
+        postgresql-client \
+        procps \
+        redis-tools \
+        rsync \
+        supervisor \
+        tesseract-ocr \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-eng \
+        tmux \
+        unixodbc \
+        unixodbc-dev \
+        unzip \
+        vim \
+        wget \
+        xauth \
+        xfce4 \
+        xvfb \
+        zip \
+    ; \
+    if [ -d "/usr/lib/jvm/java-17-openjdk-${TARGETARCH}" ]; then \
+        ln -sfn "/usr/lib/jvm/java-17-openjdk-${TARGETARCH}" /usr/lib/jvm/default-java; \
+    elif [ -d "/usr/lib/jvm/java-17-openjdk-arm64" ]; then \
+        ln -sfn /usr/lib/jvm/java-17-openjdk-arm64 /usr/lib/jvm/default-java; \
+    elif [ -d "/usr/lib/jvm/java-17-openjdk-amd64" ]; then \
+        ln -sfn /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/default-java; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*; \
+    apt-get clean
+
+RUN set -eux; \
+    python -m pip install --no-cache-dir --upgrade \
+        pip \
+        setuptools \
+        wheel \
+    ; \
+    python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" \
+        --trusted-host "${PIP_TRUSTED_HOST}" \
+        aiofiles \
+        aiohttp \
+        alembic \
+        ansible-core \
+        boto3 \
+        beautifulsoup4 \
+        cassandra-driver \
+        celery \
+        clickhouse-connect \
+        clickhouse-driver \
+        cryptography \
+        dask[dataframe] \
+        dbutils \
+        docker \
+        elasticsearch \
+        duckdb \
+        fabric \
+        fastparquet \
+        fastapi \
+        flask \
+        flask-cors \
+        fsspec \
+        hdfs \
+        hvac \
+        httpx \
+        influxdb-client \
+        jinja2 \
+        joblib \
+        kafka-python \
+        kubernetes \
+        lxml \
+        loguru \
+        markitdown[pptx] \
+        matplotlib \
+        minio \
+        ncclient \
+        neo4j \
+        netmiko \
+        numpy \
+        opensearch-py \
+        openpyxl \
+        oracledb \
+        orjson \
+        pandas \
+        paramiko \
+        pdf2image \
+        pdfplumber \
+        pillow \
+        playwright \
+        polars \
+        pyarrow \
+        pyathena \
+        pydantic \
+        pydantic-settings \
+        pymupdf \
+        pypdf \
+        pypdfium2 \
+        pyreadstat \
+        pysnmp \
+        pymongo \
+        pymssql \
+        pymysql \
+        pyodbc \
+        pyxlsb \
+        psycopg2-binary \
+        pyspark \
+        python-dotenv \
+        python-docx \
+        python-multipart \
+        python-pptx \
+        pytesseract \
+        pyyaml \
+        ruamel.yaml \
+        redis \
+        requests \
+        s3fs \
+        schedule \
+        scrapli \
+        scipy \
+        scikit-learn \
+        seaborn \
+        snowflake-connector-python \
+        sqlmodel \
+        sqlalchemy \
+        sshtunnel \
+        tabulate \
+        tenacity \
+        trino \
+        uvicorn[standard] \
+        vertica-python \
+        xmltodict \
+        xlsxwriter \
+        xlrd \
+        xlwt \
+    ; \
+    python -m pip install --no-cache-dir \
+        --index-url "${PIP_INDEX_URL}" \
+        --trusted-host "${PIP_TRUSTED_HOST}" \
+        'pyhive[hive_pure_sasl]' \
+        impyla \
+    ; \
+    npm config set registry "${NPM_REGISTRY}"; \
+    npm install -g docx pptxgenjs; \
+    python -m playwright install chromium
+
+RUN python - <<'PY'
+from pathlib import Path
+import site
+
+site_packages = next(
+    Path(path) for path in site.getsitepackages() if path.endswith("site-packages")
+)
+shim_path = site_packages / "cx_Oracle.py"
+shim_path.write_text(
+    '"""Compatibility shim for legacy cx_Oracle imports."""\n'
+    "import oracledb as _oracledb\n"
+    "from oracledb import *\n"
+    "__all__ = getattr(_oracledb, '__all__', [])\n"
+    "__version__ = getattr(_oracledb, '__version__', '')\n",
+    encoding="utf-8",
+)
+print(f'Created compatibility shim: {shim_path}')
+PY
+
+COPY deploy/offline-assets/ /tmp/offline-assets/
+
+RUN set -eux; \
+    assets_root="/tmp/offline-assets/${TARGETARCH}"; \
+    common_root="/tmp/offline-assets/common"; \
+    local_clients_root="/tmp/offline-assets/local-clients"; \
+    mkdir -p "${assets_root}/hadoop" "${assets_root}/hive" "${assets_root}/hive2" "${assets_root}/hive3" "${assets_root}/oracle"; \
+    mkdir -p "${common_root}/hadoop" "${common_root}/hive" "${common_root}/hive2" "${common_root}/hive3"; \
+    mkdir -p /opt/hadoop /opt/hive /opt/hive2 /opt/hive3 /opt/oracle; \
+    hadoop_pkg="$(find "${assets_root}/hadoop" "${common_root}/hadoop" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+    if [ -n "${hadoop_pkg}" ]; then \
+        tar -xzf "${hadoop_pkg}" -C /opt; \
+        extracted_dir="$(tar -tzf "${hadoop_pkg}" | head -n 1 | cut -d/ -f1)"; \
+        if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+            rm -rf /opt/hadoop; \
+            ln -s "/opt/${extracted_dir}" /opt/hadoop; \
+            echo "Installed Hadoop: ${extracted_dir}"; \
+        fi; \
+    else \
+        echo "No Hadoop package found, skipping."; \
+    fi; \
+    local_hive_dir="${local_clients_root}/hive"; \
+    if [ -d "${local_hive_dir}" ]; then \
+        rm -rf /opt/hive /opt/hive3; \
+        cp -a "${local_hive_dir}" /opt/hive3; \
+        ln -s /opt/hive3 /opt/hive; \
+        echo "Installed local verified Hive client -> /opt/hive3"; \
+    else \
+        hive3_pkg="$(find "${assets_root}/hive3" "${common_root}/hive3" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+        if [ -n "${hive3_pkg}" ]; then \
+            tar -xzf "${hive3_pkg}" -C /opt; \
+            extracted_dir="$(tar -tzf "${hive3_pkg}" | head -n 1 | cut -d/ -f1)"; \
+            if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+                rm -rf /opt/hive /opt/hive3; \
+                ln -s "/opt/${extracted_dir}" /opt/hive3; \
+                ln -s "/opt/${extracted_dir}" /opt/hive; \
+                echo "Installed Hive 3.x: ${extracted_dir} -> /opt/hive"; \
+            fi; \
+        fi; \
+    fi; \
+    # Hive 2.x \
+    hive2_pkg="$(find "${assets_root}/hive2" "${common_root}/hive2" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+    if [ -n "${hive2_pkg}" ]; then \
+        tar -xzf "${hive2_pkg}" -C /opt; \
+        extracted_dir="$(tar -tzf "${hive2_pkg}" | head -n 1 | cut -d/ -f1)"; \
+        if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+            rm -rf /opt/hive2; \
+            ln -s "/opt/${extracted_dir}" /opt/hive2; \
+            echo "Installed Hive 2.x: ${extracted_dir} -> /opt/hive2"; \
+        fi; \
+    fi; \
+    # Legacy hive/ directory (backward compat) \
+    if [ ! -L /opt/hive ] || [ ! -e /opt/hive ]; then \
+        hive_pkg="$(find "${assets_root}/hive" "${common_root}/hive" -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) | head -n 1 || true)"; \
+        if [ -n "${hive_pkg}" ]; then \
+            tar -xzf "${hive_pkg}" -C /opt; \
+            extracted_dir="$(tar -tzf "${hive_pkg}" | head -n 1 | cut -d/ -f1)"; \
+            if [ -n "${extracted_dir}" ] && [ -d "/opt/${extracted_dir}" ]; then \
+                rm -rf /opt/hive; \
+                ln -s "/opt/${extracted_dir}" /opt/hive; \
+                echo "Installed Hive (legacy): ${extracted_dir} -> /opt/hive"; \
+            fi; \
+        fi; \
+    fi; \
+    echo "Hive setup complete. /opt/hive -> $(readlink -f /opt/hive 2>/dev/null || echo 'not set')"; \
+    oracle_basic="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*basic*.zip' | head -n 1 || true)"; \
+    oracle_sdk="$(find "${assets_root}/oracle" -maxdepth 1 -type f -name '*sdk*.zip' | head -n 1 || true)"; \
+    local_oracle_dir="${local_clients_root}/oracle/instantclient_19_29"; \
+    if [ "${TARGETARCH}" = "amd64" ]; then \
+        if [ -d "${local_oracle_dir}" ]; then \
+            rm -rf /opt/oracle/instantclient /opt/oracle/instantclient_19_29; \
+            mkdir -p /opt/oracle; \
+            cp -a "${local_oracle_dir}" /opt/oracle/instantclient_19_29; \
+            ln -s /opt/oracle/instantclient_19_29 /opt/oracle/instantclient; \
+            echo "Installed local verified Oracle Instant Client -> /opt/oracle/instantclient_19_29"; \
+        elif [ -n "${oracle_basic}" ] && echo "${oracle_basic}" | grep -Eiq '11|19|21|23'; then \
+            echo "Installing Oracle Instant Client from ${oracle_basic}..."; \
+            unzip -oq "${oracle_basic}" -d /opt/oracle; \
+            if [ -n "${oracle_sdk}" ]; then \
+                unzip -oq "${oracle_sdk}" -d /opt/oracle; \
+            fi; \
+            instantclient_dir="$(find /opt/oracle -maxdepth 1 -mindepth 1 -type d -name 'instantclient*' | head -n 1 || true)"; \
+            if [ -n "${instantclient_dir}" ]; then \
+                rm -rf /opt/oracle/instantclient; \
+                ln -s "${instantclient_dir}" /opt/oracle/instantclient; \
+                for soname in libclntsh libocci; do \
+                    if [ ! -e "${instantclient_dir}/${soname}.so" ]; then \
+                        for ver in 23.1 21.1 19.1 12.1 11.1; do \
+                            if [ -f "${instantclient_dir}/${soname}.so.${ver}" ]; then \
+                                ln -s "${instantclient_dir}/${soname}.so.${ver}" "${instantclient_dir}/${soname}.so"; \
+                                break; \
+                            fi; \
+                        done; \
+                    fi; \
+                done; \
+            fi; \
+            if ! find /opt/oracle/instantclient -maxdepth 1 -type f \( -name 'libclntsh.so' -o -name 'libclntsh.so.*' \) | grep -q .; then \
+                echo "Oracle Instant Client libraries were not installed correctly." >&2; \
+                exit 1; \
+            fi; \
+            echo "Oracle Instant Client installed successfully."; \
+        else \
+            if [ -n "${oracle_basic}" ]; then \
+                echo "Oracle package version not supported (need 11g or 19c/21c/23c): ${oracle_basic} - skipping."; \
+            else \
+                echo "Oracle Instant Client not found under deploy/offline-assets/${TARGETARCH}/oracle/ - skipping."; \
+            fi; \
+        fi; \
+    else \
+        echo "Skip Oracle client installation for ${TARGETARCH}."; \
+    fi; \
+    rm -rf /tmp/offline-assets
+
+RUN python - <<'PY'
+from importlib.util import find_spec
+
+mods = [
+    "aiofiles",
+    "aiohttp",
+    "alembic",
+    "bs4",
+    "boto3",
+    "cassandra",
+    "celery",
+    "clickhouse_connect",
+    "clickhouse_driver",
+    "cryptography",
+    "cx_Oracle",
+    "dask",
+    "dbutils",
+    "docker",
+    "duckdb",
+    "elasticsearch",
+    "fabric",
+    "fastparquet",
+    "fastapi",
+    "flask",
+    "flask_cors",
+    "fsspec",
+    "hdfs",
+    "httpx",
+    "hvac",
+    "impala",
+    "influxdb_client",
+    "jinja2",
+    "joblib",
+    "kafka",
+    "kubernetes",
+    "lxml",
+    "loguru",
+    "markitdown",
+    "matplotlib",
+    "minio",
+    "ncclient",
+    "neo4j",
+    "netmiko",
+    "numpy",
+    "opensearchpy",
+    "openpyxl",
+    "oracledb",
+    "orjson",
+    "pandas",
+    "paramiko",
+    "playwright",
+    "PIL",
+    "polars",
+    "pyarrow",
+    "pyathena",
+    "pydantic",
+    "pydantic_settings",
+    "pypdf",
+    "pdfplumber",
+    "pdf2image",
+    "pyreadstat",
+    "pysnmp",
+    "pymongo",
+    "pymssql",
+    "pymysql",
+    "pyodbc",
+    "pyhive",
+    "pyxlsb",
+    "psycopg2",
+    "pyspark",
+    "dotenv",
+    "multipart",
+    "docx",
+    "pptx",
+    "pytesseract",
+    "redis",
+    "requests",
+    "ruamel.yaml",
+    "s3fs",
+    "schedule",
+    "scrapli",
+    "scipy",
+    "seaborn",
+    "sklearn",
+    "snowflake.connector",
+    "sqlmodel",
+    "sqlalchemy",
+    "sshtunnel",
+    "tabulate",
+    "tenacity",
+    "thrift",
+    "thrift_sasl",
+    "trino",
+    "uvicorn",
+    "vertica_python",
+    "xmltodict",
+    "xlsxwriter",
+]
+missing = [m for m in mods if find_spec(m) is None]
+if missing:
+    raise SystemExit(f"Missing python modules: {missing}")
+print("base python dependency smoke test OK")
+PY
+
+RUN python - <<'PY'
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+    )
+    page = browser.new_page()
+    page.goto("data:text/html,<html><body><h1>base-ok</h1></body></html>")
+    assert "base-ok" in page.content()
+    browser.close()
+print("base playwright chromium smoke test OK")
+PY
