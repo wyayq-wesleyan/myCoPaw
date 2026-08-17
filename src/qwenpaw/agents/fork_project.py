@@ -632,7 +632,7 @@ def _ensure_git_identity(wt: Path) -> None:
         return
     for key, value in (
         ("user.email", "qwenpaw-fork@localhost"),
-        ("user.name", "QwenPaw Fork"),
+        ("user.name", "Huizhi Assistant Fork"),
     ):
         current = _git_stdout(["config", "--get", key], wt)
         if not current:

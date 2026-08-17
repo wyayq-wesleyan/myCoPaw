@@ -1,5 +1,5 @@
 /**
- * BootScreen.tsx — QwenPaw OS power-on splash.
+ * BootScreen.tsx — 汇智小助手 OS power-on splash.
  *
  * Shown once when the desktop mounts (entering /os). Displays the brand mark,
  * an indeterminate-feel progress bar, then fades out and hands control to the
@@ -55,7 +55,7 @@ export default function BootScreen({
     <div className={cx(styles.boot, exiting && styles.bootExit)}>
       <div className={styles.bootBrand}>
         <Command size={54} strokeWidth={1.6} />
-        <div className={styles.bootName}>QwenPaw OS</div>
+        <div className={styles.bootName}>汇智小助手 OS</div>
       </div>
       <div className={styles.bootBar}>
         <div className={styles.bootBarFill} style={{ width: `${progress}%` }} />

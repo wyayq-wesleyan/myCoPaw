@@ -97,19 +97,23 @@ export default function LoginPage() {
         alignItems: "center",
         justifyContent: "center",
         background: isDark
-          ? "linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%)"
-          : "linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)",
+          ? "linear-gradient(135deg, #0b1d33 0%, #143c69 52%, #1b2b3d 100%)"
+          : "linear-gradient(135deg, #f6f9fd 0%, #e7eff9 54%, #edf4fb 100%)",
+        padding: 24,
       }}
     >
       <div
         style={{
-          width: 400,
-          padding: 32,
-          borderRadius: 12,
-          background: isDark ? "#1f1f1f" : "#fff",
+          width: "min(400px, 100%)",
+          padding: 34,
+          borderRadius: 10,
+          border: isDark
+            ? "1px solid rgba(246, 232, 196, 0.16)"
+            : "1px solid rgba(20, 60, 105, 0.14)",
+          background: isDark ? "#10243b" : "rgba(255, 255, 255, 0.96)",
           boxShadow: isDark
-            ? "0 4px 24px rgba(0,0,0,0.4)"
-            : "0 4px 24px rgba(0,0,0,0.1)",
+            ? "0 20px 56px rgba(0, 0, 0, 0.34)"
+            : "0 20px 52px rgba(20, 60, 105, 0.14)",
         }}
       >
         <div style={{ textAlign: "center", marginBottom: 32 }}>
@@ -118,14 +122,21 @@ export default function LoginPage() {
             alt="汇智小助手"
             style={{ height: 48, marginBottom: 12 }}
           />
-          <h2 style={{ margin: 0, fontWeight: 600, fontSize: 20 }}>
+          <h2
+            style={{
+              margin: 0,
+              fontWeight: 650,
+              fontSize: 22,
+              color: isDark ? "#f6e8c4" : "#143c69",
+            }}
+          >
             {isRegister ? t("login.registerTitle") : t("login.title")}
           </h2>
           {!hasUsers && (
             <p
               style={{
                 margin: "8px 0 0",
-                color: isDark ? "rgba(255,255,255,0.45)" : "#666",
+                color: isDark ? "rgba(230, 239, 250, 0.62)" : "#58708c",
                 fontSize: 13,
               }}
             >
@@ -179,7 +190,7 @@ export default function LoginPage() {
               htmlType="submit"
               loading={loading}
               block
-              style={{ height: 44, borderRadius: 8, fontWeight: 500 }}
+              style={{ height: 44, borderRadius: 6, fontWeight: 600 }}
             >
               {isRegister ? t("login.register") : t("login.submit")}
             </Button>

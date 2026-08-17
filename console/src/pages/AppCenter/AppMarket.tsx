@@ -47,7 +47,7 @@ const MARKET_PAGE_SIZE = 100;
 // first in the official channel.
 const OFFICIAL_APP_PRIORITY = ["@agentscope/qwenpaw-creator"];
 const OFFICIAL_APP_ICONS: Record<string, string> = {
-  "@agentscope/qwenpaw-creator": "/creator-logo.png",
+  "@agentscope/qwenpaw-creator": "/huizhi-favicon.svg",
 };
 // Emoji icons from the plugins' own plugin.json (the market API carries no
 // icon field), so uninstalled cards match what the installed view shows.
@@ -255,7 +255,7 @@ export function AppMarket({
         ),
         content: tRef.current("pluginManager.compatWarningContent", {
           defaultValue:
-            "This plugin is labeled for QwenPaw {{labels}}. Your QwenPaw version is {{version}}. Installing it may cause errors. Are you sure you want to continue?",
+            "This plugin is labeled for 汇智小助手 {{labels}}. Your 汇智小助手 version is {{version}}. Installing it may cause errors. Are you sure you want to continue?",
           labels: entry.qwenpaw_compat_labels?.join(", ") ?? "unknown",
           version: qwenpawVersion ?? "unknown",
         }),

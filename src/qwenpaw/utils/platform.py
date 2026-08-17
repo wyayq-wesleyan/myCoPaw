@@ -52,9 +52,9 @@ def warn_unelevated_sandbox() -> None:
         if config.security.sandbox_enabled:
             logger.warning(
                 "Windows sandbox downgraded to unelevated mode: the sandbox "
-                "is enabled but QwenPaw is not running as administrator. "
+                "is enabled but 汇智小助手 is not running as administrator. "
                 "The unelevated sandbox provides limited isolation. For "
-                "full sandbox protection, close QwenPaw and relaunch it "
+                "full sandbox protection, close 汇智小助手 and relaunch it "
                 "with 'Run as administrator'.",
             )
     except Exception:  # noqa: BLE001

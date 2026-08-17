@@ -1016,7 +1016,7 @@ async def execute_shell_command(
                     type="text",
                     text=(
                         "Blocked: this command would terminate the "
-                        "QwenPaw process or its parent. "
+                        "汇智小助手 process or its parent. "
                         "Refusing to execute."
                     ),
                 ),

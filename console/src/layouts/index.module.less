@@ -10,7 +10,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #f9f8f4;
+  background: #f6f9fd;
 
   :global {
     .qwenpaw-space-item {
@@ -54,7 +54,7 @@
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 .sider {
-  background: #f9f8f4 !important;
+  background: #f6f9fd !important;
   overflow: auto;
   height: calc(100vh - 64px) !important;
   padding: 0 16px;
@@ -83,7 +83,7 @@
   // Agent-scoped section: selector + Chat + Control + Workspace
   .agentScopedSection {
     flex-shrink: 0;
-    background: rgba(43, 18, 0, 0.02);
+    background: rgba(20, 60, 105, 0.02);
     border-radius: 12px;
     border: 1px solid rgba(0, 0, 0, 0.06);
     padding: 4px;
@@ -101,7 +101,7 @@
     z-index: 10;
     margin-bottom: 4px;
     // Opaque background so scrolled content is hidden behind
-    background: #f9f7f3;
+    background: #f3f7fc;
     border-radius: 12px 12px 0 0;
   }
 
@@ -128,7 +128,7 @@
   }
 
   .stickyChatButtonActive {
-    background: rgba(43, 18, 0, 0.08);
+    background: rgba(20, 60, 105, 0.08);
   }
 
   // Menu takes remaining space
@@ -236,13 +236,13 @@
       font-weight: 500 !important;
       line-height: 32px !important;
       letter-spacing: normal !important;
-      color: rgba(26, 23, 22, 0.25) !important;
+      color: rgba(20, 60, 105, 0.25) !important;
       padding-left: 8px !important;
 
       /* No hover effect for group titles */
       &:hover {
         background: transparent !important;
-        color: rgba(26, 23, 22, 0.25) !important;
+        color: rgba(20, 60, 105, 0.25) !important;
       }
     }
 
@@ -270,7 +270,7 @@
 
     /* Selected item */
     .qwenpaw-menu-item-selected {
-      background: rgba(43, 18, 0, 0.08) !important;
+      background: rgba(20, 60, 105, 0.08) !important;
       color: inherit !important;
       display: flex !important;
       align-items: center !important;
@@ -290,7 +290,7 @@
 }
 
 .siderDark {
-  background: #1a1a1a !important;
+  background: #0d1d31 !important;
   border-right-color: rgba(255, 255, 255, 0.08) !important;
 
   // Agent-scoped section (dark mode)
@@ -301,12 +301,12 @@
 
   // Sticky container background (dark mode)
   .agentSelectorContainer {
-    background: #1e1e1e;
+    background: #11243b;
   }
 
   // Sticky bottom bar background (dark mode)
   .collapseToggleContainer {
-    background: #1a1a1a;
+    background: #0d1d31;
   }
 
   // Chat button (dark mode)
@@ -320,13 +320,13 @@
   }
 
   .stickyChatButtonActive {
-    background: rgba(255, 127, 22, 0.5);
-    color: #ff7f16;
+    background: rgba(42, 99, 173, 0.5);
+    color: #2a63ad;
   }
 
   :global {
     .qwenpaw-menu {
-      background: #1a1a1a !important;
+      background: #0d1d31 !important;
       border-inline-end: 0 !important;
     }
 
@@ -354,8 +354,8 @@
 
     /* Selected item */
     .qwenpaw-menu-item-selected {
-      background: rgba(255, 127, 22, 0.5) !important;
-      color: #ff7f16 !important;
+      background: rgba(42, 99, 173, 0.5) !important;
+      color: #2a63ad !important;
     }
   }
 }
@@ -420,7 +420,7 @@
 
 .collapseBtn {
   margin: auto;
-  color: #ff7f16;
+  color: #2a63ad;
 }
 
 // ─── Auth actions (account + logout) ──────────────────────────────────────────
@@ -522,7 +522,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-  background: #f9f8f4; // match sider background so scrolled content is hidden
+  background: #f6f9fd; // match sider background so scrolled content is hidden
 }
 
 .collapseToggle {
@@ -532,13 +532,13 @@
 
   &:hover {
     background: rgba(0, 0, 0, 0.06) !important;
-    color: #ff7f16 !important;
+    color: #2a63ad !important;
   }
 }
 
 .modeToggleActive {
-  color: #ff7f16 !important;
-  background: rgba(255, 127, 22, 0.08);
+  color: #2a63ad !important;
+  background: rgba(42, 99, 173, 0.08);
 }
 
 // ─── Simple mode: flat nav + session list ─────────────────────────────────────
@@ -553,15 +553,15 @@
   margin: 4px 0;
   border: none;
   border-radius: 8px;
-  background: rgba(255, 127, 22, 0.08);
-  color: #ff7f16;
+  background: rgba(42, 99, 173, 0.08);
+  color: #2a63ad;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;
 
   &:hover {
-    background: rgba(255, 127, 22, 0.14);
+    background: rgba(42, 99, 173, 0.14);
   }
 }
 
@@ -597,7 +597,7 @@
 }
 
 .simpleNavItemActive {
-  background: rgba(43, 18, 0, 0.08);
+  background: rgba(20, 60, 105, 0.08);
   color: rgba(0, 0, 0, 0.88);
 }
 
@@ -613,7 +613,7 @@
 .simpleSessionHeader {
   font-size: 12px;
   font-weight: 500;
-  color: rgba(26, 23, 22, 0.35);
+  color: rgba(20, 60, 105, 0.35);
   padding: 4px 12px 6px;
   flex-shrink: 0;
 }
@@ -655,7 +655,7 @@
 }
 
 .simpleSessionItemActive {
-  background: rgba(43, 18, 0, 0.08);
+  background: rgba(20, 60, 105, 0.08);
 }
 
 .simpleSessionItemDisabled {
@@ -677,7 +677,7 @@
 .simpleSessionTime {
   flex-shrink: 0;
   font-size: 11px;
-  color: rgba(26, 23, 22, 0.35);
+  color: rgba(20, 60, 105, 0.35);
 }
 
 .simpleSessionActions {
@@ -704,7 +704,7 @@
 }
 
 .simpleSessionActionBtnActive {
-  color: #ff7f16 !important;
+  color: #2a63ad !important;
 }
 
 .simpleSessionLoading {
@@ -755,7 +755,7 @@
 }
 
 .collapsedNavItemActive {
-  background: rgba(43, 18, 0, 0.08) !important;
+  background: rgba(20, 60, 105, 0.08) !important;
   color: rgba(0, 0, 0, 0.88) !important;
 }
 
@@ -824,8 +824,7 @@
 }
 
 .updateModalBanner {
-  background: url("/public/qwenpawBack.png") no-repeat center top;
-  background-size: contain;
+  background: linear-gradient(135deg, #143c69, #2a63ad);
   padding: 48px 28px 0px;
   display: flex;
   align-items: flex-start;
@@ -846,12 +845,12 @@
   align-items: center;
   gap: 6px;
   background: #fff;
-  border: 1px solid rgba(43, 18, 0, 0.12);
+  border: 1px solid rgba(20, 60, 105, 0.12);
   border-radius: 20px;
   padding: 3px 12px;
   font-size: 12px;
   font-weight: 500;
-  color: rgba(26, 23, 22, 0.65);
+  color: rgba(20, 60, 105, 0.65);
   width: fit-content;
 }
 
@@ -860,11 +859,11 @@
   font-weight: 500;
   line-height: 64.78px;
   letter-spacing: normal;
-  color: #ff7f16;
+  color: #2a63ad;
 }
 
 .updateModalTitle {
-  color: #ff7f16;
+  color: #2a63ad;
 }
 
 .updateModalBody {
@@ -883,8 +882,8 @@
 }
 
 .updateViewReleasesBtn {
-  background: #ff7f16 !important;
-  border-color: #ff7f16 !important;
+  background: #2a63ad !important;
+  border-color: #2a63ad !important;
   color: #fff !important;
 
   &:hover {
@@ -894,8 +893,8 @@
 }
 
 .updateModalPrimaryBtn {
-  background: #ff7f16;
-  border-color: #ff7f16;
+  background: #2a63ad;
+  border-color: #2a63ad;
 }
 
 // ─── Code block inside update modal ──────────────────────────────────────────
@@ -951,7 +950,7 @@
 /* ─── Dark mode overrides ─────────────────────────────────────────────────── */
 :global(.dark-mode) {
   .header {
-    background: #1a1a1a !important;
+    background: #0d1d31 !important;
     border-bottom-color: rgba(255, 255, 255, 0.08) !important;
     color: rgba(255, 255, 255, 0.85);
 
@@ -982,7 +981,7 @@
   }
 
   .sider {
-    background: #1a1a1a !important;
+    background: #0d1d31 !important;
     border-right-color: rgba(255, 255, 255, 0.08) !important;
   }
 
@@ -991,11 +990,11 @@
   }
 
   .versionBadge {
-    color: #ff7f16;
+    color: #2a63ad;
   }
 
   .collapseBtn {
-    color: #ff7f16;
+    color: #2a63ad;
   }
 
   .authActions {
@@ -1016,13 +1015,13 @@
 
     &:hover {
       background: rgba(255, 255, 255, 0.08);
-      color: #ff7f16;
+      color: #2a63ad;
     }
   }
 
   .modeToggleActive {
-    color: #ff7f16 !important;
-    background: rgba(255, 127, 22, 0.12);
+    color: #2a63ad !important;
+    background: rgba(42, 99, 173, 0.12);
   }
 
   .collapsedNavItem {
@@ -1035,7 +1034,7 @@
   }
 
   .collapsedNavItemActive {
-    background: rgba(255, 127, 22, 0.5) !important;
+    background: rgba(42, 99, 173, 0.5) !important;
     color: rgba(255, 255, 255, 0.88) !important;
   }
 
@@ -1066,15 +1065,15 @@
   margin: 4px 0;
   border: none;
   border-radius: 8px;
-  background: rgba(255, 127, 22, 0.08);
-  color: #ff7f16;
+  background: rgba(42, 99, 173, 0.08);
+  color: #2a63ad;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;
 
   &:hover {
-    background: rgba(255, 127, 22, 0.14);
+    background: rgba(42, 99, 173, 0.14);
   }
 }
 
@@ -1110,7 +1109,7 @@
 }
 
 .simpleNavItemActive {
-  background: rgba(43, 18, 0, 0.08);
+  background: rgba(20, 60, 105, 0.08);
   color: rgba(0, 0, 0, 0.88);
 }
 
@@ -1126,7 +1125,7 @@
 .simpleSessionHeader {
   font-size: 12px;
   font-weight: 500;
-  color: rgba(26, 23, 22, 0.35);
+  color: rgba(20, 60, 105, 0.35);
   padding: 4px 12px 6px;
   flex-shrink: 0;
 }
@@ -1168,7 +1167,7 @@
 }
 
 .simpleSessionItemActive {
-  background: rgba(43, 18, 0, 0.08);
+  background: rgba(20, 60, 105, 0.08);
 }
 
 .simpleSessionItemDisabled {
@@ -1190,7 +1189,7 @@
 .simpleSessionTime {
   flex-shrink: 0;
   font-size: 11px;
-  color: rgba(26, 23, 22, 0.35);
+  color: rgba(20, 60, 105, 0.35);
 }
 
 .simpleSessionActions {
@@ -1217,7 +1216,7 @@
 }
 
 .simpleSessionActionBtnActive {
-  color: #ff7f16 !important;
+  color: #2a63ad !important;
 }
 
 .simpleSessionLoading {
@@ -1232,11 +1231,11 @@
 .siderSimple {
   :global(.dark-mode) & {
     .simpleNewChat {
-      background: rgba(255, 127, 22, 0.12);
-      color: #ff7f16;
+      background: rgba(42, 99, 173, 0.12);
+      color: #2a63ad;
 
       &:hover {
-        background: rgba(255, 127, 22, 0.2);
+        background: rgba(42, 99, 173, 0.2);
       }
     }
 
@@ -1250,8 +1249,8 @@
     }
 
     .simpleNavItemActive {
-      background: rgba(255, 127, 22, 0.5);
-      color: #ff7f16;
+      background: rgba(42, 99, 173, 0.5);
+      color: #2a63ad;
     }
 
     .simpleSessionHeader {

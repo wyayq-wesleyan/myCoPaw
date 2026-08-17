@@ -30,7 +30,7 @@ _CREDENTIAL_TYPES = {
     "ollama": OllamaCredential,
 }
 
-_TEST_TEXT = "QwenPaw embedding connection test"
+_TEST_TEXT = "Huizhi Assistant embedding connection test"
 
 
 @dataclass(frozen=True)

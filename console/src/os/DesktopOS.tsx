@@ -440,12 +440,12 @@ export default function DesktopOS() {
         </div>
       )}
 
-      {/* Persistent background watermark — QwenPaw OS brand mark. Sits at the
+      {/* Persistent background watermark for the local assistant. Sits at the
           lowest layer and never intercepts pointer events, so it reads as a
           backdrop behind icons and app windows rather than a card. */}
       <div className={styles.emptyHint}>
-        <img src="/qwenpaw.png" alt="" />
-        <div className={styles.emptyBrandName}>QwenPaw OS</div>
+        <img src="/huizhi-favicon.svg" alt="" />
+        <div className={styles.emptyBrandName}>汇智小助手</div>
       </div>
 
       {/* Windows layer */}

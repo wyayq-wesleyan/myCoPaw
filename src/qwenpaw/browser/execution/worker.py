@@ -488,7 +488,7 @@ def _render(value: object, *, perceived: bool = False) -> str:
 
 
 _IDENTITY_ANCHOR = (
-    "This is QwenPaw's builtin Browser SDK, not Playwright. "
+    "This is 汇智小助手's builtin Browser SDK, not Playwright. "
     "The API surface is closed - the skill reference lists ALL of it; "
     "anything not listed does not exist."
 )
@@ -555,10 +555,10 @@ def _internal_error_result(
         error={
             "category": ErrorCategory.FATAL.value,
             "cause": ErrorCause.INTERNAL.value,
-            "reason": "QwenPaw Browser SDK internal failure",
+            "reason": "汇智小助手 Browser SDK internal failure",
             "detail": f"{type(exc).__name__}: {exc}",
             "teaching": (
-                "QwenPaw Browser SDK internal failure - retrying the "
+                "汇智小助手 Browser SDK internal failure - retrying the "
                 "same call will not help. Use a different listed API "
                 "to finish the task, or report this step as blocked."
             ),
@@ -695,7 +695,7 @@ async def execute_request(
                 "reason": "imported the SDK; Browser is already in scope",
                 "detail": str(exc),
                 "teaching": (
-                    "Do not import the QwenPaw Browser SDK — Browser is "
+                    "Do not import the 汇智小助手 Browser SDK — Browser is "
                     "already available in your namespace. Delete the "
                     "import line and call await Browser.connect() "
                     "directly; open pages with await browser.open(url)."

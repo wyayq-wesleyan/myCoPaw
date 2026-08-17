@@ -1,6 +1,6 @@
 ---
 name: guidance
-description: "Answer user questions about QwenPaw installation and configuration: first locate and read local documentation, then distill the answer; if local information is insufficient, fall back to the official website documentation."
+description: "Answer user questions about Huizhi Assistant installation and configuration: first locate and read local documentation, then distill the answer; if local information is insufficient, fall back to the official website documentation."
 metadata:
   builtin_skill_version: "1.3"
   qwenpaw:
@@ -8,9 +8,9 @@ metadata:
     requires: {}
 ---
 
-# QwenPaw Installation and Configuration Q&A Guide
+# Huizhi Assistant Installation and Configuration Q&A Guide
 
-Use this skill when the user asks about **QwenPaw installation, initialization, environment configuration, dependency requirements, or common configuration options**.
+Use this skill when the user asks about **Huizhi Assistant installation, initialization, environment configuration, dependency requirements, or common configuration options**.
 
 Core principles:
 
@@ -52,7 +52,7 @@ Run the following script logic to obtain the variable $QWENPAW_ROOT:
 QWENPAW_PATH=$(which qwenpaw 2>/dev/null || whereis qwenpaw | awk '{print $2}')
 
 # Logical deduction: if the path contains .qwenpaw/bin/qwenpaw, the root is three levels up
-# Example: /path/to/QwenPaw/.qwenpaw/bin/qwenpaw -> /path/to/QwenPaw
+# Example: /path/to/Huizhi Assistant/.qwenpaw/bin/qwenpaw -> /path/to/Huizhi Assistant
 if [[ "$QWENPAW_PATH" == *".qwenpaw/bin/qwenpaw" ]]; then
     QWENPAW_ROOT=$(echo "$QWENPAW_PATH" | sed 's/\/\.qwenpaw\/bin\/qwenpaw//')
 else
@@ -60,7 +60,7 @@ else
     QWENPAW_ROOT=$(dirname $(dirname "$QWENPAW_PATH") 2>/dev/null || echo ".")
 fi
 
-echo "Detected QwenPaw Root: $QWENPAW_ROOT"
+echo "Detected Huizhi Assistant Root: $QWENPAW_ROOT"
 ```
 
 Verify and list the documentation directory:
@@ -131,13 +131,9 @@ Extract key information from the documentation and organize it into an actionabl
 
 Language requirement: the answer language must match the language of the user's question (answer in Chinese if asked in Chinese, answer in English if asked in English).
 
-### Step 5 (Optional): Official Website Lookup
+### Step 5: When local information is insufficient
 
-If the previous steps cannot be completed (no local documentation, missing documentation, or insufficient information), use the official website as a fallback:
-
-- http://qwenpaw.agentscope.io/
-
-Answer based on the content available from the official website, and clearly state in the answer that the conclusion comes from the official website documentation.
+When local documentation is unavailable or insufficient, state what information is missing and ask the user for the relevant configuration, logs or business material. Do not browse the internet or recommend an online lookup.
 
 ## Output Quality Requirements
 

@@ -96,7 +96,7 @@ Connect to an existing CDP endpoint:
 Characteristics:
 
 - After a successful connection, you can continue using standard operations such as `open`, `snapshot`, `click`, `type`, etc.
-- This **attaches to an external browser**, not a new process launched by QwenPaw
+- This **attaches to an external browser**, not a new process launched by æ±æºå°å©æ
 - `stop` only disconnects — it **will not close the external browser**
 - External CDP connections are also subject to idle auto-stop management, but the auto-stop semantics for external CDP is "auto-disconnect, not close the external browser"
 
@@ -152,7 +152,7 @@ This means:
 
 CDP-related stop behavior differs depending on the type:
 
-### 1. Managed CDP launched by QwenPaw
+### 1. Managed CDP launched by æ±æºå°å©æ
 
 For example:
 
@@ -160,7 +160,7 @@ For example:
 {"action": "start", "cdp_port": 9222}
 ```
 
-These browsers are launched and owned by QwenPaw. `stop` will:
+These browsers are launched and owned by æ±æºå°å©æ. `stop` will:
 
 - Disconnect the Playwright / CDP connection
 - Terminate the browser process
@@ -173,7 +173,7 @@ For example:
 {"action": "connect_cdp", "cdp_url": "http://localhost:9222"}
 ```
 
-These browsers are not launched by QwenPaw. `stop` will only:
+These browsers are not launched by æ±æºå°å©æ. `stop` will only:
 
 - Disconnect
 - **Not close the external browser process**

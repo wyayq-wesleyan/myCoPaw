@@ -70,7 +70,7 @@ _PUBLIC_PATHS: frozenset[str] = frozenset(
 _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/assets/",
     "/logo.png",
-    "/qwenpaw-symbol.svg",
+    "/huizhi-favicon.svg",
     "/api/frontend_plugin/",
 )
 

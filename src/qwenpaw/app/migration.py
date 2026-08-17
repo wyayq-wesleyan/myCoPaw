@@ -31,7 +31,7 @@ from ..config.utils import load_config, save_config
 logger = logging.getLogger(__name__)
 
 _DEFAULT_AGENT_NAME = "Default Agent"
-_DEFAULT_AGENT_DESCRIPTION = "Default QwenPaw agent"
+_DEFAULT_AGENT_DESCRIPTION = "Default 汇智小助手 agent"
 
 # Workspace items to migrate: (name, is_directory)
 _WORKSPACE_ITEMS_TO_MIGRATE = [
@@ -51,6 +51,89 @@ _WORKSPACE_JSON_DEFAULTS: list[tuple[str, dict]] = [
     ("chats.json", {"version": 1, "chats": []}),
     ("jobs.json", {"version": 1, "jobs": []}),
 ]
+
+_QA_BRANDING_FILENAMES = ("AGENTS.md", "SOUL.md", "PROFILE.md")
+
+
+def _refresh_builtin_qa_branding(workspace: Path, language: str) -> None:
+    """Refresh only legacy branded files in the built-in QA workspace.
+
+    User-authored assistants and customized QA files remain untouched. A file
+    is replaced only when it still contains the legacy product name, which is
+    the content shipped by earlier releases of this built-in assistant.
+    """
+    template_root = Path(__file__).resolve().parents[1] / "agents" / "md_files" / "qa"
+    language_candidates = (language, "zh", "en")
+
+    for filename in _QA_BRANDING_FILENAMES:
+        target = workspace / filename
+        try:
+            current = target.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "QwenPaw" not in current and "CoPaw" not in current:
+            continue
+
+        source = next(
+            (
+                template_root / candidate / filename
+                for candidate in language_candidates
+                if (template_root / candidate / filename).is_file()
+            ),
+            None,
+        )
+        if source is None:
+            logger.warning("Cannot refresh builtin QA template %s", filename)
+            continue
+        try:
+            shutil.copy2(source, target)
+            logger.info("Refreshed legacy QA branding in %s", target)
+        except OSError as exc:
+            logger.warning("Could not refresh QA template %s: %s", target, exc)
+
+    agent_config_path = workspace / "agent.json"
+    try:
+        agent_payload = json.loads(agent_config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+
+    changed = False
+    description = agent_payload.get("description")
+    if isinstance(description, str) and (
+        "QwenPaw" in description or "CoPaw" in description
+    ):
+        agent_payload["description"] = (
+            description.replace("QwenPaw", "汇智小助手").replace(
+                "CoPaw",
+                "汇智小助手",
+            )
+        )
+        changed = True
+
+    for channel_name in ("voice", "sip"):
+        channel = agent_payload.get("channels", {}).get(channel_name)
+        if not isinstance(channel, dict):
+            continue
+        greeting = channel.get("welcome_greeting")
+        if greeting == "Hi! This is QwenPaw. How can I help you?":
+            channel["welcome_greeting"] = (
+                "Hello, this is Huizhi Assistant. How can I help you?"
+            )
+            changed = True
+        elif greeting == "你好，我是QwenPaw":
+            channel["welcome_greeting"] = "你好，我是汇智小助手"
+            changed = True
+
+    if not changed:
+        return
+    try:
+        agent_config_path.write_text(
+            json.dumps(agent_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("Refreshed legacy QA agent metadata in %s", agent_config_path)
+    except OSError as exc:
+        logger.warning("Could not refresh QA agent metadata %s: %s", agent_config_path, exc)
 
 
 def migrate_legacy_workspace_to_default_agent() -> bool:
@@ -125,7 +208,7 @@ def _do_migrate_legacy_workspace() -> bool:
     default_agent_config = AgentProfileConfig(
         id="default",
         name="Default Agent",
-        description="Default QwenPaw agent (migrated from legacy config)",
+        description="Default 汇智小助手 agent (migrated from legacy config)",
         workspace_dir=str(default_workspace),
         channels=config.channels if hasattr(config, "channels") else None,
         mcp=config.mcp if hasattr(config, "mcp") else None,
@@ -773,7 +856,7 @@ def _apply_legacy_qa_disable_for_migration(config) -> None:
         ref.enabled = False
         logger.info(
             "Disabled legacy builtin QA agent profile %r "
-            "(new QwenPaw builtin QA slot was created)",
+            "(new Huizhi Assistant builtin QA slot was created)",
             legacy_id,
         )
     if config.agents.active_agent == legacy_id:
@@ -842,6 +925,10 @@ def _do_ensure_qa_agent() -> None:
     _ensure_workspace_json_files(qa_workspace, "QA agent")
 
     if agent_existed:
+        _refresh_builtin_qa_branding(
+            qa_workspace,
+            config.agents.language or "zh",
+        )
         return
 
     other_id = _other_agent_owns_workspace(

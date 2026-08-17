@@ -255,7 +255,10 @@ function AppInner() {
             ? antdTheme.darkAlgorithm
             : antdTheme.defaultAlgorithm,
           token: {
-            colorPrimary: "#FF7F16",
+            colorPrimary: "#2a63ad",
+            colorInfo: "#2a63ad",
+            colorLink: "#2a63ad",
+            colorWarning: "#d2a55d",
           },
         }}
       >

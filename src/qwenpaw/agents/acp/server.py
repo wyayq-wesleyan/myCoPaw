@@ -101,7 +101,7 @@ ACP_AGENT_META_KEY = "qwenpaw.agent"
 _ACP_RUNTIME_MODEL_SLOT_KEY = "qwenpaw.runtime_model_slot"
 
 _GENERIC_PROMPT_ERROR = (
-    "QwenPaw failed to process the request. Check server logs for details."
+    "汇智小助手 failed to process the request. Check server logs for details."
 )
 
 
@@ -523,7 +523,7 @@ class QwenPawACPAgent(Agent):
             ),
             agent_info=Implementation(
                 name="qwenpaw",
-                title="QwenPaw",
+                title="汇智小助手",
                 version=__version__,
             ),
         )
@@ -677,7 +677,7 @@ class QwenPawACPAgent(Agent):
             )
             await self._report_prompt_error(session_id, exc)
             raise RequestError.internal_error(
-                {"details": "QwenPaw runtime failed"},
+                {"details": "汇智小助手 runtime failed"},
             ) from None
         finally:
             await self._stop_approval_bridge(approval_bridge)

@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import styles from "./BackendLoadingPage.module.less";
 import { type BackendReadyStatus } from "./useBackendReadyPolling";
 
-const BRAND_COLOR = "#ff7f16";
+const BRAND_COLOR = "#2a63ad";
 const ERROR_COLOR = "#ff4d4f";
 
 interface BackendLoadingPageProps {
@@ -52,7 +52,7 @@ export default function BackendLoadingPage({
       style={style}
     >
       <div className={styles.card}>
-        <img src="/qwenpaw.png" alt="QwenPaw" className={styles.logo} />
+        <img src="/huizhi-favicon.svg" alt="汇智小助手" className={styles.logo} />
 
         <Progress
           type="dashboard"

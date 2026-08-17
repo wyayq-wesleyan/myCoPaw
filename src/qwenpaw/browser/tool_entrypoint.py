@@ -102,7 +102,7 @@ def derive_workspace_id(workspace_dir: Path | None) -> str:
 
 
 _BROWSER_TOOL_DESCRIPTION = (
-    "Drive a live browser by writing async Python against QwenPaw's "
+    "Drive a live browser by writing async Python against 汇智小助手's "
     "built-in\nBrowser SDK. Your code runs in a Python runtime and the "
     "SDK is already\nin scope as Browser. Begin every session with:\n"
     "    browser = await Browser.connect()\n"

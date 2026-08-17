@@ -2,7 +2,7 @@ import { useState } from "react";
 import styles from "./SkillIcon.module.less";
 
 export const SOURCE_LABELS: Record<string, string> = {
-  qwenpaw: "QwenPaw",
+  qwenpaw: "汇智小助手",
   clawhub: "ClawHub",
   modelscope: "ModelScope",
   aliyun: "Aliyun",

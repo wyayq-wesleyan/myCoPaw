@@ -56,7 +56,7 @@ _PAGE_API = (
     "keyboard",
 )
 _BLOCK_HEADER = (
-    "QwenPaw Browser SDK — complete reference. This is QwenPaw's OWN "
+    "汇智小助手 Browser SDK — complete reference. This is the assistant's OWN "
     "internal\nSDK and this is the ENTIRE API; these are all the "
     "entrypoints. The SDK\nis already in scope as Browser — call the "
     "methods below directly. Write\nasync Python. Work in a loop: "

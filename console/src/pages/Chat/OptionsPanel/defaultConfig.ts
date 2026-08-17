@@ -2,12 +2,12 @@ import type { TFunction } from "i18next";
 
 const defaultConfig = {
   theme: {
-    colorPrimary: "#FF7F16",
+    colorPrimary: "#2A63AD",
     darkMode: false,
     prefix: "qwenpaw",
     leftHeader: {
       logo: "",
-      title: "Work with QwenPaw",
+      title: "汇智小助手",
     },
     bubbleList: {
       userMessageAnchors: {
@@ -17,17 +17,17 @@ const defaultConfig = {
   },
   sender: {
     attachments: true,
-    maxLength: 10000,
+    maxLength: 100000,
     longTextUpload: {
       enabled: true,
     },
-    disclaimer: "Works for you, grows with you",
+    disclaimer: "懂你所需，伴你左右",
   },
   welcome: {
     greeting: "Hello, how can I help you today?",
     description:
       "I am a helpful assistant that can help you with your questions.",
-    avatar: "/online.svg",
+    avatar: "/huizhi-favicon.svg",
     prompts: [
       {
         value: "Let's start a new journey!",

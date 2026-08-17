@@ -179,15 +179,9 @@ def build_env_context(
     # Runtime identity
     powered = f", powered by {active_model_name}" if active_model_name else ""
     parts.append(
-        f"- About: You are a personal AI assistant{powered}. "
-        f"You operate in QwenPaw, an open-source agent "
-        f"framework built by AgentScope team from Qwen lab.",
-    )
-    parts.append(
-        "- GitHub: https://github.com/agentscope-ai/QwenPaw",
-    )
-    parts.append(
-        "- Docs: https://qwenpaw.agentscope.io/",
+        f"- About: You are 汇智小助手, a personal AI assistant{powered}. "
+        "You operate in the user's private intranet environment. "
+        "Prioritize locally configured models, files, skills and tools.",
     )
     user_tz = load_config().user_timezone or "UTC"
     try:

@@ -1,6 +1,6 @@
 ---
 name: QA_source_index
-description: "Maps topics and keywords from user questions to QwenPaw official documentation paths and common source code entry points, reducing blind searching. Intended for the built-in QA Agent to quickly identify which files to read when answering questions about installation, configuration, skills, MCP, multi-agent, memory, CLI, etc."
+description: "Maps topics and keywords from user questions to Huizhi Assistant official documentation paths and common source code entry points, reducing blind searching. Intended for the built-in QA Agent to quickly identify which files to read when answering questions about installation, configuration, skills, MCP, multi-agent, memory, CLI, etc."
 metadata:
   builtin_skill_version: "1.3"
   qwenpaw:

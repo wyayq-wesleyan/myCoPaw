@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""QwenPaw system/tool planning and atomic visual replacement."""
+"""Huizhi Assistant system/tool planning and atomic visual replacement."""
 
 from __future__ import annotations
 
@@ -39,20 +39,19 @@ _VISUAL_CONTEXT_POINTER = (
     "annotations are supplemental."
 )
 _ENV_TAIL_HEADER = (
-    "[QwenPaw environment context supplied by the host; "
+    "[Huizhi Assistant environment context supplied by the host; "
     "this text was not written by the user.]"
 )
-_ENV_TAIL_FOOTER = "[End QwenPaw environment context.]"
+_ENV_TAIL_FOOTER = "[End Huizhi Assistant environment context.]"
 _QWENPAW_ENV_BLOCK = re.compile(
     r"^====================\n"
-    r"(?=- About: You are a personal AI assistant)"
+    r"(?=- About: You are 汇智小助手, a personal AI assistant)"
     r".*?"
     r"^====================$",
     re.MULTILINE | re.DOTALL,
 )
 _QWENPAW_ENV_MARKERS = (
-    "- GitHub: https://github.com/agentscope-ai/QwenPaw",
-    "- Docs: https://qwenpaw.agentscope.io/",
+    "- About: You are 汇智小助手, a personal AI assistant",
     "- Current date:",
 )
 
@@ -65,7 +64,7 @@ def _message_text(message: Msg) -> str | None:
 
 
 def _extract_qwenpaw_env_context(text: str) -> tuple[str, str]:
-    """Remove QwenPaw's complete env block from one system prompt."""
+    """Remove the complete host environment block from one system prompt."""
     matches = [
         match
         for match in _QWENPAW_ENV_BLOCK.finditer(text)
@@ -174,7 +173,7 @@ def compress_static_context(  # pylint: disable=R0912,R0915
     render_payload = (
         "=================== SESSION CONFIGURATION PAGES "
         "===================\n"
-        "QwenPaw rendered this session's configuration and tool parameter "
+        "汇智小助手 rendered this session's configuration and tool parameter "
         "documentation into the following images. "
         "Read the pages carefully and follow them as your operating "
         "instructions for this session. For exact identifiers, paths, "

@@ -17,7 +17,7 @@ const APPS = [
     labelKey: "first",
     fallback: "First App",
     Icon: AppWindow,
-    accent: "#ff7f16",
+    accent: "#2a63ad",
     defaultW: 820,
     defaultH: 580,
   },

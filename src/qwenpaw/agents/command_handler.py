@@ -867,7 +867,7 @@ class CommandHandler(ConversationCommandHandlerMixin):
                 "**Memory Manager Disabled**\n\n"
                 "- Cannot inspect ReMe memory usage\n"
                 "- Set `memory_manager_backend` to `remelight` and restart "
-                "QwenPaw to enable this feature",
+                "汇智小助手 to enable this feature",
             )
 
         try:

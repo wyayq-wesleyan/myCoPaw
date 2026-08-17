@@ -143,7 +143,7 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
         cleanup_startup_restore_artifacts()
     except Exception as exc:
         message = (
-            "QwenPaw startup failed because restore artifact cleanup did not "
+            "汇智小助手 startup failed because restore artifact cleanup did not "
             "complete. Another restore or cleanup may still be running, or "
             "a previous restore may need recovery before startup can safely "
             "read restored files."

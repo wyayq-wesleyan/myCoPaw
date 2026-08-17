@@ -554,7 +554,7 @@ async def update_backend_settings(
     if agent_config.backend == "qwenpaw":
         raise HTTPException(
             status_code=409,
-            detail="QwenPaw models use the native model configuration",
+            detail="汇智小助手原生模型使用统一模型配置",
         )
     provider = _get_available_third_party_provider(agent_config.backend)
     settings = dict(agent_config.backend_settings)

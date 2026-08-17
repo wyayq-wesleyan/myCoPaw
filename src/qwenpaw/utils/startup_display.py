@@ -250,7 +250,7 @@ def _build_startup_panel(
     marker = "×" if failed else "✓" if ready else "•"
     tree = Tree(
         f"[bold {status_color}]{marker}[/bold {status_color}] "
-        f"[bold]QwenPaw[/bold]",
+        f"[bold]汇智小助手[/bold]",
         guide_style="bright_black",
     )
     tree.add(
@@ -280,7 +280,7 @@ def print_ready_banner(
     api_info: Optional[Tuple[str, int]] = None,
     elapsed_seconds: Optional[float] = None,
 ) -> None:
-    """Print a fancy QwenPaw ready banner with rich formatting.
+    """Print a fancy 汇智小助手 ready banner with rich formatting.
 
     Args:
         api_info: Optional tuple of (host, port) for the server URL.

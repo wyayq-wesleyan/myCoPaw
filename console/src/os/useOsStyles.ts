@@ -7,12 +7,12 @@
  * theme (ThemeContext.isDark), so switching the theme restyles the whole
  * shell. Wallpaper-layer pieces (desktop icons, watermark, boot splash)
  * stay constant — they sit on the user-chosen wallpaper, not on a themed
- * surface. Single brand-orange accent (#FF7F16).
+ * surface. Single brand-orange accent (#2A63AD).
  */
 import { createStyles } from "antd-style";
 import { useTheme } from "../contexts/ThemeContext";
 
-export const ACCENT = "#FF7F16";
+export const ACCENT = "#2A63AD";
 /** Legacy bottom-bar height, kept for existing imports. */
 export const TASKBAR_H = 56;
 /** macOS-style top menu bar height. */
@@ -293,14 +293,14 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
     &:focus-visible {
       box-shadow:
         ${p.shadowWindow},
-        0 0 0 2px rgba(255, 127, 22, 0.74);
+        0 0 0 2px rgba(42, 99, 173, 0.74);
     }
   `,
   windowActive: css`
     border-color: rgba(255, 255, 255, 0.24);
     box-shadow:
       ${p.shadowWindow},
-      0 0 0 1px rgba(255, 127, 22, 0.12);
+      0 0 0 1px rgba(42, 99, 173, 0.12);
   `,
   header: css`
     height: 40px;
@@ -536,7 +536,7 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
       border-color: rgba(255, 255, 255, 0.36);
       box-shadow:
         0 8px 28px rgba(0, 0, 0, 0.14),
-        0 0 0 3px rgba(255, 127, 22, 0.18);
+        0 0 0 3px rgba(42, 99, 173, 0.18);
     }
   `,
   launcherGrid: css`
@@ -681,7 +681,7 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
     border: 1px solid ${p.border};
     transition: border-color 0.15s ease;
     &:hover {
-      border-color: rgba(255, 127, 22, 0.35);
+      border-color: rgba(42, 99, 173, 0.35);
     }
   `,
   storeCardTop: css`
@@ -731,7 +731,7 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
     border-color: ${ACCENT};
     color: ${ACCENT};
     &:hover {
-      background: rgba(255, 127, 22, 0.14);
+      background: rgba(42, 99, 173, 0.14);
     }
   `,
   storeSectionTitle: css`
@@ -786,7 +786,7 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
     }
   `,
   storeChipActive: css`
-    background: rgba(255, 127, 22, 0.16);
+    background: rgba(42, 99, 173, 0.16);
     border-color: ${ACCENT};
     color: ${p.hoverText};
   `,
@@ -904,7 +904,7 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
   `,
   mcSpaceActive: css`
     border-color: ${ACCENT};
-    background: rgba(255, 127, 22, 0.1);
+    background: rgba(42, 99, 173, 0.1);
   `,
   mcSpaceAdd: css`
     width: 56px;
@@ -1214,7 +1214,7 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
   dockDropActive: css`
     border-color: ${ACCENT};
     box-shadow:
-      0 0 0 3px rgba(255, 127, 22, 0.22),
+      0 0 0 3px rgba(42, 99, 173, 0.22),
       ${p.shadowFloat};
   `,
   dockItem: css`
@@ -1659,7 +1659,7 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
     }
   `,
   settingsNavActive: css`
-    background: rgba(255, 127, 22, 0.16);
+    background: rgba(42, 99, 173, 0.16);
     color: ${p.hoverText};
   `,
   settingsPane: css`
@@ -1948,13 +1948,13 @@ const useOsStylesBase = createStyles(({ css }, { p }: { p: OsPalette }) => ({
   `,
   spaceChipActive: css`
     border-color: ${ACCENT};
-    background: rgba(255, 127, 22, 0.14);
+    background: rgba(42, 99, 173, 0.14);
   `,
   snapPreview: css`
     position: absolute;
     z-index: 9;
     border-radius: ${RADIUS_WINDOW}px;
-    background: rgba(255, 127, 22, 0.18);
+    background: rgba(42, 99, 173, 0.18);
     border: 2px solid ${ACCENT};
     pointer-events: none;
     transition:

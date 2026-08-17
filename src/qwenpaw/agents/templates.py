@@ -28,10 +28,9 @@ SUPPORTED_AGENT_TEMPLATES = (
 
 LOCAL_TEMPLATE_SKILL_NAMES = ("make_plan",)
 QA_TEMPLATE_DESCRIPTION = (
-    "Builtin Q&A helper for QwenPaw setup, local config under "
-    "QWENPAW_WORKING_DIR, and documentation. Prefer reading files "
-    "before answering; use absolute paths for code outside this "
-    "workspace."
+    "Builtin assistant for 汇智小助手 configuration, local resources and "
+    "troubleshooting. Prefer reading local files before answering and use "
+    "absolute paths for code outside this workspace."
 )
 
 

@@ -325,7 +325,7 @@ function graphPalette(element: HTMLElement): GraphPalette {
     labelBackground: value("--graph-3d-label-background", "#fffdfb"),
     labelBorder: opaqueValue("--graph-3d-label-border", "#ffc58f"),
     muted: opaqueValue("--graph-3d-muted", "#c7bfb8"),
-    root: opaqueValue("--graph-3d-root", "#ff7f16"),
+    root: opaqueValue("--graph-3d-root", "#2a63ad"),
     surface,
     file: opaqueValue("--graph-3d-file", "#71665e"),
   };

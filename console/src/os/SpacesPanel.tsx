@@ -13,7 +13,7 @@ import { buttonRoleProps } from "./a11y";
 import { useOsStyles } from "./useOsStyles";
 
 const SPACE_COLORS = [
-  "#FF7F16",
+  "#2A63AD",
   "#3b82f6",
   "#8b5cf6",
   "#10b981",

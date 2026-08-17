@@ -124,7 +124,7 @@ pass `cwd` equal to the directory above.
 
 ### Agent workspace
 
-The internal QwenPaw workspace (configs, sessions, memory) is at:
+The internal 汇智小助手 workspace (configs, sessions, memory) is at:
 
     {workspace_dir}
 

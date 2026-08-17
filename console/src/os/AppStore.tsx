@@ -155,7 +155,7 @@ export default function AppStore() {
       title: t("os.appCompatibilityWarningTitle", "Compatibility Warning"),
       content: t("os.appCompatibilityWarningContent", {
         defaultValue:
-          "This app is labeled for QwenPaw {{labels}}. Your QwenPaw version is {{version}}. Installing it may cause errors. Continue?",
+          "This app is labeled for 汇智小助手 {{labels}}. Your 汇智小助手 version is {{version}}. Installing it may cause errors. Continue?",
         labels: entry.qwenpaw_compat_labels?.join(", ") ?? "unknown",
         version: qwenpawVersion ?? "unknown",
       }),
@@ -403,7 +403,7 @@ export default function AppStore() {
                             color={isCompatible(entry) ? "green" : "orange"}
                             style={{ marginLeft: 6, fontSize: 10 }}
                           >
-                            {`QwenPaw ${entry.qwenpaw_compat_labels!.join(
+                            {`汇智小助手 ${entry.qwenpaw_compat_labels!.join(
                               ", ",
                             )}`}
                           </Tag>
@@ -443,7 +443,7 @@ export default function AppStore() {
                         !isCompatible(entry)
                           ? t("os.appCompatibilityUnverified", {
                               defaultValue:
-                                "Compatibility with your QwenPaw version is unverified.",
+                                "Compatibility with your 汇智小助手 version is unverified.",
                             })
                           : undefined
                       }

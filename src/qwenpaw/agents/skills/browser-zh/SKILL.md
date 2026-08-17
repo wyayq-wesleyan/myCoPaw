@@ -1,6 +1,6 @@
 ---
 name: browser
-description: "用异步 Python 调用 QwenPaw 内置 Browser SDK 驱动真实浏览器。完整参考在下方；上下文压缩后请重新加载此 browser skill。"
+description: "用异步 Python 调用 æ±æºå°å©æ 内置 Browser SDK 驱动真实浏览器。完整参考在下方；上下文压缩后请重新加载此 browser skill。"
 metadata:
   builtin_skill_version: "0.3"
   qwenpaw:
@@ -19,12 +19,12 @@ metadata:
 浏览器完不成时，不要拿其他渠道（如 web_search）的数据顶替并仍说成浏览器结果——
 如实写明每个数据的来源。
 
-这是 QwenPaw 内置的 Browser SDK，不是 Playwright。它是封闭的 API 表面：
+这是 æ±æºå°å©æ 内置的 Browser SDK，不是 Playwright。它是封闭的 API 表面：
 未列出的方法不存在。完整参考在下方；若上下文中不再保留，请用 Skill 工具重新加载
 此 browser skill。
 
 <!-- BEGIN GENERATED: browser-manual -->
-QwenPaw Browser SDK — complete reference. This is QwenPaw's OWN internal
+æ±æºå°å©æ Browser SDK — complete reference. This is æ±æºå°å©æ's OWN internal
 SDK and this is the ENTIRE API; these are all the entrypoints. The SDK
 is already in scope as Browser — call the methods below directly. Write
 async Python. Work in a loop: perceive → act → verify.

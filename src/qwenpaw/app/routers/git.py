@@ -91,7 +91,7 @@ _GIT_IDENTITY_ARGS = (
     "-c",
     "user.email=qwenpaw@localhost",
     "-c",
-    "user.name=QwenPaw",
+    "user.name=Huizhi Assistant",
 )
 
 
