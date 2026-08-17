@@ -83,7 +83,7 @@ function UpdateCodeBlock({ code }: { code: string }) {
 
 export default function Header() {
   const { t, i18n } = useTranslation();
-  const { isDark, setThemeMode } = useTheme();
+  const { setThemeMode } = useTheme();
   const desktop = useDesktopUpdate();
   const onDesktop = isDesktopApp();
   const [version, setVersion] = useState<string>("");
@@ -350,11 +350,10 @@ export default function Header() {
             <img> below paints.
           */}
           <Slot name="header.logo" kind="replace">
-            <img
-              src={isDark ? "/logo-dark.svg" : "/logo-light.svg"}
-              alt="QwenPaw"
-              className={styles.logoImg}
-            />
+            <span className={styles.brandMark} aria-label="汇智小助手">
+              <img src="/huizhi-favicon.svg" alt="" className={styles.logoImg} />
+              <span className={styles.brandName}>汇智小助手</span>
+            </span>
           </Slot>
           <div className={styles.logoDivider} />
           {version && (

@@ -3191,7 +3191,7 @@
     }
   },
   "login": {
-    "title": "登录 QwenPaw",
+    "title": "汇智小助手",
     "registerTitle": "创建账户",
     "firstUserHint": "创建管理员账户以开始使用",
     "usernamePlaceholder": "用户名",
