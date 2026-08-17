@@ -238,7 +238,8 @@ jobs:
             --plugins-root plugins \
             --dist dist/plugins \
             --metadata-out dist/plugins/index.json \
-            --cdn-prefix /files/plugins
+            --cdn-prefix /files/plugins \
+            --exclude qwenpaw-creator
 
       - name: Upload plugins dist
         uses: actions/upload-artifact@v4
@@ -401,7 +402,8 @@ jobs:
           python3 scripts/pack/merge_plugin_index.py \
             --new dist/plugins/index.json \
             --old existing-index.json \
-            --out dist/plugins/index.json
+            --out dist/plugins/index.json \
+            --retire-plugin-id computer-use-tool
 
       - name: Upload plugins index (short-cache)
         if: ${{ !inputs.dry_run }}

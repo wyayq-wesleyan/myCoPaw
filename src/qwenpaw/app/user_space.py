@@ -111,11 +111,25 @@ def is_model_allowed(username: str | None, provider_id: str, model_id: str) -> b
 def user_agent_ids(config, username: str | None) -> list[str]:
     if not username:
         return list(config.agents.profiles)
-    return [
+    owned = [
         agent_id
         for agent_id, profile in config.agents.profiles.items()
         if getattr(profile, "owner_username", None) == username
     ]
+    saved_order = load_user_state(username).get("agent_order", [])
+    ordered = [agent_id for agent_id in saved_order if agent_id in owned]
+    return ordered + [agent_id for agent_id in owned if agent_id not in ordered]
+
+
+def set_user_agent_order(username: str, agent_ids: list[str]) -> None:
+    """Persist a user's ordering without changing other users' agents."""
+    config = load_config()
+    owned = user_agent_ids(config, username)
+    if set(agent_ids) != set(owned) or len(agent_ids) != len(set(agent_ids)):
+        raise ValueError("Each owned agent ID must appear exactly once.")
+    state = load_user_state(username)
+    state["agent_order"] = list(agent_ids)
+    save_user_state(username, state)
 
 
 def is_agent_owned(config, username: str | None, agent_id: str) -> bool:

@@ -25,6 +25,7 @@ from ...config.config import (
     ModelSlotConfig,
     load_agent_config,
     save_agent_config,
+    update_agent_config_async,
     generate_short_agent_id,
     sanitize_agent_id,
     validate_agent_id,
@@ -36,10 +37,12 @@ from ...harnesses.registry import ProviderCatalogItem, get_provider
 from ..agent_startup import AgentStartupStatus
 from ..multi_agent_manager import MultiAgentManager
 from ...constant import WORKING_DIR
+from ...utils.io_utils import run_sync_io
 from ..user_space import (
     get_request_username,
     get_user_root,
     require_owned_agent_id,
+    set_user_agent_order,
     user_agent_ids,
 )
 
@@ -71,6 +74,35 @@ class AgentListResponse(BaseModel):
     agents: list[AgentSummary]
 
 
+class MemoryGraphNode(BaseModel):
+    """One category root, indexed memory file, or unresolved target."""
+
+    id: str
+    path: str
+    name: str = ""
+    description: str = ""
+    indexed: bool
+    virtual: bool = False
+    section: Literal["daily", "digest"] | None = None
+    relative_path: str | None = None
+
+
+class MemoryGraphEdge(BaseModel):
+    """One directed wikilink in the memory graph."""
+
+    source: str
+    target: str
+    target_anchor: str | None = None
+
+
+class MemoryGraphSnapshot(BaseModel):
+    """Complete graph snapshot returned by embedded ReMe."""
+
+    version: Literal[1] = 1
+    nodes: list[MemoryGraphNode]
+    edges: list[MemoryGraphEdge]
+
+
 class ReorderAgentsRequest(BaseModel):
     """Request model for persisting agent order."""
 
@@ -82,6 +114,57 @@ class BackendSettingsRequest(BaseModel):
 
     model: str | None = None
     reasoning_effort: str | None = None
+
+
+class ReMeComponentMemoryUsage(BaseModel):
+    """Estimated memory owned by one ReMe component."""
+
+    bytes: int
+    human: str
+
+
+class MemoryWorkerRuntimeStatus(BaseModel):
+    """Sanitized state of the background memory worker."""
+
+    status: Literal["idle", "busy", "stopping", "error"]
+    queue_pending: int
+    tasks_running: int
+
+
+class AutoMemoryRuntimeStatus(BaseModel):
+    """Aggregate auto-memory progress without exposing session identity."""
+
+    enabled: bool
+    interval: int
+    active_sessions: int
+    sessions_with_pending: int
+    pending_turns: int
+
+
+class RecentMemoryRuntimeStatus(BaseModel):
+    """Latest terminal task timestamps and a bounded error summary."""
+
+    last_completed_at: str | None = None
+    last_failed_at: str | None = None
+    last_error: str | None = None
+
+
+class MemoryRuntimeStatus(BaseModel):
+    """Operational state surfaced to the Console."""
+
+    worker: MemoryWorkerRuntimeStatus
+    auto_memory: AutoMemoryRuntimeStatus
+    recent: RecentMemoryRuntimeStatus
+    reindexing: bool
+
+
+class ReMeMemoryStatusResponse(BaseModel):
+    """Structured memory information returned by ReMe's status job."""
+
+    components: dict[str, dict[str, ReMeComponentMemoryUsage]]
+    components_total: str
+    process_rss: str
+    runtime: MemoryRuntimeStatus
 
 
 class CreateAgentRequest(BaseModel):
@@ -342,10 +425,12 @@ async def list_agents(request: Request = None) -> AgentListResponse:
 )
 async def reorder_agents(
     reorder_request: ReorderAgentsRequest = Body(...),
+    request: Request = None,
 ) -> dict:
-    """Persist the full ordered list of agent IDs."""
+    """Persist the current user's ordered list of agent IDs."""
     config = load_config()
-    configured_ids = list(config.agents.profiles.keys())
+    username = get_request_username(request)
+    configured_ids = user_agent_ids(config, username)
 
     if len(reorder_request.agent_ids) != len(set(reorder_request.agent_ids)):
         raise HTTPException(
@@ -358,6 +443,13 @@ async def reorder_agents(
             status_code=400,
             detail="Each configured agent ID must appear exactly once.",
         )
+
+    if username:
+        try:
+            set_user_agent_order(username, reorder_request.agent_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"success": True, "agent_ids": reorder_request.agent_ids}
 
     if not _is_valid_display_order(config, reorder_request.agent_ids):
         raise HTTPException(
@@ -382,15 +474,15 @@ async def reorder_agents(
 async def set_agent_pinned(
     agentId: str = PathParam(...),
     pinned: bool = Body(..., embed=True),
+    request: Request = None,
 ) -> dict:
     """Persist an agent's pinned state without changing enabled state."""
     config = load_config()
-
-    if agentId not in config.agents.profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{agentId}' not found",
-        )
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
 
     if agentId == "default" and not pinned:
         raise HTTPException(
@@ -445,8 +537,15 @@ async def get_agent(
 async def update_backend_settings(
     body: BackendSettingsRequest,
     agentId: str = PathParam(...),
+    request: Request = None,
 ) -> AgentProfileConfig:
     """Persist model controls owned by a third-party agent backend."""
+    config = load_config()
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
     try:
         agent_config = load_agent_config(agentId)
     except (ValueError, AppBaseException) as exc:
@@ -672,12 +771,8 @@ async def copy_agent(
 ) -> AgentProfileRef:
     """Copy selected agent config files into a newly created agent."""
     config = load_config()
-
-    if agentId not in config.agents.profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{agentId}' not found",
-        )
+    username = get_request_username(http_request)
+    agentId = require_owned_agent_id(config, username, agentId)
 
     try:
         source_config = load_agent_config(agentId)
@@ -691,7 +786,11 @@ async def copy_agent(
     existing_ids = set(config.agents.profiles.keys())
     new_id = _generate_unique_id(existing_ids)
     new_name = (request.name or "").strip() or f"{source_config.name} Copy"
-    workspace_dir = Path(f"{WORKING_DIR}/workspaces/{new_id}").expanduser()
+    workspace_dir = (
+        get_user_root(username) / "workspaces" / new_id
+        if username
+        else Path(f"{WORKING_DIR}/workspaces/{new_id}").expanduser()
+    )
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     language = normalize_agent_language(
@@ -723,6 +822,7 @@ async def copy_agent(
         id=new_id,
         workspace_dir=str(workspace_dir),
         enabled=True,
+        owner_username=username,
     )
 
     config.agents.profiles[new_id] = agent_ref
@@ -762,22 +862,39 @@ async def update_agent(
 ) -> AgentProfileConfig:
     """Update agent configuration."""
     config = load_config()
-
-    if agentId not in config.agents.profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{agentId}' not found",
-        )
-
-    existing_config = load_agent_config(agentId)
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
 
     update_data = agent_config.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        if key != "id":
-            setattr(existing_config, key, value)
 
-    existing_config.id = agentId
-    save_agent_config(agentId, existing_config)
+    def apply_update(existing_config: AgentProfileConfig) -> None:
+        requested = AgentProfileConfig.model_validate(
+            {**existing_config.model_dump(), **update_data},
+        )
+        old_memory = existing_config.running.reme_light_memory_config
+        old_embedding = old_memory.embedding_model_config
+        requested_running = update_data.get("running")
+        if requested_running is not None:
+            new_memory = requested.running.reme_light_memory_config
+            new_embedding = new_memory.embedding_model_config
+            if old_embedding != new_embedding:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Embedding configuration must be updated through "
+                        "/workspace/running-config so the live ReMe runtime "
+                        "can be changed transactionally"
+                    ),
+                )
+        for key in update_data:
+            if key != "id":
+                setattr(existing_config, key, getattr(requested, key))
+        existing_config.id = agentId
+
+    await update_agent_config_async(agentId, apply_update)
     schedule_agent_reload(request, agentId)
 
     return agent_config
@@ -793,14 +910,14 @@ async def rebuild_agent_memory_index(
     request: Request = None,
 ) -> dict[str, str]:
     """Run the expensive ReMe reindex job as an explicit maintenance task."""
-    config = load_config()
-    if agentId not in config.agents.profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{agentId}' not found",
-        )
+    config = await run_sync_io(load_config)
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
 
-    agent_config = load_agent_config(agentId)
+    agent_config = await run_sync_io(load_agent_config, agentId)
     if agent_config.running.memory_manager_backend != "remelight":
         raise HTTPException(
             status_code=400,
@@ -834,6 +951,183 @@ async def rebuild_agent_memory_index(
     return {"status": "completed"}
 
 
+@router.get(
+    "/{agentId}/memory/runtime-status",
+    response_model=MemoryRuntimeStatus,
+    summary="Get agent memory runtime state",
+    description="Return in-memory ReMe lifecycle state without a ReMe lease",
+)
+async def get_agent_memory_runtime_status(
+    agentId: str = PathParam(...),
+    request: Request = None,
+) -> MemoryRuntimeStatus:
+    """Return immediately even while an exclusive lifecycle job is active."""
+    config = await run_sync_io(load_config)
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
+
+    agent_config = await run_sync_io(load_agent_config, agentId)
+    if agent_config.running.memory_manager_backend != "remelight":
+        raise HTTPException(
+            status_code=400,
+            detail="Memory status is only supported by ReMe Light",
+        )
+
+    manager = _get_multi_agent_manager(request)
+    workspace = manager.get_loaded_agent(agentId)
+    if workspace is None or workspace.memory_manager is None:
+        raise HTTPException(status_code=503, detail="Agent is not running")
+    memory_config = agent_config.running.reme_light_memory_config
+    return MemoryRuntimeStatus.model_validate(
+        workspace.memory_manager.get_runtime_status(
+            auto_memory_interval=memory_config.auto_memory_interval,
+        ),
+    )
+
+
+@router.get(
+    "/{agentId}/memory/status",
+    response_model=ReMeMemoryStatusResponse,
+    summary="Get agent ReMe memory status",
+    description="Return ReMe component memory estimates and process RSS",
+)
+async def get_agent_memory_status(
+    agentId: str = PathParam(...),
+    request: Request = None,
+) -> ReMeMemoryStatusResponse:
+    """Inspect the currently running ReMe instance without reloading it."""
+    config = await run_sync_io(load_config)
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
+
+    agent_config = await run_sync_io(load_agent_config, agentId)
+    if agent_config.running.memory_manager_backend != "remelight":
+        raise HTTPException(
+            status_code=400,
+            detail="Memory status is only supported by ReMe Light",
+        )
+
+    manager = _get_multi_agent_manager(request)
+    workspace = manager.get_loaded_agent(agentId)
+    if workspace is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent is not running",
+        )
+    memory_manager = workspace.memory_manager
+    if memory_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Memory manager is not available",
+        )
+
+    response = await memory_manager.reme_status()
+    if response is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ReMe is not started or status reporting is unavailable",
+        )
+    if not response.success:
+        raise HTTPException(status_code=500, detail=str(response.answer))
+
+    metadata = getattr(response, "metadata", None) or {}
+    memory = metadata.get("status", {}).get("memory")
+    if not isinstance(memory, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="ReMe returned an invalid memory status payload",
+        )
+    memory_config = agent_config.running.reme_light_memory_config
+    try:
+        return ReMeMemoryStatusResponse.model_validate(
+            {
+                **memory,
+                "runtime": memory_manager.get_runtime_status(
+                    auto_memory_interval=memory_config.auto_memory_interval,
+                ),
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="ReMe returned an invalid memory status payload",
+        ) from exc
+
+
+@router.get(
+    "/{agentId}/memory/graph",
+    response_model=MemoryGraphSnapshot,
+    summary="Get agent memory graph",
+    description="Return the category-rooted ReMe wikilink graph",
+)
+async def get_agent_memory_graph(
+    agentId: str = PathParam(...),
+    request: Request = None,
+) -> MemoryGraphSnapshot:
+    """Return a frontend-ready graph snapshot from embedded ReMe."""
+    config = await run_sync_io(load_config)
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
+
+    agent_config = await run_sync_io(load_agent_config, agentId)
+    if agent_config.running.memory_manager_backend != "remelight":
+        raise HTTPException(
+            status_code=400,
+            detail="Memory graph is only supported by ReMe Light",
+        )
+
+    manager = _get_multi_agent_manager(request)
+    workspace = await manager.get_agent(agentId)
+    memory_manager = workspace.memory_manager
+    if memory_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Memory manager is not available",
+        )
+
+    response = await memory_manager.graph_snapshot()
+    if response is None:
+        raise HTTPException(
+            status_code=503,
+            detail="ReMe is not started or the graph snapshot job failed",
+        )
+    if not response.success:
+        raise HTTPException(status_code=500, detail=str(response.answer))
+
+    snapshot = MemoryGraphSnapshot.model_validate(response.answer)
+    reme_config = agent_config.running.reme_light_memory_config
+    roots = sorted(
+        (
+            ("daily", reme_config.daily_dir),
+            ("digest", reme_config.digest_dir),
+        ),
+        key=lambda item: len(item[1].replace("\\", "/").strip("/").split("/")),
+        reverse=True,
+    )
+    for node in snapshot.nodes:
+        if not node.indexed or node.virtual:
+            continue
+        node_path = node.path.replace("\\", "/").strip("/")
+        for section, configured_root in roots:
+            root = configured_root.replace("\\", "/").strip("/")
+            prefix = f"{root}/"
+            if root and node_path.startswith(prefix):
+                node.section = section
+                node.relative_path = node_path[len(prefix) :]
+                break
+
+    return snapshot
+
+
 @router.delete(
     "/{agentId}",
     summary="Delete agent",
@@ -845,12 +1139,11 @@ async def delete_agent(
 ) -> dict:
     """Delete an agent."""
     config = load_config()
-
-    if agentId not in config.agents.profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{agentId}' not found",
-        )
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
 
     if agentId == "default":
         raise HTTPException(
@@ -885,12 +1178,11 @@ async def toggle_agent_enabled(
 ) -> dict:
     """Toggle agent enabled state."""
     config = load_config()
-
-    if agentId not in config.agents.profiles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{agentId}' not found",
-        )
+    agentId = require_owned_agent_id(
+        config,
+        get_request_username(request),
+        agentId,
+    )
 
     if agentId == "default":
         raise HTTPException(
@@ -906,7 +1198,7 @@ async def toggle_agent_enabled(
             status_code=409,
             detail=(
                 f"Agent '{agentId}' is still starting and cannot be "
-                f"disabled yet"
+                "disabled yet"
             ),
         )
 

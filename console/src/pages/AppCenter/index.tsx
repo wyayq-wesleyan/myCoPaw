@@ -3,8 +3,8 @@
  *
  * Lists all plugins with `meta.pawapp` from the backend. Clicking an
  * app renders its registered route component INLINE within this page
- * (no full-page navigation). The URL bar is mirrored via history.pushState
- * so path-based SDK helpers (getAppId) keep resolving.
+ * (no full-page navigation). The classic console mirrors the app path in the
+ * URL; the Desktop OS keeps its single `/os` browser entry point.
  */
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -35,8 +35,16 @@ import { PageHeader } from "@/components/PageHeader";
 import { useAppMessage } from "@/hooks/useAppMessage";
 import { pawappApi } from "../../api/modules/pawapp";
 import { useRoutes } from "../../plugins/registry/hooks";
-import { AppCard, type AppCardData } from "./AppCard";
+import { setActivePawAppId } from "../../plugins/pawapp-sdk/context";
+import { AppCard, pickAppDescription, type AppCardData } from "./AppCard";
 import { ChunkErrorBoundary } from "@/components/ChunkErrorBoundary";
+import {
+  addRouterBasename,
+  getOsPawAppIdFromHistoryState,
+  getOsRootHref,
+  isOsPath,
+  withOsPawAppHistoryState,
+} from "../../utils/navigationMode";
 import styles from "./index.module.less";
 
 // Code-split market views so their bundle + network fetch never block the
@@ -50,8 +58,17 @@ const { Option } = Select;
 /** URL-persisted App Center views; unknown values fall back to installed. */
 type AppCenterView = "installed" | "official" | "market";
 
+// Featured installed apps (e.g. Creator) are pinned to the top of the grid.
+// Lower index = higher placement.
+const FEATURED_APP_IDS = ["qwenpaw-creator"];
+
+function featuredRank(id: string): number {
+  const index = FEATURED_APP_IDS.indexOf(id);
+  return index === -1 ? FEATURED_APP_IDS.length : index;
+}
+
 export default function AppCenterPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { appId } = useParams();
   const { message } = useAppMessage();
   const routes = useRoutes();
@@ -89,6 +106,7 @@ export default function AppCenterPage() {
           name: app.name,
           version: app.version,
           description: app.description,
+          description_i18n: app.description_i18n ?? {},
           category: app.category ?? "",
           icon: app.icon ?? "",
           icon_url: app.icon_url ?? "",
@@ -118,6 +136,11 @@ export default function AppCenterPage() {
     if (found) setActiveApp(found);
   }, [appId, apps]);
 
+  useEffect(() => {
+    setActivePawAppId(activeApp?.id ?? null);
+    return () => setActivePawAppId(null);
+  }, [activeApp?.id]);
+
   // Compute available categories
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -127,18 +150,21 @@ export default function AppCenterPage() {
     return Array.from(cats).sort();
   }, [apps]);
 
-  // Filter apps
+  // Filter apps (featured apps stay pinned to the top, stable otherwise)
   const filteredApps = useMemo(() => {
-    return apps.filter((app) => {
-      const matchesSearch =
-        !searchQuery ||
-        app.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        app.description.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesCategory =
-        categoryFilter === "all" || app.category === categoryFilter;
-      return matchesSearch && matchesCategory;
-    });
-  }, [apps, searchQuery, categoryFilter]);
+    return apps
+      .filter((app) => {
+        const description = pickAppDescription(app, i18n.language);
+        const matchesSearch =
+          !searchQuery ||
+          app.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          description.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesCategory =
+          categoryFilter === "all" || app.category === categoryFilter;
+        return matchesSearch && matchesCategory;
+      })
+      .sort((a, b) => featuredRank(a.id) - featuredRank(b.id));
+  }, [apps, searchQuery, categoryFilter, i18n.language]);
 
   const appTarget = (app: AppCardData) => app.entry_page || `/apps/${app.id}`;
 
@@ -151,15 +177,42 @@ export default function AppCenterPage() {
   }, [activeApp, routes]);
 
   const handleAppClick = (app: AppCardData) => {
-    // Reflect the app path in the URL bar (so path-based SDK helpers keep
-    // working) WITHOUT triggering a react-router navigation, then render the
-    // app inline within this page.
-    window.history.pushState({ pawappInline: true }, "", appTarget(app));
+    const target = appTarget(app);
+    if (isOsPath(window.location.pathname)) {
+      window.history.pushState(
+        withOsPawAppHistoryState(window.history.state, app.id),
+        "",
+        getOsRootHref(window.location.pathname),
+      );
+    } else {
+      window.history.pushState(
+        { pawappInline: true },
+        "",
+        addRouterBasename(window.location.pathname, target),
+      );
+    }
     setActiveApp(app);
   };
 
   const handleBack = () => {
-    window.history.pushState({}, "", "/apps");
+    if (isOsPath(window.location.pathname)) {
+      if (getOsPawAppIdFromHistoryState(window.history.state)) {
+        window.history.back();
+        return;
+      }
+      window.history.replaceState(
+        withOsPawAppHistoryState(window.history.state, null),
+        "",
+        getOsRootHref(window.location.pathname),
+      );
+      setActiveApp(null);
+      return;
+    }
+    window.history.pushState(
+      {},
+      "",
+      addRouterBasename(window.location.pathname, "/apps"),
+    );
     setActiveApp(null);
   };
 
@@ -194,12 +247,19 @@ export default function AppCenterPage() {
 
   // Keep the inline view in sync with browser back/forward.
   useEffect(() => {
-    const onPop = () => {
-      if (!/\/apps\//.test(window.location.pathname)) setActiveApp(null);
+    const onPop = (event: PopStateEvent) => {
+      const appId = isOsPath(window.location.pathname)
+        ? getOsPawAppIdFromHistoryState(event.state)
+        : window.location.pathname.match(/\/apps\/([^/?#]+)/)?.[1];
+      if (!appId) {
+        setActiveApp(null);
+        return;
+      }
+      setActiveApp(apps.find((app) => app.id === appId) ?? null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  }, [apps]);
 
   // ESC key to close app and return to list
   useEffect(() => {
@@ -256,7 +316,7 @@ export default function AppCenterPage() {
                 {activeApp.description && (
                   <p>
                     <strong>{t("appCenter.description", "描述")}:</strong>{" "}
-                    {activeApp.description}
+                    {pickAppDescription(activeApp, i18n.language)}
                   </p>
                 )}
               </div>
@@ -434,7 +494,7 @@ export default function AppCenterPage() {
           )}
         </Empty>
       ) : (
-        <div className={styles.grid}>
+        <div className={styles.gridLarge}>
           {filteredApps.map((app) => (
             <AppCard
               key={app.id}
