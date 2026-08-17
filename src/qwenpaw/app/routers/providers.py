@@ -21,6 +21,8 @@ from qwenpaw.exceptions import (
 )
 
 from ..agent_context import get_agent_for_request
+from ..auth import is_auth_enabled, require_admin_access
+from ..user_space import get_request_username, is_model_allowed
 from ..utils import schedule_agent_reload
 from ...config.config import load_agent_config, save_agent_config
 from ...providers.provider import ProviderInfo, ModelInfo
@@ -55,6 +57,37 @@ async def get_provider_manager(request: Request) -> ProviderManager:
         request: FastAPI request object
     """
     return request.app.state.provider_manager
+
+
+def _require_admin_model_access(request: Request) -> None:
+    """Restrict provider configuration to the offline deployment admin."""
+    if is_auth_enabled():
+        require_admin_access(get_request_username(request))
+
+
+def _visible_provider_info(
+    provider: ProviderInfo,
+    username: str | None,
+) -> ProviderInfo | None:
+    """Return a provider view containing only models authorized to a user."""
+    if not username:
+        return provider
+    models = [
+        model
+        for model in provider.models
+        if is_model_allowed(username, provider.id, model.id)
+    ]
+    extra_models = [
+        model
+        for model in provider.extra_models
+        if is_model_allowed(username, provider.id, model.id)
+    ]
+    if not models and not extra_models:
+        return None
+    # Users need model metadata for Chat, but never provider credentials.
+    return provider.model_copy(
+        update={"models": models, "extra_models": extra_models, "api_key": "", "custom_headers": {}},
+    )
 
 
 def _active_models_info(
@@ -225,9 +258,13 @@ async def _load_agent_model(
     summary="List all providers",
 )
 async def list_all_providers(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
 ) -> List[ProviderInfo]:
-    return await manager.list_provider_info()
+    username = get_request_username(request)
+    providers = await manager.list_provider_info()
+    visible = [_visible_provider_info(provider, username) for provider in providers]
+    return [provider for provider in visible if provider is not None]
 
 
 @router.put(
@@ -236,10 +273,12 @@ async def list_all_providers(
     summary="Configure a provider",
 )
 async def configure_provider(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: ProviderConfigRequest = Body(...),
 ) -> ProviderInfo:
+    _require_admin_model_access(request)
     config = {
         "api_key": body.api_key,
         "base_url": body.base_url,
@@ -278,9 +317,11 @@ async def configure_provider(
     status_code=201,
 )
 async def create_custom_provider_endpoint(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     body: CreateCustomProviderRequest = Body(...),
 ) -> ProviderInfo:
+    _require_admin_model_access(request)
     try:
         provider_info = await manager.add_custom_provider(
             ProviderInfo(
@@ -367,11 +408,13 @@ class DiscoverModelsResponse(BaseModel):
     summary="Test provider connection",
 )
 async def test_provider(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: Optional[TestProviderRequest] = Body(default=None),
 ) -> TestConnectionResponse:
     """Test if a provider's URL and API key are valid."""
+    _require_admin_model_access(request)
     try:
         provider = manager.get_provider(provider_id)
         if provider is None:
@@ -405,6 +448,7 @@ async def test_provider(
     summary="Discover available models from provider",
 )
 async def discover_models(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: Optional[DiscoverModelsRequest] = Body(default=None),
@@ -413,6 +457,7 @@ async def discover_models(
         description="Save discovered models to provider",
     ),
 ) -> DiscoverModelsResponse:
+    _require_admin_model_access(request)
     try:
         provider = manager.get_provider(provider_id)
         if provider is None:
@@ -468,11 +513,13 @@ async def discover_models(
     summary="Test a specific model",
 )
 async def test_model(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: TestModelRequest = Body(...),
 ) -> TestConnectionResponse:
     """Test if a specific model works with the configured provider."""
+    _require_admin_model_access(request)
     try:
         provider = manager.get_provider(provider_id)
         if provider is None:
@@ -496,9 +543,11 @@ async def test_model(
     summary="Delete a custom provider",
 )
 async def delete_custom_provider_endpoint(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
 ) -> List[ProviderInfo]:
+    _require_admin_model_access(request)
     try:
         ok = manager.remove_custom_provider(provider_id)
         if not ok:
@@ -515,10 +564,12 @@ async def delete_custom_provider_endpoint(
     status_code=201,
 )
 async def add_model_endpoint(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: AddModelRequest = Body(...),
 ) -> ProviderInfo:
+    _require_admin_model_access(request)
     try:
         provider = await manager.add_model_to_provider(
             provider_id=provider_id,
@@ -566,11 +617,13 @@ class ProbeMultimodalResponse(BaseModel):
     summary="Probe model multimodal capability",
 )
 async def probe_model_multimodal(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     model_id: str = Path(...),
 ) -> ProbeMultimodalResponse:
     """Probe image and video support by sending lightweight test requests."""
+    _require_admin_model_access(request)
     result = await manager.probe_model_multimodal(provider_id, model_id)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
@@ -583,10 +636,12 @@ async def probe_model_multimodal(
     summary="Remove a model from a provider",
 )
 async def remove_model_endpoint(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     model_id: str = Path(...),
 ) -> ProviderInfo:
+    _require_admin_model_access(request)
     try:
         provider = await manager.delete_model_from_provider(
             provider_id=provider_id,
@@ -603,6 +658,7 @@ async def remove_model_endpoint(
     summary="Configure per-model generation parameters",
 )
 async def configure_model(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     model_id: str = Path(...),
@@ -610,6 +666,7 @@ async def configure_model(
 ) -> ProviderInfo:
     """Update per-model generate_kwargs that override provider-level
     settings."""
+    _require_admin_model_access(request)
     try:
         provider_info = await manager.update_model_config(
             provider_id=provider_id,
@@ -703,7 +760,9 @@ async def set_active_model(
     body: ModelSlotRequest = Body(...),
 ) -> ActiveModelsInfo:
     """Set active model by scope."""
+    username = get_request_username(request)
     if body.scope == "global":
+        _require_admin_model_access(request)
         try:
             await manager.activate_model(body.provider_id, body.model)
         except (
@@ -742,6 +801,9 @@ async def set_active_model(
             status_code=400,
             detail="agent_id is required when scope is 'agent'",
         )
+
+    if not is_model_allowed(username, body.provider_id, body.model):
+        raise HTTPException(status_code=403, detail="Model is not authorized for this user")
 
     _validate_model_slot(manager, body.provider_id, body.model)
 
@@ -864,9 +926,11 @@ class FilterModelsResponse(BaseModel):
     summary="Get available OpenRouter provider series",
 )
 async def get_openrouter_series(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
 ) -> SeriesResponse:
     """Get list of available provider/series from OpenRouter."""
+    _require_admin_model_access(request)
     provider = manager.get_provider("openrouter")
     if provider is None:
         raise HTTPException(
@@ -896,10 +960,12 @@ async def get_openrouter_series(
     summary="Discover OpenRouter models with extended metadata",
 )
 async def discover_openrouter_extended(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     body: Optional[DiscoverModelsRequest] = Body(default=None),
 ) -> DiscoverExtendedResponse:
     """Discover available models from OpenRouter with full metadata."""
+    _require_admin_model_access(request)
     provider = manager.get_provider("openrouter")
     if provider is None:
         raise HTTPException(
@@ -958,10 +1024,12 @@ async def discover_openrouter_extended(
     summary="Filter OpenRouter models by criteria",
 )
 async def filter_openrouter_models(
+    request: Request,
     manager: ProviderManager = Depends(get_provider_manager),
     body: FilterModelsRequest = Body(...),
 ) -> FilterModelsResponse:
     """Filter OpenRouter models by provider, modalities, and price."""
+    _require_admin_model_access(request)
     provider = manager.get_provider("openrouter")
     if provider is None:
         raise HTTPException(

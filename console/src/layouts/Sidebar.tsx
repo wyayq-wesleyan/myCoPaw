@@ -74,6 +74,32 @@ function isMobileSidebarViewport() {
 }
 const INBOX_BADGE_POLLING_MS = 6000;
 
+const ADMIN_ONLY_MENU_IDS = new Set([
+  "core.inbox",
+  "core.app-center",
+  "core.channels",
+  "core.heartbeat",
+  "core.mcp",
+  "core.acp",
+  "core.models",
+  "core.user-management",
+  "core.skill-pool",
+  "core.environments",
+  "core.offload-policy",
+  "core.security",
+  "core.token-usage",
+  "core.backups",
+  "core.voice-transcription",
+  "core.debug",
+  "core.plugin-manager",
+]);
+
+function filterMenuForRole(items: MenuItem[], isAdmin: boolean): MenuItem[] {
+  return isAdmin
+    ? items
+    : items.filter((item) => !ADMIN_ONLY_MENU_IDS.has(item.id));
+}
+
 // ── Simple mode whitelist ─────────────────────────────────────────────────
 
 /** Menu item IDs that remain visible in simple sidebar mode (no groups). */
@@ -126,6 +152,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   const currentSessionId = getSessionIdFromPath(location.pathname);
   const chatPath = buildChatPath(currentSessionId);
   const [authEnabled, setAuthEnabled] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountForm] = Form.useForm();
@@ -169,19 +196,19 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   // Apply simple-mode filtering when enabled
   const agentMenu = useMemo(() => {
     const visibleMenu = filterMenuForAgentCapabilities(
-      rawAgentMenu,
+      filterMenuForRole(rawAgentMenu, isAdmin),
       backendCapabilities,
     );
     return sidebarMode === "simple"
       ? flattenMenuForSimpleMode(visibleMenu)
       : visibleMenu;
-  }, [backendCapabilities, rawAgentMenu, sidebarMode]);
+  }, [backendCapabilities, isAdmin, rawAgentMenu, sidebarMode]);
   const settingsMenu = useMemo(
     () =>
       sidebarMode === "simple"
-        ? flattenMenuForSimpleMode(rawSettingsMenu)
-        : rawSettingsMenu,
-    [rawSettingsMenu, sidebarMode],
+        ? flattenMenuForSimpleMode(filterMenuForRole(rawSettingsMenu, isAdmin))
+        : filterMenuForRole(rawSettingsMenu, isAdmin),
+    [isAdmin, rawSettingsMenu, sidebarMode],
   );
 
   // Flat nav entries for simple mode (icon + label + path)
@@ -198,7 +225,17 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   useEffect(() => {
     authApi
       .getStatus()
-      .then((res) => setAuthEnabled(res.enabled))
+      .then((res) => {
+        setAuthEnabled(res.enabled);
+        if (!res.enabled) {
+          setIsAdmin(true);
+          return;
+        }
+        return authApi
+          .getCurrentUser()
+          .then((user) => setIsAdmin(user.role === "admin"))
+          .catch(() => setIsAdmin(false));
+      })
       .catch(() => {});
   }, []);
 

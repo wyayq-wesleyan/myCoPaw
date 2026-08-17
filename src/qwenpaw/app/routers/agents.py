@@ -41,6 +41,7 @@ from ...utils.io_utils import run_sync_io
 from ..user_space import (
     get_request_username,
     get_user_root,
+    is_model_allowed,
     require_owned_agent_id,
     set_user_agent_order,
     user_agent_ids,
@@ -660,6 +661,19 @@ async def create_agent(
         except Exception:
             pass
 
+    if (
+        active_model
+        and not is_model_allowed(
+            username,
+            active_model.provider_id,
+            active_model.model,
+        )
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Model is not authorized for this user",
+        )
+
     agent_config = AgentProfileConfig(
         id=new_id,
         name=request.name,
@@ -869,6 +883,20 @@ async def update_agent(
     )
 
     update_data = agent_config.model_dump(exclude_unset=True)
+    requested_model = update_data.get("active_model")
+    username = get_request_username(request)
+    if (
+        requested_model
+        and not is_model_allowed(
+            username,
+            requested_model.get("provider_id", ""),
+            requested_model.get("model", ""),
+        )
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Model is not authorized for this user",
+        )
 
     def apply_update(existing_config: AgentProfileConfig) -> None:
         requested = AgentProfileConfig.model_validate(
