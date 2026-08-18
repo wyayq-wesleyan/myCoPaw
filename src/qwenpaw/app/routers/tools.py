@@ -89,6 +89,7 @@ class ToolInfo(BaseModel):
     source_label: str = ""
     can_share: bool = False
     custom: bool = False
+    is_builtin: bool = True
 
 
 class CreateCustomToolRequest(BaseModel):
@@ -257,6 +258,7 @@ async def list_tools(
             ),
             can_share=record.get("creator_username") == username,
             custom=True,
+            is_builtin=False,
         )
         for record in list_resources_for_user_sync(
             kind="tool", username=username, admin=is_admin

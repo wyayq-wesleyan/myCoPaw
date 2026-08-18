@@ -27,6 +27,7 @@ export interface ToolInfo {
   source_label?: string;
   can_share?: boolean;
   custom?: boolean;
+  is_builtin?: boolean;
 }
 
 export const toolsApi = {

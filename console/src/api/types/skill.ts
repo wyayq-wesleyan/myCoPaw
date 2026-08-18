@@ -18,6 +18,7 @@ export interface SkillSpec {
   creator_username?: string;
   source_label?: string;
   can_share?: boolean;
+  is_builtin?: boolean;
 }
 
 export interface SkillDetail extends SkillSpec {

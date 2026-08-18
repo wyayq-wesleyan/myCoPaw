@@ -147,6 +147,99 @@ function SkillsPage() {
     ],
   );
 
+  const renderSkillGroup = useCallback(
+    (items: SkillSpec[]) => {
+      const groups = [
+        { title: "初始技能", items: items.filter((skill) => skill.is_builtin !== false) },
+        { title: "后续新建技能", items: items.filter((skill) => skill.is_builtin === false) },
+      ].filter((group) => group.items.length > 0);
+      return groups.map((group) => (
+        <section key={group.title} className={styles.resourceSubgroup}>
+          <div className={styles.resourceSubgroupTitle}>
+            <span>{group.title}</span>
+            <span className={styles.resourceSubgroupCount}>{group.items.length}</span>
+          </div>
+          {viewMode === "card" ? (
+            <div className={styles.skillsGrid}>
+              {group.items.map((skill) => (
+                <SkillCard
+                  key={skill.name}
+                  skill={skill}
+                  selected={batchModeEnabled ? selectedSkills.has(skill.name) : undefined}
+                  onSelect={() => toggleSelect(skill.name)}
+                  onClick={() => handleEdit(skill)}
+                  onMouseEnter={() => {}}
+                  onMouseLeave={() => {}}
+                  onToggleEnabled={(e) => handleToggleEnabled(skill, e)}
+                  onDelete={(e) => handleDelete(skill, e)}
+                  onShare={() => void openShare(skill)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className={styles.skillsList}>{group.items.map(renderSkillListItem)}</div>
+          )}
+        </section>
+      ));
+    },
+    [
+      batchModeEnabled,
+      handleDelete,
+      handleEdit,
+      handleToggleEnabled,
+      openShare,
+      renderSkillListItem,
+      selectedSkills,
+      toggleSelect,
+      viewMode,
+    ],
+  );
+
+  const renderDisabledSkillGroup = useCallback(
+    (items: SkillSpec[]) => {
+      const groups = [
+        { title: "初始技能", items: items.filter((skill) => skill.is_builtin !== false) },
+        { title: "后续新建技能", items: items.filter((skill) => skill.is_builtin === false) },
+      ].filter((group) => group.items.length > 0);
+      return groups.map((group) => (
+        <section key={group.title} className={styles.resourceSubgroup}>
+          <div className={styles.resourceSubgroupTitle}>
+            <span>{group.title}</span>
+            <span className={styles.resourceSubgroupCount}>{group.items.length}</span>
+          </div>
+          {viewMode === "card" ? (
+            <div className={styles.disabledSkillsGrid}>
+              {group.items.map((skill) => (
+                <div
+                  key={skill.name}
+                  className={styles.disabledSkillGridItem}
+                  onClick={() => handleEdit(skill)}
+                >
+                  <span className={styles.disabledSkillGridIcon}>
+                    {getSkillVisual(skill.name, skill.emoji)}
+                  </span>
+                  <span className={styles.disabledSkillGridName}>{skill.name}</span>
+                  <span
+                    className={styles.disabledSkillGridAction}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleEnabled(skill, e);
+                    }}
+                  >
+                    {t("common.enable")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className={styles.skillsList}>{group.items.map(renderSkillListItem)}</div>
+          )}
+        </section>
+      ));
+    },
+    [handleEdit, handleToggleEnabled, renderSkillListItem, t, viewMode],
+  );
+
   return (
     <div className={styles.skillsPage}>
       <PageHeader
@@ -245,32 +338,7 @@ function SkillsPage() {
                 </span>
               </div>
 
-              {viewMode === "card" ? (
-                <div className={styles.skillsGrid}>
-                  {enabledSkills.map((skill) => (
-                    <SkillCard
-                      key={skill.name}
-                      skill={skill}
-                      selected={
-                        batchModeEnabled
-                          ? selectedSkills.has(skill.name)
-                          : undefined
-                      }
-                      onSelect={() => toggleSelect(skill.name)}
-                      onClick={() => handleEdit(skill)}
-                      onMouseEnter={() => {}}
-                      onMouseLeave={() => {}}
-                      onToggleEnabled={(e) => handleToggleEnabled(skill, e)}
-                      onDelete={(e) => handleDelete(skill, e)}
-                      onShare={() => void openShare(skill)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className={styles.skillsList}>
-                  {enabledSkills.map(renderSkillListItem)}
-                </div>
-              )}
+              {renderSkillGroup(enabledSkills)}
             </div>
           )}
 
@@ -281,37 +349,7 @@ function SkillsPage() {
                 <span className={styles.panelDotGray} />
                 {t("skills.disabledSkills")}
               </div>
-              {viewMode === "card" ? (
-                <div className={styles.disabledSkillsGrid}>
-                  {disabledSkills.map((skill) => (
-                    <div
-                      key={skill.name}
-                      className={styles.disabledSkillGridItem}
-                      onClick={() => handleEdit(skill)}
-                    >
-                      <span className={styles.disabledSkillGridIcon}>
-                        {getSkillVisual(skill.name, skill.emoji)}
-                      </span>
-                      <span className={styles.disabledSkillGridName}>
-                        {skill.name}
-                      </span>
-                      <span
-                        className={styles.disabledSkillGridAction}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleEnabled(skill, e);
-                        }}
-                      >
-                        {t("common.enable")}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className={styles.skillsList}>
-                  {disabledSkills.map(renderSkillListItem)}
-                </div>
-              )}
+              {renderDisabledSkillGroup(disabledSkills)}
             </div>
           )}
 

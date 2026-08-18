@@ -128,6 +128,10 @@ class AccountResourceItem(BaseModel):
     name: str
     description: str = ""
     icon: str = ""
+    resource_id: str = ""
+    creator_username: str = ""
+    source_label: str = ""
+    is_builtin: bool = True
 
 
 class UserResourcesResponse(BaseModel):
@@ -149,6 +153,8 @@ def _resource_response(username: str) -> UserResourcesResponse:
             name=skill.name,
             description=str(getattr(skill, "description", "") or ""),
             icon=str(getattr(skill, "emoji", "") or ""),
+            source_label="系统初始资源",
+            is_builtin=True,
         )
         for skill in SkillPoolService().list_all_skills()
     ]
@@ -157,6 +163,8 @@ def _resource_response(username: str) -> UserResourcesResponse:
             name=name,
             description=str(getattr(tool, "description", "") or ""),
             icon=str(getattr(tool, "icon", "") or ""),
+            source_label="系统初始资源",
+            is_builtin=True,
         )
         for name, tool in _tool_pool().items()
     ]
@@ -170,6 +178,10 @@ def _resource_response(username: str) -> UserResourcesResponse:
         AccountResourceItem(
             name=str(item["name"]),
             description=f"自建技能，创建者：{item.get('creator_username', '')}",
+            resource_id=str(item.get("resource_id", "")),
+            creator_username=str(item.get("creator_username", "")),
+            source_label=str(item.get("source_label", "本人创建")),
+            is_builtin=False,
         )
         for item in custom_skills
     )
@@ -177,6 +189,10 @@ def _resource_response(username: str) -> UserResourcesResponse:
         AccountResourceItem(
             name=str(item["name"]),
             description=f"自建工具，创建者：{item.get('creator_username', '')}",
+            resource_id=str(item.get("resource_id", "")),
+            creator_username=str(item.get("creator_username", "")),
+            source_label=str(item.get("source_label", "本人创建")),
+            is_builtin=False,
         )
         for item in custom_tools
     )

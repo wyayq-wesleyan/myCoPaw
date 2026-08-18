@@ -211,6 +211,7 @@ class SkillSpec(BaseModel):
     creator_username: str = ""
     source_label: str = ""
     can_share: bool = False
+    is_builtin: bool = True
 
 
 class SkillDetail(SkillSpec):
@@ -814,6 +815,7 @@ def _build_workspace_skill_specs(
                         and not resource.get("is_builtin")
                         and resource.get("creator_username") == username
                     ),
+                    is_builtin=not bool(resource and not resource.get("is_builtin")),
                 ),
             )
         except Exception:

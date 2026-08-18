@@ -347,6 +347,21 @@ export default function ToolsPage() {
     return { enabledTools: enabled, disabledTools: disabled };
   }, [tools]);
 
+  const enabledToolGroups = useMemo(
+    () => [
+      { title: "初始工具", items: enabledTools.filter((tool) => tool.is_builtin !== false) },
+      { title: "后续新建工具", items: enabledTools.filter((tool) => tool.is_builtin === false) },
+    ].filter((group) => group.items.length > 0),
+    [enabledTools],
+  );
+  const disabledToolGroups = useMemo(
+    () => [
+      { title: "初始工具", items: disabledTools.filter((tool) => tool.is_builtin !== false) },
+      { title: "后续新建工具", items: disabledTools.filter((tool) => tool.is_builtin === false) },
+    ].filter((group) => group.items.length > 0),
+    [disabledTools],
+  );
+
   const isToolConfigured = (tool: ToolInfo) =>
     !tool.requires_config ||
     (tool.config_values && Object.keys(tool.config_values).length > 0);
@@ -400,8 +415,15 @@ export default function ToolsPage() {
               </div>
 
               {enabledTools.length > 0 ? (
-                <div className={styles.toolsGrid}>
-                  {enabledTools.map((tool) => (
+                <div>
+                  {enabledToolGroups.map((group) => (
+                    <section key={group.title} className={styles.resourceSubgroup}>
+                      <div className={styles.resourceSubgroupTitle}>
+                        <span>{group.title}</span>
+                        <span className={styles.resourceSubgroupCount}>{group.items.length}</span>
+                      </div>
+                      <div className={styles.toolsGrid}>
+                  {group.items.map((tool) => (
                     <Card
                       key={tool.name}
                       className={`${styles.toolCard} ${styles.enabledCard}`}
@@ -518,6 +540,9 @@ export default function ToolsPage() {
                       </div>
                     </Card>
                   ))}
+                      </div>
+                    </section>
+                  ))}
                 </div>
               ) : (
                 <div className={styles.emptyEnabled}>
@@ -543,8 +568,15 @@ export default function ToolsPage() {
                   <span className={styles.panelDotGray} />
                   {t("tools.available")}
                 </div>
-                <div className={styles.availableGrid}>
-                  {disabledTools.map((tool) => (
+                <div>
+                  {disabledToolGroups.map((group) => (
+                    <section key={group.title} className={styles.resourceSubgroup}>
+                      <div className={styles.resourceSubgroupTitle}>
+                        <span>{group.title}</span>
+                        <span className={styles.resourceSubgroupCount}>{group.items.length}</span>
+                      </div>
+                      <div className={styles.availableGrid}>
+                  {group.items.map((tool) => (
                     <div
                       key={tool.name}
                       className={styles.availableItem}
@@ -563,6 +595,9 @@ export default function ToolsPage() {
                           : t("tools.enableAction")}
                       </span>
                     </div>
+                  ))}
+                      </div>
+                    </section>
                   ))}
                 </div>
               </div>

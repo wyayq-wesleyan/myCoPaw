@@ -177,10 +177,11 @@ export const SkillCard = React.memo(function SkillCard({
     }
   };
 
-  const isBuiltin =
+  const isBuiltin = skill.is_builtin ?? (
     skill.source === "builtin" ||
     skill.source?.startsWith("builtin:") ||
-    skill.source === "system";
+    skill.source === "system"
+  );
 
   return (
     <Card

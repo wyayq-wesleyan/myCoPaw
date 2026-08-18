@@ -25,6 +25,10 @@ export interface AccountResourceItem {
   name: string;
   description: string;
   icon: string;
+  resource_id: string;
+  creator_username: string;
+  source_label: string;
+  is_builtin: boolean;
 }
 export interface UserResourcesResponse {
   username: string;

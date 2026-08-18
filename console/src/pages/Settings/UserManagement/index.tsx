@@ -31,8 +31,8 @@ import { clearAuthToken } from "../../../api/config";
 
 type ResourceOptions = {
   models: string[];
-  skills: string[];
-  tools: string[];
+  skills: import("../../../api/modules/auth").AccountResourceItem[];
+  tools: import("../../../api/modules/auth").AccountResourceItem[];
   selectedSkills: string[];
   selectedTools: string[];
 };
@@ -155,8 +155,8 @@ export default function UserManagementPage() {
           (model) => `${provider.id}::${model.id}`,
         ),
       ),
-      skills: accountResources.available_skills.map((item) => item.name),
-      tools: accountResources.available_tools.map((item) => item.name),
+      skills: accountResources.available_skills,
+      tools: accountResources.available_tools,
       selectedSkills: accountResources.skills,
       selectedTools: accountResources.tools,
     };
@@ -240,8 +240,8 @@ export default function UserManagementPage() {
       });
       setResources((current) => ({
         ...current,
-        skills: accountResources.available_skills.map((item) => item.name),
-        tools: accountResources.available_tools.map((item) => item.name),
+        skills: accountResources.available_skills,
+        tools: accountResources.available_tools,
       }));
     } catch (error) {
       message.error(error instanceof Error ? error.message : "无法加载资源");
@@ -270,9 +270,9 @@ export default function UserManagementPage() {
     }
   };
 
-  const currentResourceNames = resourceDialog === "skills" ? resources.skills : resources.tools;
-  const visibleResourceNames = currentResourceNames.filter((name) =>
-    name.toLowerCase().includes(resourceSearch.trim().toLowerCase()),
+  const currentResourceItems = resourceDialog === "skills" ? resources.skills : resources.tools;
+  const visibleResourceItems = currentResourceItems.filter((item) =>
+    item.name.toLowerCase().includes(resourceSearch.trim().toLowerCase()),
   );
   const currentSelectedResources = resourceDialog === "skills"
     ? resourceSelection.skills
@@ -284,19 +284,45 @@ export default function UserManagementPage() {
         : { ...current, tools: values },
     );
   };
+  const setResourceGroupSelection = (
+    items: import("../../../api/modules/auth").AccountResourceItem[],
+    values: string[],
+  ) => {
+    const groupNames = new Set(items.map((item) => item.name));
+    const unchanged = currentSelectedResources.filter((name) => !groupNames.has(name));
+    setCurrentSelectedResources(Array.from(new Set([...unchanged, ...values])));
+  };
   const selectAllVisibleResources = () => {
     setCurrentSelectedResources(
-      Array.from(new Set([...currentSelectedResources, ...visibleResourceNames])),
+      Array.from(new Set([
+        ...currentSelectedResources,
+        ...visibleResourceItems.map((item) => item.name),
+      ])),
     );
   };
   const invertVisibleResources = () => {
     const selected = new Set(currentSelectedResources);
-    visibleResourceNames.forEach((name) => {
-      if (selected.has(name)) selected.delete(name);
-      else selected.add(name);
+    visibleResourceItems.forEach((item) => {
+      if (selected.has(item.name)) selected.delete(item.name);
+      else selected.add(item.name);
     });
     setCurrentSelectedResources(Array.from(selected));
   };
+
+  const resourceGroups = [
+    {
+      title: resourceDialog === "skills" ? "初始技能" : "初始工具",
+      hint: "系统预置资源，不可分享",
+      items: visibleResourceItems.filter((item) => item.is_builtin),
+      tone: "#eff6ff",
+    },
+    {
+      title: resourceDialog === "skills" ? "后续新建技能" : "后续新建工具",
+      hint: "用户创建或接收的资源",
+      items: visibleResourceItems.filter((item) => !item.is_builtin),
+      tone: "#f7f8fa",
+    },
+  ].filter((group) => group.items.length > 0);
 
   const save = async () => {
     const values = await form.validateFields();
@@ -685,15 +711,40 @@ export default function UserManagementPage() {
                 placeholder="搜索资源名称"
               />
               <div style={{ maxHeight: 330, overflow: "auto", padding: "4px 2px" }}>
-                <Checkbox.Group
-                  value={currentSelectedResources}
-                  onChange={(values) => setCurrentSelectedResources(values.map(String))}
-                  style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}
-                  options={visibleResourceNames.map((name) => ({ label: name, value: name }))}
-                />
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  {resourceGroups.map((group) => (
+                    <div
+                      key={group.title}
+                      style={{
+                        padding: "10px 12px 12px",
+                        border: "1px solid #e6ebf2",
+                        borderRadius: 8,
+                        background: group.tone,
+                      }}
+                    >
+                      <div style={{ marginBottom: 8 }}>
+                        <strong>{group.title}</strong>
+                        <span style={{ marginLeft: 8, color: "#8a94a6", fontSize: 12 }}>
+                          {group.hint}
+                        </span>
+                      </div>
+                      <Checkbox.Group
+                        value={currentSelectedResources}
+                        onChange={(values) =>
+                          setResourceGroupSelection(group.items, values.map(String))
+                        }
+                        style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}
+                        options={group.items.map((item) => ({
+                          label: item.name,
+                          value: item.name,
+                        }))}
+                      />
+                    </div>
+                  ))}
+                </Space>
               </div>
               <span style={{ color: "#697386" }}>
-                已选择 {currentSelectedResources.length} 项，共 {currentResourceNames.length} 项
+                已选择 {currentSelectedResources.length} 项，共 {currentResourceItems.length} 项
               </span>
             </Space>
           </div>
