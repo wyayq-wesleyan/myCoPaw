@@ -16,20 +16,20 @@ describe("cronJobApi", () => {
     vi.clearAllMocks();
   });
 
-  it("listCronJobs calls GET /cron/jobs", async () => {
+  it("listCronJobs calls the selected agent's cron endpoint", async () => {
     const jobs = [{ id: "job-1", name: "backup" }];
     vi.mocked(request).mockResolvedValue(jobs);
     const result = await cronJobApi.listCronJobs();
-    expect(request).toHaveBeenCalledWith("/cron/jobs");
+    expect(request).toHaveBeenCalledWith("/agents/default/cron/jobs");
     expect(result).toEqual(jobs);
   });
 
-  it("createCronJob sends POST to /cron/jobs with spec body", async () => {
+  it("createCronJob sends POST to the selected agent's cron endpoint", async () => {
     const spec = { name: "cleanup", cron_expression: "0 * * * *" } as any;
     const created = { ...spec, id: "job-2" };
     vi.mocked(request).mockResolvedValue(created);
     const result = await cronJobApi.createCronJob(spec);
-    expect(request).toHaveBeenCalledWith("/cron/jobs", {
+    expect(request).toHaveBeenCalledWith("/agents/default/cron/jobs", {
       method: "POST",
       body: JSON.stringify(spec),
     });
@@ -41,7 +41,7 @@ describe("cronJobApi", () => {
     vi.mocked(request).mockResolvedValue(job);
     const result = await cronJobApi.getCronJob("job/special");
     expect(request).toHaveBeenCalledWith(
-      `/cron/jobs/${encodeURIComponent("job/special")}`,
+      `/agents/default/cron/jobs/${encodeURIComponent("job/special")}`,
     );
     expect(result).toEqual(job);
   });
@@ -50,7 +50,7 @@ describe("cronJobApi", () => {
     const spec = { name: "updated", cron_expression: "*/5 * * * *" } as any;
     await cronJobApi.replaceCronJob("job-1", spec);
     expect(request).toHaveBeenCalledWith(
-      `/cron/jobs/${encodeURIComponent("job-1")}`,
+      `/agents/default/cron/jobs/${encodeURIComponent("job-1")}`,
       {
         method: "PUT",
         body: JSON.stringify(spec),
@@ -61,7 +61,7 @@ describe("cronJobApi", () => {
   it("deleteCronJob sends DELETE with encoded jobId", async () => {
     await cronJobApi.deleteCronJob("job-1");
     expect(request).toHaveBeenCalledWith(
-      `/cron/jobs/${encodeURIComponent("job-1")}`,
+      `/agents/default/cron/jobs/${encodeURIComponent("job-1")}`,
       {
         method: "DELETE",
       },
@@ -71,7 +71,7 @@ describe("cronJobApi", () => {
   it("pauseCronJob sends POST to /pause endpoint", async () => {
     await cronJobApi.pauseCronJob("job-1");
     expect(request).toHaveBeenCalledWith(
-      `/cron/jobs/${encodeURIComponent("job-1")}/pause`,
+      `/agents/default/cron/jobs/${encodeURIComponent("job-1")}/pause`,
       { method: "POST" },
     );
   });
@@ -79,7 +79,7 @@ describe("cronJobApi", () => {
   it("resumeCronJob sends POST to /resume endpoint", async () => {
     await cronJobApi.resumeCronJob("job-1");
     expect(request).toHaveBeenCalledWith(
-      `/cron/jobs/${encodeURIComponent("job-1")}/resume`,
+      `/agents/default/cron/jobs/${encodeURIComponent("job-1")}/resume`,
       { method: "POST" },
     );
   });
@@ -87,7 +87,7 @@ describe("cronJobApi", () => {
   it("runCronJob sends POST to /run endpoint", async () => {
     await cronJobApi.runCronJob("job-1");
     expect(request).toHaveBeenCalledWith(
-      `/cron/jobs/${encodeURIComponent("job-1")}/run`,
+      `/agents/default/cron/jobs/${encodeURIComponent("job-1")}/run`,
       { method: "POST" },
     );
   });

@@ -1,6 +1,6 @@
 import { request } from "../request";
 import { getApiUrl } from "../config";
-import { buildAuthHeaders } from "../authHeaders";
+import { buildAuthHeaders, getAgentScopedApiPath } from "../authHeaders";
 import type {
   BuiltinImportSpec,
   BuiltinUpdateNotice,
@@ -124,23 +124,29 @@ export const skillApi = {
 
     const opts: RequestInit = {};
     if (agentId) opts.headers = new Headers({ "X-Agent-Id": agentId });
-    const data = await request<SkillSpec[]>("/skills", opts);
+    const data = await request<SkillSpec[]>(
+      getAgentScopedApiPath("/skills", agentId),
+      opts,
+    );
     setCache(cacheKey, data);
     return data;
   },
 
   shareSkill: (skillName: string, targetUsernames: string[]) =>
     request<{ created: number; skipped: number }>(
-      `/skills/${encodeURIComponent(skillName)}/share`,
+      getAgentScopedApiPath(`/skills/${encodeURIComponent(skillName)}/share`),
       {
         method: "POST",
         body: JSON.stringify({ target_usernames: targetUsernames }),
       },
     ),
-  listShareTargets: () => request<string[]>("/skills/share-targets"),
+  listShareTargets: () =>
+    request<string[]>(getAgentScopedApiPath("/skills/share-targets")),
   decideSkillShare: (requestId: string, approve: boolean) =>
     request<{ request_id: string; status: string; installed_agents: string[] }>(
-      `/skills/shares/${encodeURIComponent(requestId)}/decision`,
+      getAgentScopedApiPath(
+        `/skills/shares/${encodeURIComponent(requestId)}/decision`,
+      ),
       {
         method: "POST",
         body: JSON.stringify({ approve }),
@@ -152,7 +158,9 @@ export const skillApi = {
     const cached = getCached<WorkspaceSkillSummary[]>(cacheKey);
     if (cached) return cached;
 
-    const data = await request<WorkspaceSkillSummary[]>("/skills/workspaces");
+    const data = await request<WorkspaceSkillSummary[]>(
+      getAgentScopedApiPath("/skills/workspaces"),
+    );
     setCache(cacheKey, data);
     return data;
   },
@@ -162,7 +170,9 @@ export const skillApi = {
     const cached = getCached<PoolSkillSpec[]>(cacheKey);
     if (cached) return cached;
 
-    const data = await request<PoolSkillSpec[]>("/skills/pool");
+    const data = await request<PoolSkillSpec[]>(
+      getAgentScopedApiPath("/skills/pool"),
+    );
     // Ensure data is an array
     if (!Array.isArray(data)) {
       throw new Error(
@@ -177,27 +187,36 @@ export const skillApi = {
     const opts: RequestInit = {};
     if (agentId) opts.headers = new Headers({ "X-Agent-Id": agentId });
     return request<SkillDetail>(
-      `/skills/${encodeURIComponent(skillName)}`,
+      getAgentScopedApiPath(
+        `/skills/${encodeURIComponent(skillName)}`,
+        agentId,
+      ),
       opts,
     );
   },
 
   getPoolSkill: (skillName: string) =>
-    request<PoolSkillDetail>(`/skills/pool/${encodeURIComponent(skillName)}`),
+    request<PoolSkillDetail>(
+      getAgentScopedApiPath(`/skills/pool/${encodeURIComponent(skillName)}`),
+    ),
 
   refreshSkills: async (agentId?: string) => {
     const opts: RequestInit = { method: "POST" };
     if (agentId) opts.headers = new Headers({ "X-Agent-Id": agentId });
-    const data = await request<SkillSpec[]>("/skills/refresh", opts);
+    const data = await request<SkillSpec[]>(
+      getAgentScopedApiPath("/skills/refresh", agentId),
+      opts,
+    );
     const cacheKey = `/skills${agentId ? `?agent=${agentId}` : ""}`;
     setCache(cacheKey, data);
     return data;
   },
 
   refreshSkillPool: async () => {
-    const data = await request<PoolSkillSpec[]>("/skills/pool/refresh", {
-      method: "POST",
-    });
+    const data = await request<PoolSkillSpec[]>(
+      getAgentScopedApiPath("/skills/pool/refresh"),
+      { method: "POST" },
+    );
     // Ensure data is an array
     if (!Array.isArray(data)) {
       throw new Error(
@@ -210,7 +229,9 @@ export const skillApi = {
 
   searchHubSkills: (q: string, limit: number = 20) =>
     request<HubSkillSpec[]>(
-      `/skills/hub/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+      getAgentScopedApiPath(
+        `/skills/hub/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+      ),
     ),
 
   createSkill: (
@@ -219,15 +240,18 @@ export const skillApi = {
     config?: Record<string, unknown>,
     enable?: boolean,
   ) =>
-    request<{ created: boolean; name: string }>("/skills", {
-      method: "POST",
-      body: JSON.stringify({
-        name: skillName,
-        content,
-        config,
-        enable,
-      }),
-    }),
+    request<{ created: boolean; name: string }>(
+      getAgentScopedApiPath("/skills"),
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: skillName,
+          content,
+          config,
+          enable,
+        }),
+      },
+    ),
 
   saveSkill: (payload: {
     name: string;
@@ -240,7 +264,7 @@ export const skillApi = {
       success: boolean;
       mode: "edit" | "rename" | "noop";
       name: string;
-    }>("/skills/save", {
+    }>(getAgentScopedApiPath("/skills/save"), {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
@@ -250,10 +274,13 @@ export const skillApi = {
     content: string;
     config?: Record<string, unknown>;
   }) =>
-    request<{ created: boolean; name: string }>("/skills/pool/create", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
+    request<{ created: boolean; name: string }>(
+      getAgentScopedApiPath("/skills/pool/create"),
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
 
   saveSkillPoolSkill: (payload: {
     name: string;
@@ -266,20 +293,22 @@ export const skillApi = {
       success: boolean;
       mode: "edit" | "rename" | "noop";
       name: string;
-    }>("/skills/pool/save", {
+    }>(getAgentScopedApiPath("/skills/pool/save"), {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
 
   enableSkill: (skillName: string) =>
-    request<void>(`/skills/${encodeURIComponent(skillName)}/enable`, {
-      method: "POST",
-    }),
+    request<void>(
+      getAgentScopedApiPath(`/skills/${encodeURIComponent(skillName)}/enable`),
+      { method: "POST" },
+    ),
 
   disableSkill: (skillName: string) =>
-    request<void>(`/skills/${encodeURIComponent(skillName)}/disable`, {
-      method: "POST",
-    }),
+    request<void>(
+      getAgentScopedApiPath(`/skills/${encodeURIComponent(skillName)}/disable`),
+      { method: "POST" },
+    ),
 
   batchEnableSkills: (skillNames: string[]) =>
     request<{
@@ -291,7 +320,7 @@ export const skillApi = {
           detail?: unknown;
         }
       >;
-    }>("/skills/batch-enable", {
+    }>(getAgentScopedApiPath("/skills/batch-enable"), {
       method: "POST",
       body: JSON.stringify(skillNames),
     }),
@@ -299,7 +328,7 @@ export const skillApi = {
   batchDisableSkills: (skillNames: string[]) =>
     request<{
       results: Record<string, { success: boolean; reason?: string }>;
-    }>("/skills/batch-disable", {
+    }>(getAgentScopedApiPath("/skills/batch-disable"), {
       method: "POST",
       body: JSON.stringify(skillNames),
     }),
@@ -307,7 +336,7 @@ export const skillApi = {
   batchDeleteSkills: (skillNames: string[]) =>
     request<{
       results: Record<string, { success: boolean; reason?: string }>;
-    }>("/skills/batch-delete", {
+    }>(getAgentScopedApiPath("/skills/batch-delete"), {
       method: "POST",
       body: JSON.stringify(skillNames),
     }),
@@ -315,15 +344,16 @@ export const skillApi = {
   batchDeletePoolSkills: (skillNames: string[]) =>
     request<{
       results: Record<string, { success: boolean; reason?: string }>;
-    }>("/skills/pool/batch-delete", {
+    }>(getAgentScopedApiPath("/skills/pool/batch-delete"), {
       method: "POST",
       body: JSON.stringify(skillNames),
     }),
 
   deleteSkill: (skillName: string) =>
-    request<{ deleted: boolean }>(`/skills/${encodeURIComponent(skillName)}`, {
-      method: "DELETE",
-    }),
+    request<{ deleted: boolean }>(
+      getAgentScopedApiPath(`/skills/${encodeURIComponent(skillName)}`),
+      { method: "DELETE" },
+    ),
 
   startHubSkillInstall: (
     payload: {
@@ -337,11 +367,14 @@ export const skillApi = {
     const headers = agentId
       ? new Headers({ "X-Agent-Id": agentId })
       : undefined;
-    return request<HubInstallTaskResponse>("/skills/hub/install/start", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    });
+    return request<HubInstallTaskResponse>(
+      getAgentScopedApiPath("/skills/hub/install/start", agentId),
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      },
+    );
   },
 
   importPoolSkillFromHub: (payload: {
@@ -354,7 +387,7 @@ export const skillApi = {
       name: string;
       enabled: boolean;
       source_url: string;
-    }>("/skills/pool/import", {
+    }>(getAgentScopedApiPath("/skills/pool/import"), {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -364,7 +397,10 @@ export const skillApi = {
       ? new Headers({ "X-Agent-Id": agentId })
       : undefined;
     return request<HubInstallTaskResponse>(
-      `/skills/hub/install/status/${encodeURIComponent(taskId)}`,
+      getAgentScopedApiPath(
+        `/skills/hub/install/status/${encodeURIComponent(taskId)}`,
+        agentId,
+      ),
       { headers },
     );
   },
@@ -374,13 +410,18 @@ export const skillApi = {
       ? new Headers({ "X-Agent-Id": agentId })
       : undefined;
     return request<{ task_id: string; status: string }>(
-      `/skills/hub/install/cancel/${encodeURIComponent(taskId)}`,
+      getAgentScopedApiPath(
+        `/skills/hub/install/cancel/${encodeURIComponent(taskId)}`,
+        agentId,
+      ),
       { method: "POST", headers },
     );
   },
 
   listPoolBuiltinSources: () =>
-    request<BuiltinImportSpec[]>("/skills/pool/builtin-sources"),
+    request<BuiltinImportSpec[]>(
+      getAgentScopedApiPath("/skills/pool/builtin-sources"),
+    ),
 
   getPoolBuiltinNotice: async () => {
     const cacheKey = "/skills/pool/builtin-notice";
@@ -388,7 +429,7 @@ export const skillApi = {
     if (cached) return cached;
 
     const data = await request<BuiltinUpdateNotice>(
-      "/skills/pool/builtin-notice",
+      getAgentScopedApiPath("/skills/pool/builtin-notice"),
     );
     setCache(cacheKey, data);
     return data;
@@ -412,14 +453,16 @@ export const skillApi = {
         current_source?: string;
         current_language?: string;
       }>;
-    }>("/skills/pool/import-builtin", {
+    }>(getAgentScopedApiPath("/skills/pool/import-builtin"), {
       method: "POST",
       body: JSON.stringify(payload),
     }),
 
   updatePoolBuiltin: (skillName: string, language: string) =>
     request<Record<string, unknown>>(
-      `/skills/pool/${encodeURIComponent(skillName)}/update-builtin`,
+      getAgentScopedApiPath(
+        `/skills/pool/${encodeURIComponent(skillName)}/update-builtin`,
+      ),
       {
         method: "POST",
         body: JSON.stringify({ language }),
@@ -428,7 +471,7 @@ export const skillApi = {
 
   deleteSkillPoolSkill: (skillName: string) =>
     request<{ deleted: boolean }>(
-      `/skills/pool/${encodeURIComponent(skillName)}`,
+      getAgentScopedApiPath(`/skills/pool/${encodeURIComponent(skillName)}`),
       {
         method: "DELETE",
       },
@@ -440,10 +483,13 @@ export const skillApi = {
     overwrite?: boolean;
     preview_only?: boolean;
   }) =>
-    request<{ success: boolean; name: string }>("/skills/pool/upload", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
+    request<{ success: boolean; name: string }>(
+      getAgentScopedApiPath("/skills/pool/upload"),
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
 
   downloadSkillPoolSkill: (payload: {
     skill_name: string;
@@ -467,14 +513,16 @@ export const skillApi = {
         current_version_text?: string;
         source_version_text?: string;
       }>;
-    }>("/skills/pool/download", {
+    }>(getAgentScopedApiPath("/skills/pool/download"), {
       method: "POST",
       body: JSON.stringify(payload),
     }),
 
   updateSkillChannels: (skillName: string, channels: string[]) =>
     request<{ updated: boolean; channels: string[] }>(
-      `/skills/${encodeURIComponent(skillName)}/channels`,
+      getAgentScopedApiPath(
+        `/skills/${encodeURIComponent(skillName)}/channels`,
+      ),
       {
         method: "PUT",
         body: JSON.stringify(channels),
@@ -483,7 +531,7 @@ export const skillApi = {
 
   updateSkillTags: (skillName: string, tags: string[]) =>
     request<{ updated: boolean; tags: string[] }>(
-      `/skills/${encodeURIComponent(skillName)}/tags`,
+      getAgentScopedApiPath(`/skills/${encodeURIComponent(skillName)}/tags`),
       {
         method: "PUT",
         body: JSON.stringify(tags),
@@ -492,7 +540,9 @@ export const skillApi = {
 
   updatePoolSkillTags: (skillName: string, tags: string[]) =>
     request<{ updated: boolean; tags: string[] }>(
-      `/skills/pool/${encodeURIComponent(skillName)}/tags`,
+      getAgentScopedApiPath(
+        `/skills/pool/${encodeURIComponent(skillName)}/tags`,
+      ),
       {
         method: "PUT",
         body: JSON.stringify(tags),
@@ -507,10 +557,15 @@ export const skillApi = {
       updated: boolean;
       enabled: boolean;
       targets: string[] | null;
-    }>(`/skills/pool/${encodeURIComponent(skillName)}/auto-update`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    }),
+    }>(
+      getAgentScopedApiPath(
+        `/skills/pool/${encodeURIComponent(skillName)}/auto-update`,
+      ),
+      {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      },
+    ),
 
   streamOptimizeSkill: async function (
     content: string,
@@ -583,7 +638,11 @@ export const skillApi = {
       rename_map?: Record<string, string>;
     },
   ) =>
-    _uploadZip("/skills/upload", file, options) as Promise<{
+    _uploadZip(
+      getAgentScopedApiPath("/skills/upload"),
+      file,
+      options,
+    ) as Promise<{
       imported: string[];
       count: number;
       enabled: boolean;
@@ -601,7 +660,11 @@ export const skillApi = {
       rename_map?: Record<string, string>;
     },
   ) =>
-    _uploadZip("/skills/pool/upload-zip", file, options) as Promise<{
+    _uploadZip(
+      getAgentScopedApiPath("/skills/pool/upload-zip"),
+      file,
+      options,
+    ) as Promise<{
       imported: string[];
       count: number;
       conflicts?: Array<{

@@ -1,6 +1,32 @@
 import { getApiToken } from "./config";
 
 /** Authorization + X-Agent-Id for API requests. Caller sets Content-Type when needed. */
+export function getStoredSelectedAgentId(): string {
+  try {
+    const agentStorage =
+      sessionStorage.getItem("qwenpaw-agent-storage") ||
+      localStorage.getItem("qwenpaw-agent-storage");
+    if (!agentStorage) return "";
+
+    const selectedAgent = JSON.parse(agentStorage)?.state?.selectedAgent;
+    return typeof selectedAgent === "string" ? selectedAgent : "";
+  } catch (error) {
+    console.warn("Failed to get selected agent from storage:", error);
+    return "";
+  }
+}
+
+/** Build a URL for APIs whose state belongs to the selected agent. */
+export function getAgentScopedApiPath(path: string, agentId?: string): string {
+  const selectedAgent = (
+    agentId ||
+    getStoredSelectedAgentId() ||
+    "default"
+  ).trim();
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `/agents/${encodeURIComponent(selectedAgent)}${normalizedPath}`;
+}
+
 export function buildAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   const token = getApiToken();
@@ -13,8 +39,7 @@ export function buildAuthHeaders(): Record<string, string> {
       sessionStorage.getItem("qwenpaw-agent-storage") ||
       localStorage.getItem("qwenpaw-agent-storage");
     if (agentStorage) {
-      const parsed = JSON.parse(agentStorage);
-      const selectedAgent = parsed?.state?.selectedAgent;
+      const selectedAgent = JSON.parse(agentStorage)?.state?.selectedAgent;
       if (selectedAgent) {
         headers["X-Agent-Id"] = selectedAgent;
       }

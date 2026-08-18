@@ -1,4 +1,5 @@
 import { request } from "../request";
+import { getAgentScopedApiPath } from "../authHeaders";
 import type {
   CronDispatchTargetsResponse,
   CronJobExecutionRecord,
@@ -8,54 +9,67 @@ import type {
 } from "../types";
 
 export const cronJobApi = {
-  listCronJobs: () => request<CronJobSpecOutput[]>("/cron/jobs"),
+  listCronJobs: () =>
+    request<CronJobSpecOutput[]>(getAgentScopedApiPath("/cron/jobs")),
 
   createCronJob: (spec: CronJobSpecInput) =>
-    request<CronJobSpecOutput>("/cron/jobs", {
+    request<CronJobSpecOutput>(getAgentScopedApiPath("/cron/jobs"), {
       method: "POST",
       body: JSON.stringify(spec),
     }),
 
   getCronJob: (jobId: string) =>
-    request<CronJobView>(`/cron/jobs/${encodeURIComponent(jobId)}`),
+    request<CronJobView>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}`),
+    ),
 
   replaceCronJob: (jobId: string, spec: CronJobSpecInput) =>
-    request<CronJobSpecOutput>(`/cron/jobs/${encodeURIComponent(jobId)}`, {
-      method: "PUT",
-      body: JSON.stringify(spec),
-    }),
+    request<CronJobSpecOutput>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}`),
+      {
+        method: "PUT",
+        body: JSON.stringify(spec),
+      },
+    ),
 
   deleteCronJob: (jobId: string) =>
-    request<void>(`/cron/jobs/${encodeURIComponent(jobId)}`, {
-      method: "DELETE",
-    }),
+    request<void>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}`),
+      { method: "DELETE" },
+    ),
 
   pauseCronJob: (jobId: string) =>
-    request<void>(`/cron/jobs/${encodeURIComponent(jobId)}/pause`, {
-      method: "POST",
-    }),
+    request<void>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}/pause`),
+      { method: "POST" },
+    ),
 
   resumeCronJob: (jobId: string) =>
-    request<void>(`/cron/jobs/${encodeURIComponent(jobId)}/resume`, {
-      method: "POST",
-    }),
+    request<void>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}/resume`),
+      { method: "POST" },
+    ),
 
   runCronJob: (jobId: string) =>
-    request<void>(`/cron/jobs/${encodeURIComponent(jobId)}/run`, {
-      method: "POST",
-    }),
+    request<void>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}/run`),
+      { method: "POST" },
+    ),
 
   triggerCronJob: (jobId: string) =>
-    request<void>(`/cron/jobs/${encodeURIComponent(jobId)}/run`, {
-      method: "POST",
-    }),
+    request<void>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}/run`),
+      { method: "POST" },
+    ),
 
   getCronJobState: (jobId: string) =>
-    request<unknown>(`/cron/jobs/${encodeURIComponent(jobId)}/state`),
+    request<unknown>(
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}/state`),
+    ),
 
   getCronJobHistory: (jobId: string) =>
     request<CronJobExecutionRecord[]>(
-      `/cron/jobs/${encodeURIComponent(jobId)}/history`,
+      getAgentScopedApiPath(`/cron/jobs/${encodeURIComponent(jobId)}/history`),
     ),
 
   listCronDispatchTargets: (params?: {
@@ -67,7 +81,9 @@ export const cronJobApi = {
     if (params?.keyword) searchParams.append("keyword", params.keyword);
     const query = searchParams.toString();
     return request<CronDispatchTargetsResponse>(
-      `/cron/dispatch-targets${query ? `?${query}` : ""}`,
+      getAgentScopedApiPath(
+        `/cron/dispatch-targets${query ? `?${query}` : ""}`,
+      ),
     );
   },
 };

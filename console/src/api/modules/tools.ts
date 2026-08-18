@@ -1,4 +1,5 @@
 import { request } from "../request";
+import { getAgentScopedApiPath } from "../authHeaders";
 
 export interface ToolConfigField {
   name: string;
@@ -34,22 +35,25 @@ export const toolsApi = {
   /**
    * List all built-in tools
    */
-  listTools: () => request<ToolInfo[]>("/tools"),
+  listTools: () => request<ToolInfo[]>(getAgentScopedApiPath("/tools")),
 
   /**
    * Toggle tool enabled status
    */
   toggleTool: (toolName: string) =>
-    request<ToolInfo>(`/tools/${encodeURIComponent(toolName)}/toggle`, {
-      method: "PATCH",
-    }),
+    request<ToolInfo>(
+      getAgentScopedApiPath(`/tools/${encodeURIComponent(toolName)}/toggle`),
+      { method: "PATCH" },
+    ),
 
   /**
    * Update tool async_execution setting
    */
   updateAsyncExecution: (toolName: string, asyncExecution: boolean) =>
     request<ToolInfo>(
-      `/tools/${encodeURIComponent(toolName)}/async-execution`,
+      getAgentScopedApiPath(
+        `/tools/${encodeURIComponent(toolName)}/async-execution`,
+      ),
       {
         method: "PATCH",
         body: JSON.stringify({ async_execution: asyncExecution }),
@@ -61,7 +65,7 @@ export const toolsApi = {
    */
   getToolConfig: (toolName: string) =>
     request<Record<string, any>>(
-      `/tools/${encodeURIComponent(toolName)}/config`,
+      getAgentScopedApiPath(`/tools/${encodeURIComponent(toolName)}/config`),
     ),
 
   /**
@@ -69,7 +73,7 @@ export const toolsApi = {
    */
   updateToolConfig: (toolName: string, config: Record<string, any>) =>
     request<{ status: string; message: string }>(
-      `/tools/${encodeURIComponent(toolName)}/config`,
+      getAgentScopedApiPath(`/tools/${encodeURIComponent(toolName)}/config`),
       {
         method: "POST",
         body: JSON.stringify({ config }),
@@ -82,13 +86,15 @@ export const toolsApi = {
     method: string;
     headers?: Record<string, string>;
   }) =>
-    request<ToolInfo>("/tools/custom", {
+    request<ToolInfo>(getAgentScopedApiPath("/tools/custom"), {
       method: "POST",
       body: JSON.stringify(body),
     }),
   shareCustomTool: (resourceId: string, targetUsernames: string[]) =>
     request<{ granted: string[]; skipped: number }>(
-      `/tools/custom/${encodeURIComponent(resourceId)}/share`,
+      getAgentScopedApiPath(
+        `/tools/custom/${encodeURIComponent(resourceId)}/share`,
+      ),
       {
         method: "POST",
         body: JSON.stringify({ target_usernames: targetUsernames }),

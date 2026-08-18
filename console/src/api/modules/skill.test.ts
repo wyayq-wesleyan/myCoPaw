@@ -6,6 +6,8 @@ vi.mock("../config", () => ({
 }));
 vi.mock("../authHeaders", () => ({
   buildAuthHeaders: vi.fn(() => ({})),
+  getAgentScopedApiPath: (path: string, agentId?: string) =>
+    `/agents/${agentId || "default"}${path}`,
 }));
 
 import { request } from "../request";
@@ -23,7 +25,7 @@ describe("skillApi.listSkills", () => {
 
   it("calls /skills without agent header when no agentId", async () => {
     await skillApi.listSkills();
-    expect(request).toHaveBeenCalledWith("/skills", {});
+    expect(request).toHaveBeenCalledWith("/agents/default/skills", {});
   });
 
   it("passes X-Agent-Id header when agentId is provided", async () => {
@@ -75,7 +77,7 @@ describe("skillApi.listSkillWorkspaces", () => {
 
   it("calls /skills/workspaces", async () => {
     await skillApi.listSkillWorkspaces();
-    expect(request).toHaveBeenCalledWith("/skills/workspaces");
+    expect(request).toHaveBeenCalledWith("/agents/default/skills/workspaces");
   });
 
   it("returns cached value on second call", async () => {
@@ -98,7 +100,7 @@ describe("skillApi.listSkillPoolSkills", () => {
   it("calls /skills/pool and returns data", async () => {
     vi.mocked(request).mockResolvedValue([{ name: "pool-skill" }]);
     const result = await skillApi.listSkillPoolSkills();
-    expect(request).toHaveBeenCalledWith("/skills/pool");
+    expect(request).toHaveBeenCalledWith("/agents/default/skills/pool");
     expect(result).toEqual([{ name: "pool-skill" }]);
   });
 
@@ -123,7 +125,7 @@ describe("skillApi.refreshSkills", () => {
     vi.mocked(request).mockResolvedValue([]);
     await skillApi.refreshSkills();
     expect(request).toHaveBeenCalledWith(
-      "/skills/refresh",
+      "/agents/default/skills/refresh",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -147,14 +149,16 @@ describe("skillApi.searchHubSkills", () => {
     vi.mocked(request).mockResolvedValue([]);
     await skillApi.searchHubSkills("hello world", 10);
     expect(request).toHaveBeenCalledWith(
-      "/skills/hub/search?q=hello%20world&limit=10",
+      "/agents/default/skills/hub/search?q=hello%20world&limit=10",
     );
   });
 
   it("uses default limit of 20", async () => {
     vi.mocked(request).mockResolvedValue([]);
     await skillApi.searchHubSkills("test");
-    expect(request).toHaveBeenCalledWith("/skills/hub/search?q=test&limit=20");
+    expect(request).toHaveBeenCalledWith(
+      "/agents/default/skills/hub/search?q=test&limit=20",
+    );
   });
 });
 
@@ -167,7 +171,7 @@ describe("skillApi.createSkill", () => {
   it("sends POST with name, content, config and enable", async () => {
     vi.mocked(request).mockResolvedValue({ created: true, name: "myskill" });
     await skillApi.createSkill("myskill", "# content", { key: "val" }, true);
-    expect(request).toHaveBeenCalledWith("/skills", {
+    expect(request).toHaveBeenCalledWith("/agents/default/skills", {
       method: "POST",
       body: JSON.stringify({
         name: "myskill",
@@ -188,9 +192,12 @@ describe("skillApi.enableSkill", () => {
   it("sends POST to /skills/<encoded>/enable", async () => {
     vi.mocked(request).mockResolvedValue(undefined);
     await skillApi.enableSkill("my skill");
-    expect(request).toHaveBeenCalledWith("/skills/my%20skill/enable", {
-      method: "POST",
-    });
+    expect(request).toHaveBeenCalledWith(
+      "/agents/default/skills/my%20skill/enable",
+      {
+        method: "POST",
+      },
+    );
   });
 });
 
@@ -200,9 +207,10 @@ describe("skillApi.disableSkill", () => {
   it("sends POST to /skills/<encoded>/disable", async () => {
     vi.mocked(request).mockResolvedValue(undefined);
     await skillApi.disableSkill("special/skill");
-    expect(request).toHaveBeenCalledWith("/skills/special%2Fskill/disable", {
-      method: "POST",
-    });
+    expect(request).toHaveBeenCalledWith(
+      "/agents/default/skills/special%2Fskill/disable",
+      { method: "POST" },
+    );
   });
 });
 
@@ -215,7 +223,7 @@ describe("skillApi.deleteSkill", () => {
   it("sends DELETE to /skills/<encoded>", async () => {
     vi.mocked(request).mockResolvedValue({ deleted: true });
     const result = await skillApi.deleteSkill("rm-me");
-    expect(request).toHaveBeenCalledWith("/skills/rm-me", {
+    expect(request).toHaveBeenCalledWith("/agents/default/skills/rm-me", {
       method: "DELETE",
     });
     expect(result).toEqual({ deleted: true });
@@ -264,10 +272,13 @@ describe("skillApi.batchEnableSkills", () => {
   it("sends POST to /skills/batch-enable with skill names", async () => {
     vi.mocked(request).mockResolvedValue(undefined);
     await skillApi.batchEnableSkills(["skill-a", "skill-b"]);
-    expect(request).toHaveBeenCalledWith("/skills/batch-enable", {
-      method: "POST",
-      body: JSON.stringify(["skill-a", "skill-b"]),
-    });
+    expect(request).toHaveBeenCalledWith(
+      "/agents/default/skills/batch-enable",
+      {
+        method: "POST",
+        body: JSON.stringify(["skill-a", "skill-b"]),
+      },
+    );
   });
 });
 
@@ -282,10 +293,13 @@ describe("skillApi.batchDeleteSkills", () => {
       results: { "skill-a": { success: true } },
     });
     const result = await skillApi.batchDeleteSkills(["skill-a"]);
-    expect(request).toHaveBeenCalledWith("/skills/batch-delete", {
-      method: "POST",
-      body: JSON.stringify(["skill-a"]),
-    });
+    expect(request).toHaveBeenCalledWith(
+      "/agents/default/skills/batch-delete",
+      {
+        method: "POST",
+        body: JSON.stringify(["skill-a"]),
+      },
+    );
     expect(result).toEqual({ results: { "skill-a": { success: true } } });
   });
 });
