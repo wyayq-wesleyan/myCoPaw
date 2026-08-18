@@ -645,7 +645,8 @@ async def update_profile(req: UpdateProfileRequest, request: Request):
     # Verify caller is authenticated
     auth_header = request.headers.get("Authorization", "")
     caller_token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
-    if not caller_token or verify_token(caller_token) is None:
+    caller_username = verify_token(caller_token)
+    if not caller_token or caller_username is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     if not req.new_username and not req.new_password:
@@ -671,6 +672,7 @@ async def update_profile(req: UpdateProfileRequest, request: Request):
         new_username=req.new_username,
         new_password=req.new_password,
         expiry_seconds=req.expires_in,
+        username=caller_username,
     )
     if token is None:
         raise HTTPException(
@@ -678,7 +680,7 @@ async def update_profile(req: UpdateProfileRequest, request: Request):
             detail="Current password is incorrect",
         )
 
-    username = req.new_username.strip() if req.new_username else ""
+    username = req.new_username.strip() if req.new_username else caller_username
     return LoginResponse(token=token, username=username)
 
 

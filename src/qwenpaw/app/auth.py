@@ -563,6 +563,7 @@ def update_credentials(
     new_username: Optional[str] = None,
     new_password: Optional[str] = None,
     expiry_seconds: Optional[int] = None,
+    username: Optional[str] = None,
 ) -> Optional[str]:
     """Update the registered user's username and/or password.
 
@@ -578,9 +579,11 @@ def update_credentials(
     """
     data = _load_auth_data()
     users = _get_users(data)
-    user = next(iter(users.values()), None)
+    user = _get_user_record(username) if username else next(iter(users.values()), None)
     if not user:
         return None
+
+    old_username = str(user.get("username", ""))
 
     stored_hash = user.get("password_hash", "")
     stored_salt = user.get("password_salt", "")
@@ -588,7 +591,10 @@ def update_credentials(
         return None
 
     if new_username and new_username.strip():
-        user["username"] = new_username.strip()
+        normalized_username = new_username.strip()
+        if normalized_username != old_username and normalized_username in users:
+            return None
+        user["username"] = normalized_username
 
     if new_password:
         pw_hash, salt = _hash_password(new_password)
@@ -597,6 +603,8 @@ def update_credentials(
         # Rotate JWT secret to invalidate all existing sessions
         data["jwt_secret"] = secrets.token_hex(32)
 
+    if user["username"] != old_username:
+        users.pop(old_username, None)
     users[user["username"]] = user
     data["users"] = users
     _save_auth_data(data)
