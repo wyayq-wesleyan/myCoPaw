@@ -6,8 +6,8 @@ FROM ${BASE_IMAGE}
 
 ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
-ARG QWENPAW_DISABLED_CHANNELS="imessage"
-ARG QWENPAW_ENABLED_CHANNELS=""
+ARG QWENPAW_DISABLED_CHANNELS=""
+ARG QWENPAW_ENABLED_CHANNELS="console"
 
 ENV NODE_ENV=production \
     WORKSPACE_DIR=/app \
@@ -24,6 +24,7 @@ WORKDIR ${WORKSPACE_DIR}
 
 COPY pyproject.toml setup.py README.md ./
 COPY src ./src
+COPY plugins/bundle/omp_workflows /opt/huizhi/offline-plugins/omp-workflows
 COPY website/public/docs/ ./src/qwenpaw/docs/
 
 RUN python -m pip install --no-cache-dir \

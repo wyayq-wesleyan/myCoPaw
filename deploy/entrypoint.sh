@@ -7,6 +7,14 @@ export QWENPAW_AUTH_ENABLED="${QWENPAW_AUTH_ENABLED:-true}"
 export QWENPAW_AUTH_USERNAME="${QWENPAW_AUTH_USERNAME:-admin}"
 export QWENPAW_AUTH_PASSWORD="${QWENPAW_AUTH_PASSWORD:-Admin@123456}"
 export QWENPAW_FORCE_AUTH_ON_LOCALHOST="${QWENPAW_FORCE_AUTH_ON_LOCALHOST:-true}"
+export QWENPAW_ENABLED_CHANNELS="${QWENPAW_ENABLED_CHANNELS:-console}"
+
+offline_plugin_source="/opt/huizhi/offline-plugins/omp-workflows"
+offline_plugin_target="${QWENPAW_WORKING_DIR:-/app/working}/plugins/omp-workflows"
+if [ -d "${offline_plugin_source}" ] && [ ! -d "${offline_plugin_target}" ]; then
+    mkdir -p "$(dirname "${offline_plugin_target}")"
+    cp -a "${offline_plugin_source}" "${offline_plugin_target}"
+fi
 
 python - <<'PY'
 import json

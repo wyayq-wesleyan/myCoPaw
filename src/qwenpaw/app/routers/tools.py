@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from typing import Any, List, Optional
 
@@ -14,6 +15,7 @@ from ...config import load_config, save_config
 from ..utils import schedule_agent_reload
 
 router = APIRouter(prefix="/tools", tags=["tools"])
+logger = logging.getLogger(__name__)
 
 
 class ToolConfigFieldType(str, Enum):
@@ -94,11 +96,9 @@ def _persist_browser_experimental(config: dict[str, Any]) -> None:
     application_config.browser.experimental = experimental
     save_config(application_config)
     if experimental:
-        from ...browser.runtime.managed_playwright import (
-            start_managed_chromium_download,
-        )
-
-        start_managed_chromium_download()
+        # Chromium must be packaged in the offline base image.  Never attempt
+        # a runtime download from an intranet deployment.
+        logger.info("Browser enabled; using packaged offline runtime")
 
 
 def _build_tool_info(tool_config: Any, tool_name: str) -> ToolInfo:
@@ -187,6 +187,7 @@ async def list_tools(
         List of tool information
     """
     from ..agent_context import get_agent_for_request
+    from ..user_space import get_disabled_names, get_request_username
     from ...config.config import load_agent_config
 
     workspace = await get_agent_for_request(request)
@@ -203,9 +204,15 @@ async def list_tools(
     else:
         builtin_tools = agent_config.tools.builtin_tools
 
+    disabled = set(
+        get_disabled_names(get_request_username(request), "disabled_tools")
+        if get_request_username(request)
+        else []
+    )
     return [
         _build_tool_info(tool_config, tool_config.name)
         for tool_config in builtin_tools.values()
+        if tool_config.name not in disabled
     ]
 
 

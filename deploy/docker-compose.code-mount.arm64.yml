@@ -26,6 +26,9 @@ services:
       QWENPAW_AUTH_USERNAME: "${QWENPAW_AUTH_USERNAME:-admin}"
       QWENPAW_AUTH_PASSWORD: "${QWENPAW_AUTH_PASSWORD:-Admin@123456}"
       QWENPAW_FORCE_AUTH_ON_LOCALHOST: "${QWENPAW_FORCE_AUTH_ON_LOCALHOST:-true}"
+      # Console chat does not use a channel backend. A non-matching explicit
+      # allow-list keeps every external channel module disabled.
+      QWENPAW_ENABLED_CHANNELS: "${QWENPAW_ENABLED_CHANNELS:-console}"
     volumes:
       - ./app:/workspace/app:ro
       - ./code-mount-entrypoint.sh:/code-mount-entrypoint.sh:ro

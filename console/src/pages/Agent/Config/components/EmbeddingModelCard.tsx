@@ -444,6 +444,73 @@ export function EmbeddingModelCard() {
           </Form.Item>
         </section>
       </div>
+
+      <section className={styles.memoryConfigPanel}>
+        <div className={styles.memorySectionHeader}>
+          <div
+            className={`${styles.memorySectionIcon} ${styles.memorySectionIconTertiary}`}
+          >
+            03
+          </div>
+          <div>
+            <h3>内网重排序模型</h3>
+            <p>
+              可选。开启后，系统会将记忆检索出的候选内容发送至内网
+              rerank 服务重新排序，提高长文档和相近内容的匹配准确性。
+            </p>
+          </div>
+        </div>
+
+        <Form.Item
+          label="启用重排序"
+          name={["reme_light_memory_config", "reranker_config", "enabled"]}
+          valuePropName="checked"
+        >
+          <Switch disabled={reindexing} />
+        </Form.Item>
+
+        <div className={styles.memoryConfigGrid} style={{ marginBottom: 0 }}>
+          <Form.Item
+            label="服务地址"
+            name={["reme_light_memory_config", "reranker_config", "base_url"]}
+            tooltip="内网 rerank 服务地址，例如 http://rerank-server:8000/v1"
+          >
+            <Input
+              disabled={reindexing}
+              placeholder="http://rerank-server:8000/v1"
+            />
+          </Form.Item>
+          <Form.Item
+            label="模型名称"
+            name={["reme_light_memory_config", "reranker_config", "model_name"]}
+            tooltip="与内网服务 /rerank 接口中的模型标识保持一致"
+          >
+            <Input disabled={reindexing} placeholder="例如：bge-reranker-v2-m3" />
+          </Form.Item>
+          <Form.Item
+            label="API Key"
+            name={["reme_light_memory_config", "reranker_config", "api_key"]}
+          >
+            <Input.Password disabled={reindexing} autoComplete="off" />
+          </Form.Item>
+          <Form.Item
+            label="候选扩展倍数"
+            name={[
+              "reme_light_memory_config",
+              "reranker_config",
+              "candidate_multiplier",
+            ]}
+            tooltip="先检索目标数量的 N 倍候选内容，再由重排序模型选出最相关的结果。"
+          >
+            <InputNumber
+              style={{ width: "100%" }}
+              min={1}
+              step={1}
+              disabled={reindexing}
+            />
+          </Form.Item>
+        </div>
+      </section>
     </Card>
   );
 }

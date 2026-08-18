@@ -1410,39 +1410,13 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
                 pass
 
     def _init_builtins(self):
-        self._add_builtin(PROVIDER_QWENPAW)
-        self._add_builtin(PROVIDER_OLLAMA)
-        self._add_builtin(PROVIDER_LMSTUDIO)
-        self._add_builtin(PROVIDER_OPENROUTER)
-        self._add_builtin(PROVIDER_GITHUB_MODELS)
-        self._add_builtin(PROVIDER_MODELSCOPE)
-        self._add_builtin(PROVIDER_DASHSCOPE)
-        self._add_builtin(PROVIDER_ALIYUN_CODINGPLAN)
-        self._add_builtin(PROVIDER_ALIYUN_CODINGPLAN_INTL)
-        self._add_builtin(PROVIDER_ALIYUN_TOKENPLAN)
-        self._add_builtin(PROVIDER_ALIYUN_TOKENPLAN_INTL)
-        self._add_builtin(PROVIDER_OPENCODE)
-        self._add_builtin(PROVIDER_KILO)
-        self._add_builtin(PROVIDER_OPENAI)
-        self._add_builtin(PROVIDER_OPENAI_RESPONSE)
-        self._add_builtin(PROVIDER_AZURE_OPENAI)
-        self._add_builtin(PROVIDER_ANTHROPIC)
-        self._add_builtin(PROVIDER_GEMINI)
-        self._add_builtin(PROVIDER_DEEPSEEK)
-        self._add_builtin(PROVIDER_KIMI_CN)
-        self._add_builtin(PROVIDER_KIMI_INTL)
-        self._add_builtin(PROVIDER_KIMI_CODINGPLAN)
-        self._add_builtin(PROVIDER_MINIMAX_CN)
-        self._add_builtin(PROVIDER_MINIMAX)
-        self._add_builtin(PROVIDER_ZHIPU_CN)
-        self._add_builtin(PROVIDER_ZHIPU_CN_CODINGPLAN)
-        self._add_builtin(PROVIDER_ZHIPU_INTL)
-        self._add_builtin(PROVIDER_ZHIPU_INTL_CODINGPLAN)
-        self._add_builtin(PROVIDER_SILICONFLOW_CN)
-        self._add_builtin(PROVIDER_SILICONFLOW_INTL)
-        self._add_builtin(PROVIDER_VOLCENGINE_CN)
-        self._add_builtin(PROVIDER_VOLCENGINE_CN_CODINGPLAN)
-        self._add_builtin(PROVIDER_MIMO_TOKENPLAN)
+        """Offline deployments use only administrator-created providers.
+
+        Keeping official cloud providers out of the registry is stronger than
+        hiding them in the UI: they cannot be selected through a stale route,
+        API request, or an imported browser preference.
+        """
+        return None
 
     def _add_builtin(self, provider: Provider):
         self.builtin_providers[provider.id] = provider

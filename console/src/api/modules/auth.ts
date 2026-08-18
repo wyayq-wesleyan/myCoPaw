@@ -12,8 +12,21 @@ export interface AuthStatusResponse {
   has_users: boolean;
 }
 
-export interface ManagedUser { username: string; role: string; enabled: boolean }
+export interface ManagedUser {
+  username: string;
+  role: string;
+  enabled: boolean;
+  menu_permissions: string[] | null;
+}
 export interface ModelPermission { provider_id: string; model_id: string }
+export interface CreateUserPayload {
+  username: string;
+  password: string;
+  model_permissions?: ModelPermission[] | null;
+  disabled_skills?: string[] | null;
+  disabled_tools?: string[] | null;
+  menu_permissions?: string[] | null;
+}
 
 export const authApi = {
   login: async (username: string, password: string): Promise<LoginResponse> => {
@@ -53,8 +66,8 @@ export const authApi = {
 
   getCurrentUser: () => request<ManagedUser>("/auth/me"),
   listUsers: () => request<ManagedUser[]>("/auth/users"),
-  createUser: (username: string, password: string) =>
-    request<ManagedUser>("/auth/users", { method: "POST", body: JSON.stringify({ username, password }) }),
+  createUser: (body: CreateUserPayload) =>
+    request<ManagedUser>("/auth/users", { method: "POST", body: JSON.stringify(body) }),
   setUserStatus: (username: string, enabled: boolean) =>
     request(`/auth/users/${encodeURIComponent(username)}/status`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
   setUserPassword: (username: string, password: string) =>
@@ -67,6 +80,13 @@ export const authApi = {
     request<{ disabled: string[] }>(`/auth/users/${encodeURIComponent(username)}/${kind}-permissions`),
   setUserNamedPermissions: (username: string, kind: "skill" | "tool", disabled: string[]) =>
     request(`/auth/users/${encodeURIComponent(username)}/${kind}-permissions`, { method: "PUT", body: JSON.stringify({ disabled }) }),
+  getUserMenuPermissions: (username: string) =>
+    request<{ permissions: string[] | null }>(`/auth/users/${encodeURIComponent(username)}/menu-permissions`),
+  setUserMenuPermissions: (username: string, permissions: string[] | null) =>
+    request(`/auth/users/${encodeURIComponent(username)}/menu-permissions`, {
+      method: "PUT",
+      body: JSON.stringify({ permissions }),
+    }),
 
   updateProfile: async (
     currentPassword: string,

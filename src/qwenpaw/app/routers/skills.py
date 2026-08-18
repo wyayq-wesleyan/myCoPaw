@@ -853,7 +853,15 @@ def _list_workspace_skill_names(workspace_dir: Path) -> list[str]:
 @router.get("")
 async def list_skills(request: Request) -> list[SkillSpec]:
     workspace_dir = await _request_workspace_dir(request)
-    return _build_workspace_skill_specs(workspace_dir)
+    from ..user_space import get_disabled_names, get_request_username
+
+    username = get_request_username(request)
+    disabled = set(get_disabled_names(username, "disabled_skills")) if username else set()
+    return [
+        skill
+        for skill in _build_workspace_skill_specs(workspace_dir)
+        if skill.name not in disabled
+    ]
 
 
 @router.post("/refresh")
@@ -861,7 +869,15 @@ async def refresh_skills(request: Request) -> list[SkillSpec]:
     """Force reconcile and return updated workspace skill list."""
     workspace_dir = await _request_workspace_dir(request)
     reconcile_workspace_manifest(workspace_dir)
-    return _build_workspace_skill_specs(workspace_dir)
+    from ..user_space import get_disabled_names, get_request_username
+
+    username = get_request_username(request)
+    disabled = set(get_disabled_names(username, "disabled_skills")) if username else set()
+    return [
+        skill
+        for skill in _build_workspace_skill_specs(workspace_dir)
+        if skill.name not in disabled
+    ]
 
 
 @router.get("/hub/search")
@@ -869,19 +885,9 @@ async def search_hub(
     q: str = "",
     limit: int = 20,
 ) -> list[HubSkillSpec]:
-    results = await search_hub_skills(q, limit=limit)
-    return [
-        HubSkillSpec(
-            slug=item.slug,
-            name=item.name,
-            description=item.description,
-            version=item.version,
-            source_url=item.source_url,
-            author=item.author,
-            icon_url=item.icon_url,
-        )
-        for item in results
-    ]
+    # Skill Hub is an external service and is unavailable by design in the
+    # offline edition.  Built-ins and imported ZIP packages stay local.
+    return []
 
 
 @router.get("/workspaces")
@@ -905,28 +911,10 @@ async def start_install_from_hub(
     request_body: HubInstallRequest,
     request: Request,
 ) -> HubInstallTask:
-    workspace_dir = await _request_workspace_dir(request)
-    task = HubInstallTask(
-        bundle_url=request_body.bundle_url,
-        version=request_body.version,
-        enable=request_body.enable,
+    raise HTTPException(
+        status_code=400,
+        detail="Offline deployment does not support Skill Hub installation. Import a local ZIP package instead.",
     )
-    cancel_event = threading.Event()
-    async with _hub_install_lock:
-        _hub_task_cleanup_locked()
-        _hub_install_tasks[task.task_id] = task
-        _hub_install_cancel_events[task.task_id] = cancel_event
-        runtime_task = asyncio.create_task(
-            _run_hub_install_task(
-                task_id=task.task_id,
-                workspace_dir=workspace_dir,
-                body=request_body,
-                cancel_event=cancel_event,
-            ),
-            name=f"skill-hub-install-{task.task_id}",
-        )
-        _hub_install_runtime_tasks[task.task_id] = runtime_task
-    return task
 
 
 @router.get("/hub/install/status/{task_id}", response_model=HubInstallTask)

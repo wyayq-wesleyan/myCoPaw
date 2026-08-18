@@ -78,38 +78,20 @@ class MarketSearchResponse(BaseModel):
 
 @router.get("/providers", response_model=list[ProviderInfoSpec])
 async def get_market_providers() -> list[ProviderInfoSpec]:
-    return [_provider_info_to_spec(p) for p in list_providers()]
+    # External marketplaces are intentionally unavailable in an air-gapped
+    # deployment.  Built-in skills are packaged with the application and are
+    # managed from the local skill pool instead.
+    return []
 
 
 @router.get("/categories", response_model=list[CategorySpec])
 async def get_market_categories(lang: str = "en") -> list[CategorySpec]:
-    return [CategorySpec(**c) for c in list_categories(lang)]
+    return []
 
 
 @router.post("/search", response_model=MarketSearchResponse)
 async def market_search(body: MarketSearchRequest) -> MarketSearchResponse:
-    unknown = [k for k in body.provider_pages if k not in PROVIDERS]
-    if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=f"unknown providers: {sorted(unknown)}",
-        )
-
-    results, errors, by_provider = await search_market(
-        query=body.query,
-        provider_pages=body.provider_pages,
-        limit=body.limit,
-        lang=body.lang,
-        category=body.category,
-    )
-    return MarketSearchResponse(
-        results=[_result_to_spec(r) for r in results],
-        errors=[_error_to_spec(e) for e in errors],
-        by_provider={
-            key: ProviderPageInfo(has_more=has_more, total=total)
-            for key, (has_more, total) in by_provider.items()
-        },
-    )
+    return MarketSearchResponse(results=[], errors=[], by_provider={})
 
 
 def _provider_info_to_spec(info: ProviderInfo) -> ProviderInfoSpec:

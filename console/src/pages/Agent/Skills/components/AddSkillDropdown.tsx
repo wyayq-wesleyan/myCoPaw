@@ -1,12 +1,6 @@
 import { Button, Dropdown } from "@agentscope-ai/design";
 import type { MenuProps } from "antd";
-import {
-  AppstoreOutlined,
-  DownloadOutlined,
-  ImportOutlined,
-  PlusOutlined,
-  UploadOutlined,
-} from "@ant-design/icons";
+import { DownloadOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 
 interface AddSkillDropdownProps {
@@ -14,8 +8,8 @@ interface AddSkillDropdownProps {
   /** Skills page only — omitted on the pool page (it IS the pool). */
   onFromPool?: () => void;
   onUploadZip: () => void;
-  onFromUrl: () => void;
-  onBrowseMarket: () => void;
+  onFromUrl?: () => void;
+  onBrowseMarket?: () => void;
   uploading?: boolean;
 }
 
@@ -57,19 +51,12 @@ export function AddSkillDropdown({
       disabled: uploading,
       onClick: onUploadZip,
     },
-    {
-      key: "from-url",
-      label: t("skills.importHub"),
-      icon: <ImportOutlined />,
-      onClick: onFromUrl,
-    },
-    { type: "divider" },
-    {
-      key: "market",
-      label: t("market.browseMarket"),
-      icon: <AppstoreOutlined />,
-      onClick: onBrowseMarket,
-    },
+    ...(onFromUrl
+      ? [{ key: "from-url", label: t("skills.importHub"), onClick: onFromUrl }]
+      : []),
+    ...(onBrowseMarket
+      ? [{ type: "divider" as const }, { key: "market", label: t("market.browseMarket"), onClick: onBrowseMarket }]
+      : []),
   ];
 
   return (

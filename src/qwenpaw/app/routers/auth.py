@@ -25,14 +25,26 @@ from ..auth import (
     resolve_client_ip,
 )
 from ..rate_limiter import rate_limiter
+from ..utils import schedule_agent_reload
 from ..user_space import (
     get_disabled_names,
+    get_menu_permissions,
     get_model_permissions,
     set_disabled_names,
+    set_menu_permissions,
     set_model_permissions,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _schedule_user_agent_reloads(request: Request, username: str) -> None:
+    """Reload all owned agents after a skill or tool entitlement changes."""
+    from ...config import load_config
+
+    for agent_id, profile in load_config().agents.profiles.items():
+        if getattr(profile, "owner_username", None) == username:
+            schedule_agent_reload(request, agent_id)
 
 
 class LoginRequest(BaseModel):
@@ -65,11 +77,21 @@ class CurrentUserResponse(BaseModel):
     username: str
     role: str
     enabled: bool
+    menu_permissions: list[str] | None = None
+
+
+class ModelPermission(BaseModel):
+    provider_id: str
+    model_id: str
 
 
 class CreateUserRequest(BaseModel):
     username: str
     password: str
+    model_permissions: list[ModelPermission] | None = None
+    disabled_skills: list[str] | None = None
+    disabled_tools: list[str] | None = None
+    menu_permissions: list[str] | None = None
 
 
 class UpdateUserStatusRequest(BaseModel):
@@ -80,17 +102,16 @@ class UpdateUserPasswordRequest(BaseModel):
     password: str
 
 
-class ModelPermission(BaseModel):
-    provider_id: str
-    model_id: str
-
-
 class UpdateModelPermissionsRequest(BaseModel):
     permissions: list[ModelPermission] | None = None
 
 
 class UpdateNamePermissionsRequest(BaseModel):
     disabled: list[str] | None = None
+
+
+class UpdateMenuPermissionsRequest(BaseModel):
+    permissions: list[str] | None = None
 
 
 @router.post("/login")
@@ -249,6 +270,17 @@ async def create_user(req: CreateUserRequest, request: Request) -> CurrentUserRe
     from ..user_space import ensure_user_default_agent
 
     ensure_user_default_agent(req.username)
+    set_model_permissions(
+        req.username,
+        [entry.model_dump() for entry in req.model_permissions]
+        if req.model_permissions is not None
+        else None,
+    )
+    set_disabled_names(req.username, "disabled_skills", req.disabled_skills)
+    set_disabled_names(req.username, "disabled_tools", req.disabled_tools)
+    set_menu_permissions(req.username, req.menu_permissions)
+    _schedule_user_agent_reloads(request, req.username)
+    user = get_user_info(req.username) or user
     return CurrentUserResponse(**user)
 
 
@@ -321,6 +353,7 @@ async def update_skill_permissions(
 ) -> dict:
     require_admin_access(_request_username(request))
     set_disabled_names(username, "disabled_skills", req.disabled)
+    _schedule_user_agent_reloads(request, username)
     return await user_skill_permissions(username, request)
 
 
@@ -338,7 +371,39 @@ async def update_tool_permissions(
 ) -> dict:
     require_admin_access(_request_username(request))
     set_disabled_names(username, "disabled_tools", req.disabled)
+    _schedule_user_agent_reloads(request, username)
     return await user_tool_permissions(username, request)
+
+
+@router.get("/users/{username}/menu-permissions")
+async def user_menu_permissions(username: str, request: Request) -> dict:
+    require_admin_access(_request_username(request))
+    user = get_user_info(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "username": username,
+        "permissions": get_menu_permissions(username, str(user["role"])),
+    }
+
+
+@router.put("/users/{username}/menu-permissions")
+async def update_menu_permissions(
+    username: str,
+    req: UpdateMenuPermissionsRequest,
+    request: Request,
+) -> dict:
+    require_admin_access(_request_username(request))
+    user = get_user_info(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user["role"] == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="Administrator menu permissions cannot be restricted",
+        )
+    set_menu_permissions(username, req.permissions)
+    return await user_menu_permissions(username, request)
 
 
 class UpdateProfileRequest(BaseModel):

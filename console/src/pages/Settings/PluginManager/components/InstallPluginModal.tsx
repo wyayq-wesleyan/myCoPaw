@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { Button, Modal, Input, Form, Divider, Typography, Space } from "antd";
-import { Package, Link, FolderOpen, FileArchive, X } from "lucide-react";
+import { Button, Modal, Typography, Space } from "antd";
+import { Package, FolderOpen, FileArchive, X } from "lucide-react";
 import type { useInstallModal } from "../hooks/useInstallModal";
 import styles from "./InstallPluginModal.module.less";
 
@@ -12,11 +12,9 @@ export function InstallPluginModal({
   installOpen,
   closeModal,
   localInstalling,
-  urlInstalling,
   localSel,
   clearSelection,
   dragOver,
-  form,
   fileInputRef,
   browseZip,
   handleZipPicked,
@@ -24,7 +22,6 @@ export function InstallPluginModal({
   handleDragLeave,
   handleDrop,
   handleInstallLocal,
-  handleInstallUrl,
 }: Omit<InstallModalProps, "openModal">) {
   const { t } = useTranslation();
 
@@ -104,37 +101,6 @@ export function InstallPluginModal({
               ? t("pluginManager.installing")
               : t("pluginManager.installBtn")}
           </Button>
-
-          <Divider style={{ margin: "20px 0 16px" }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {t("pluginManager.orFromUrl")}
-            </Text>
-          </Divider>
-
-          <Form form={form} layout="vertical">
-            <Form.Item
-              name="source"
-              style={{ marginBottom: 8 }}
-              rules={[{ required: true, message: " " }]}
-            >
-              <Input
-                prefix={
-                  <Link
-                    size={14}
-                    style={{ color: "var(--ant-color-text-quaternary)" }}
-                  />
-                }
-                placeholder={t("pluginManager.urlPlaceholder")}
-                allowClear
-                onPressEnter={handleInstallUrl}
-              />
-            </Form.Item>
-            <Button block loading={urlInstalling} onClick={handleInstallUrl}>
-              {urlInstalling
-                ? t("pluginManager.installing")
-                : t("pluginManager.installFromUrl")}
-            </Button>
-          </Form>
 
           <Text
             type="secondary"

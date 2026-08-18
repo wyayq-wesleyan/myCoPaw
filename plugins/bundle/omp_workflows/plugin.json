@@ -1,10 +1,10 @@
 {
   "id": "omp-workflows",
-  "name": "OMP Workflows",
+  "name": "本地工作流",
   "version": "0.1.1",
   "type": "bundle",
-  "description": "Oh My Paw workflow modes: Autopilot, Ralph, UltraQA, Ultrawork, Team",
-  "author": "QwenPaw Team",
+  "description": "适用于复杂任务的本地执行模式：自动执行、质量检查、并行协作与分阶段工作流。",
+  "author": "汇智小助手",
   "entry": {
     "backend": "plugin.py"
   },

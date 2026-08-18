@@ -1,5 +1,4 @@
-import { Layout, Space } from "antd";
-import ThemeToggleButton from "../components/ThemeToggleButton";
+import { Layout } from "antd";
 import styles from "./index.module.less";
 import { Slot } from "../plugins/registry/Slot";
 
@@ -22,10 +21,7 @@ export default function Header() {
         </Slot>
       </div>
       <Slot name="header.left" kind="fill" />
-      <Space size="middle">
-        <Slot name="header.right" kind="fill" />
-        <ThemeToggleButton />
-      </Space>
+      <Slot name="header.right" kind="fill" />
     </AntHeader>
   );
 }

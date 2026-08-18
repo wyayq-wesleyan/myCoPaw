@@ -8,9 +8,7 @@ import {
   Tooltip,
   Badge,
   Popover,
-  Tour,
 } from "antd";
-import type { TourProps } from "antd";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -55,10 +53,6 @@ import type { FlatMenuEntry } from "./registry/adapter";
 import { filterMenuForAgentCapabilities } from "./registry/capabilities";
 import type { MenuItem } from "../plugins/registry/types";
 import type { ReactNode } from "react";
-import {
-  dismissDesktopModeHint,
-  shouldShowDesktopModeHint,
-} from "../utils/desktopModeHint";
 
 // ── Layout ────────────────────────────────────────────────────────────────
 
@@ -75,29 +69,39 @@ function isMobileSidebarViewport() {
 const INBOX_BADGE_POLLING_MS = 6000;
 
 const ADMIN_ONLY_MENU_IDS = new Set([
-  "core.inbox",
-  "core.app-center",
-  "core.channels",
-  "core.heartbeat",
-  "core.mcp",
-  "core.acp",
   "core.models",
   "core.user-management",
-  "core.skill-pool",
-  "core.environments",
-  "core.offload-policy",
-  "core.security",
-  "core.token-usage",
-  "core.backups",
-  "core.voice-transcription",
-  "core.debug",
-  "core.plugin-manager",
 ]);
 
-function filterMenuForRole(items: MenuItem[], isAdmin: boolean): MenuItem[] {
-  return isAdmin
-    ? items
-    : items.filter((item) => !ADMIN_ONLY_MENU_IDS.has(item.id));
+// This edition is a browser-console product for air-gapped networks. External
+// channel adapters are deliberately not loaded by the service, so leaving a
+// navigation entry would only lead users to a non-functional configuration.
+const OFFLINE_DISABLED_MENU_IDS = new Set(["core.channels"]);
+
+function filterMenuForRole(
+  items: MenuItem[],
+  isAdmin: boolean,
+  allowedMenuIds: string[] | null,
+): MenuItem[] {
+  const allowed = new Set(allowedMenuIds ?? []);
+  return items.flatMap((raw) => {
+    const item = raw as MenuItem & { __children?: MenuItem[] };
+    if (item.__children) {
+      const children = filterMenuForRole(
+        item.__children,
+        isAdmin,
+        allowedMenuIds,
+      );
+      return children.length > 0
+        ? [Object.assign({}, item, { __children: children }) as MenuItem]
+        : [];
+    }
+    if (OFFLINE_DISABLED_MENU_IDS.has(item.id)) return [];
+    if (isAdmin) return [item];
+    return !ADMIN_ONLY_MENU_IDS.has(item.id) && allowed.has(item.id)
+      ? [item]
+      : [];
+  });
 }
 
 // ── Simple mode whitelist ─────────────────────────────────────────────────
@@ -153,6 +157,9 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   const chatPath = buildChatPath(currentSessionId);
   const [authEnabled, setAuthEnabled] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [menuPermissions, setMenuPermissions] = useState<string[] | null>(
+    null,
+  );
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountForm] = Form.useForm();
@@ -160,8 +167,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   // the main content on narrow viewports.
   const [collapsed, setCollapsed] = useState(isMobileSidebarViewport);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const settingsButtonRef = useRef<HTMLButtonElement>(null);
-  const [desktopModeHintOpen, setDesktopModeHintOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(isMobileSidebarViewport);
   const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
   const [hasPendingApprovals, setHasPendingApprovals] = useState(false);
@@ -196,19 +201,21 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   // Apply simple-mode filtering when enabled
   const agentMenu = useMemo(() => {
     const visibleMenu = filterMenuForAgentCapabilities(
-      filterMenuForRole(rawAgentMenu, isAdmin),
+      filterMenuForRole(rawAgentMenu, isAdmin, menuPermissions),
       backendCapabilities,
     );
     return sidebarMode === "simple"
       ? flattenMenuForSimpleMode(visibleMenu)
       : visibleMenu;
-  }, [backendCapabilities, isAdmin, rawAgentMenu, sidebarMode]);
+  }, [backendCapabilities, isAdmin, menuPermissions, rawAgentMenu, sidebarMode]);
   const settingsMenu = useMemo(
     () =>
       sidebarMode === "simple"
-        ? flattenMenuForSimpleMode(filterMenuForRole(rawSettingsMenu, isAdmin))
-        : filterMenuForRole(rawSettingsMenu, isAdmin),
-    [isAdmin, rawSettingsMenu, sidebarMode],
+        ? flattenMenuForSimpleMode(
+            filterMenuForRole(rawSettingsMenu, isAdmin, menuPermissions),
+          )
+        : filterMenuForRole(rawSettingsMenu, isAdmin, menuPermissions),
+    [isAdmin, menuPermissions, rawSettingsMenu, sidebarMode],
   );
 
   // Flat nav entries for simple mode (icon + label + path)
@@ -229,44 +236,22 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
         setAuthEnabled(res.enabled);
         if (!res.enabled) {
           setIsAdmin(true);
+          setMenuPermissions(null);
           return;
         }
         return authApi
           .getCurrentUser()
-          .then((user) => setIsAdmin(user.role === "admin"))
-          .catch(() => setIsAdmin(false));
+          .then((user) => {
+            setIsAdmin(user.role === "admin");
+            setMenuPermissions(user.menu_permissions);
+          })
+          .catch(() => {
+            setIsAdmin(false);
+            setMenuPermissions([]);
+          });
       })
       .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (!isMobile && shouldShowDesktopModeHint(window.localStorage)) {
-      setDesktopModeHintOpen(true);
-    }
-  }, [isMobile]);
-
-  const dismissDesktopHint = useCallback(() => {
-    dismissDesktopModeHint(window.localStorage);
-    setDesktopModeHintOpen(false);
-  }, []);
-
-  const desktopModeHintSteps = useMemo<TourProps["steps"]>(
-    () => [
-      {
-        title: t("sidebar.desktopModeHint.title", "Try Desktop Mode"),
-        description: t(
-          "sidebar.desktopModeHint.description",
-          "Open quick settings here, then choose Desktop Mode for a window-based workspace.",
-        ),
-        target: () => settingsButtonRef.current as HTMLButtonElement,
-        placement: "rightBottom",
-        nextButtonProps: {
-          children: t("sidebar.desktopModeHint.gotIt", "Got it"),
-        },
-      },
-    ],
-    [t],
-  );
 
   useEffect(() => {
     if (
@@ -787,7 +772,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           }
         >
           <Button
-            ref={settingsButtonRef}
             type="text"
             icon={<SparkSettingLine size={18} />}
             className={styles.collapseToggle}
@@ -806,14 +790,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           className={styles.collapseToggle}
         />
       </div>
-
-      <Tour
-        open={desktopModeHintOpen}
-        steps={desktopModeHintSteps}
-        onClose={dismissDesktopHint}
-        onFinish={dismissDesktopHint}
-        mask={{ color: "rgba(9, 9, 11, 0.2)" }}
-      />
 
       <Modal
         open={accountModalOpen}

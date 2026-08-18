@@ -20,6 +20,20 @@ USER_ROOT = WORKING_DIR / "users"
 MODEL_PERMISSIONS = "model_permissions"
 DISABLED_SKILLS = "disabled_skills"
 DISABLED_TOOLS = "disabled_tools"
+MENU_PERMISSIONS = "menu_permissions"
+
+# Regular accounts start with the focused, day-to-day console.  The chat
+# entry and agent selector are rendered outside the registry menu, therefore
+# they do not need an explicit entry here.
+DEFAULT_USER_MENU_IDS = frozenset(
+    {
+        "core.agents",
+        "core.files",
+        "core.sessions",
+        "core.cron-jobs",
+        "core.token-usage",
+    },
+)
 
 
 def _slug(username: str) -> str:
@@ -94,7 +108,105 @@ def get_disabled_names(username: str, key: str) -> list[str]:
 
 def set_disabled_names(username: str, key: str, values: list[str] | None) -> None:
     state = load_user_state(username)
+    previous = _names(
+        state.get(key, []) if isinstance(state.get(key, []), list) else [],
+    )
     state[key] = _names(values)
+    save_user_state(username, state)
+    if key == DISABLED_TOOLS:
+        _apply_tool_permissions(username, previous, state[key])
+    elif key == DISABLED_SKILLS:
+        _apply_skill_permissions(username, previous, state[key])
+
+
+def _owned_agent_profiles(username: str):
+    config = load_config()
+    return [
+        (agent_id, profile)
+        for agent_id, profile in config.agents.profiles.items()
+        if getattr(profile, "owner_username", None) == username
+    ]
+
+
+def _apply_tool_permissions(
+    username: str,
+    previously_disabled: list[str],
+    disabled: list[str],
+) -> None:
+    """Apply account tool permissions to all of the user's agent configs."""
+    from ..config.config import load_agent_config, save_agent_config
+
+    previous = set(previously_disabled)
+    blocked = set(disabled)
+    for agent_id, _profile in _owned_agent_profiles(username):
+        try:
+            agent_config = load_agent_config(agent_id)
+            tools = getattr(getattr(agent_config, "tools", None), "builtin_tools", {})
+            changed = False
+            for name in blocked:
+                if name in tools and tools[name].enabled:
+                    tools[name].enabled = False
+                    changed = True
+            for name in previous - blocked:
+                if name in tools and not tools[name].enabled:
+                    tools[name].enabled = True
+                    changed = True
+            if changed:
+                save_agent_config(agent_id, agent_config)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not apply tool permissions to %s: %s", agent_id, exc)
+
+
+def _apply_skill_permissions(
+    username: str,
+    previously_disabled: list[str],
+    disabled: list[str],
+) -> None:
+    """Enable or disable workspace skills so the runtime sees the same set."""
+    from ..agents.skill_system import SkillService
+
+    previous = set(previously_disabled)
+    blocked = set(disabled)
+    for _agent_id, profile in _owned_agent_profiles(username):
+        try:
+            service = SkillService(Path(profile.workspace_dir))
+            for name in blocked:
+                try:
+                    service.disable_skill(name)
+                except (FileNotFoundError, ValueError):
+                    continue
+            for name in previous - blocked:
+                try:
+                    service.enable_skill(name)
+                except (FileNotFoundError, ValueError):
+                    continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not apply skill permissions for %s: %s", username, exc)
+
+
+def get_menu_permissions(username: str, role: str = "user") -> list[str] | None:
+    """Return visible console menu ids for a user.
+
+    ``None`` deliberately means unrestricted and is reserved for an
+    administrator.  Keeping the default allow-list here, instead of only in
+    the frontend, makes newly created accounts safe even before their first
+    settings update.
+    """
+    if role == "admin":
+        return None
+    state = load_user_state(username)
+    if MENU_PERMISSIONS not in state:
+        return sorted(DEFAULT_USER_MENU_IDS)
+    values = state.get(MENU_PERMISSIONS, [])
+    return _names(values if isinstance(values, list) else [])
+
+
+def set_menu_permissions(username: str, permissions: list[str] | None) -> None:
+    state = load_user_state(username)
+    if permissions is None:
+        state.pop(MENU_PERMISSIONS, None)
+    else:
+        state[MENU_PERMISSIONS] = _names(permissions)
     save_user_state(username, state)
 
 
@@ -180,11 +292,50 @@ def ensure_user_default_agent(username: str | None) -> str | None:
         name=f"{username} 的智能体",
         description="用户独立工作区",
     )
+    # Running configuration is deployment-wide in the offline product.  A
+    # new account still owns its workspace and chats, but inherits the current
+    # administrator settings for model context, memory, and execution.
+    admin_agent: str | None = None
+    try:
+        from .auth import list_users
+        from ..config.config import load_agent_config
+
+        admin_names = {
+            str(item["username"])
+            for item in list_users()
+            if item.get("role") == "admin"
+        }
+        admin_agent = next(
+            (
+                agent_id
+                for agent_id, profile in config.agents.profiles.items()
+                if getattr(profile, "owner_username", None) in admin_names
+            ),
+            None,
+        )
+        if admin_agent:
+            admin_config = load_agent_config(admin_agent)
+            template.agent_config.running = admin_config.running.model_copy(
+                deep=True,
+            )
+            template.agent_config.approval_level = admin_config.approval_level
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not inherit admin running config: %s", exc)
     copy_workspace_md_files(
         language,
         workspace,
         md_template_id=template.md_template_id,
     )
+    if admin_agent:
+        try:
+            admin_workspace = Path(
+                config.agents.profiles[admin_agent].workspace_dir,
+            )
+            source_skills = admin_workspace / "skills"
+            if source_skills.is_dir():
+                shutil.copytree(source_skills, workspace / "skills", dirs_exist_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not copy administrator skills: %s", exc)
     for name, content in (("chats.json", '{"version": 1, "chats": []}'), ("jobs.json", '{"version": 1, "jobs": []}')):
         path = workspace / name
         if not path.exists():

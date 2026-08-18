@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Form, Input, Modal, Select } from "@agentscope-ai/design";
+import { Form, Input, Modal } from "@agentscope-ai/design";
 import api from "../../../../../api";
 import { useTranslation } from "react-i18next";
 import { useAppMessage } from "../../../../../hooks/useAppMessage";
@@ -34,8 +34,13 @@ export function CustomProviderModal({
         id: values.id.trim(),
         name: values.name.trim(),
         default_base_url: values.default_base_url?.trim() || "",
-        api_key_prefix: values.api_key_prefix?.trim() || "",
-        chat_model: values.chat_model || "OpenAIChatModel",
+        api_key_prefix: "",
+        chat_model: "OpenAIChatModel",
+      });
+      await api.configureProvider(values.id.trim(), {
+        api_key: values.api_key?.trim() || "",
+        base_url: values.default_base_url?.trim() || "",
+        chat_model: "OpenAIChatModel",
       });
       message.success(
         t("models.providerCreated", { name: values.name.trim() }),
@@ -69,7 +74,7 @@ export function CustomProviderModal({
         form={form}
         layout="vertical"
         style={{ marginTop: 16 }}
-        initialValues={{ chat_model: "OpenAIChatModel" }}
+        initialValues={{}}
       >
         <Form.Item
           name="id"
@@ -97,37 +102,17 @@ export function CustomProviderModal({
         <Form.Item
           name="default_base_url"
           label={t("models.defaultBaseUrlLabel")}
+          rules={[{ required: true, message: "请输入内网服务地址" }]}
         >
-          <Input placeholder={t("models.defaultBaseUrlPlaceholder")} />
+          <Input placeholder="例如：http://host.docker.internal:9988/v1" />
         </Form.Item>
 
         <Form.Item
-          name="chat_model"
-          label={t("models.protocol")}
-          rules={[
-            {
-              required: true,
-              message: t("models.selectProtocol"),
-            },
-          ]}
-          extra={t("models.protocolHint")}
+          name="api_key"
+          label="API Key"
+          extra="内网服务未启用鉴权时可留空。"
         >
-          <Select
-            options={[
-              {
-                value: "OpenAIChatModel",
-                label: t("models.protocolOpenAI"),
-              },
-              {
-                value: "OpenAIResponseModel",
-                label: t("models.protocolOpenAIResponse"),
-              },
-              {
-                value: "AnthropicChatModel",
-                label: t("models.protocolAnthropic"),
-              },
-            ]}
-          />
+          <Input autoComplete="off" />
         </Form.Item>
       </Form>
     </Modal>

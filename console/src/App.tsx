@@ -1,48 +1,30 @@
 import { createGlobalStyle } from "antd-style";
 import {
   ConfigProvider,
-  bailianDarkTheme,
   bailianTheme,
 } from "@agentscope-ai/design";
 import { App as AntdApp } from "antd";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
 import zhCN from "antd/locale/zh_CN";
-import enUS from "antd/locale/en_US";
-import jaJP from "antd/locale/ja_JP";
-import ruRU from "antd/locale/ru_RU";
-import idID from "antd/locale/id_ID";
 import type { Locale } from "antd/es/locale";
 import { theme as antdTheme } from "antd";
-import dayjs from "dayjs";
-import relativeTime from "dayjs/plugin/relativeTime";
-import "dayjs/locale/zh-cn";
-import "dayjs/locale/ja";
-import "dayjs/locale/ru";
-import "dayjs/locale/id";
-dayjs.extend(relativeTime);
 import MainLayout from "./layouts/MainLayout";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { PluginProvider, usePlugins } from "./plugins/PluginContext";
 import { ApprovalProvider } from "./contexts/ApprovalContext";
-import { DesktopUpdateProvider } from "./contexts/DesktopUpdateContext";
-import { UpdateTakeoverGate } from "./components/UpdateTakeoverPage";
-import { Suspense, lazy } from "react";
+import { Suspense } from "react";
 import { lazyImportWithRetry } from "./utils/lazyWithRetry";
 import {
   getLoginHref,
   getLoginPath,
+  getConsoleRootHref,
   getRouterBasename,
   isOsPath,
 } from "./utils/navigationMode";
 
 const LoginPage = lazyImportWithRetry("./pages/Login/index");
-// Desktop OS shell. Uses React.lazy (not lazyImportWithRetry, which only
-// resolves the ./pages/** glob) so it can load from ./os/.
-const DesktopOSPage = lazy(() => import("./os/DesktopOS"));
 import { authApi } from "./api/modules/auth";
-import { languageApi } from "./api/modules/language";
 import { useUploadLimitStore } from "./stores/uploadLimitStore";
 import { getApiUrl, getApiToken, clearAuthToken } from "./api/config";
 import CloseWindowPrompt from "./tauri/CloseWindowPrompt";
@@ -51,22 +33,6 @@ import { isDesktopTauriRuntime } from "./utils/openExternalLink";
 import { interceptBlankLinkClicks } from "./utils/interceptBlankLinkClicks";
 import "./styles/layout.css";
 import "./styles/form-override.css";
-
-const antdLocaleMap: Record<string, Locale> = {
-  zh: zhCN,
-  en: enUS,
-  ja: jaJP,
-  ru: ruRU,
-  id: idID,
-};
-
-const dayjsLocaleMap: Record<string, string> = {
-  zh: "zh-cn",
-  en: "en",
-  ja: "ja",
-  ru: "ru",
-  id: "id",
-};
 
 const GlobalStyle = createGlobalStyle`
 * {
@@ -142,47 +108,14 @@ function AuthGuard({
 
 function AppInner() {
   const basename = getRouterBasename(window.location.pathname);
-  const { i18n } = useTranslation();
   const { isDark } = useTheme();
   const { loading: pluginsLoading } = usePlugins();
-  const selectedTheme = isDark ? bailianDarkTheme : bailianTheme;
-  const lang = i18n.resolvedLanguage || i18n.language || "en";
-  const [antdLocale, setAntdLocale] = useState<Locale>(
-    antdLocaleMap[lang] ?? enUS,
-  );
+  const selectedTheme = bailianTheme;
+  const [antdLocale] = useState<Locale>(zhCN);
 
   useEffect(() => {
-    if (!localStorage.getItem("language")) {
-      languageApi
-        .getLanguage()
-        .then(({ language }) => {
-          if (language && language !== i18n.language) {
-            i18n.changeLanguage(language);
-            localStorage.setItem("language", language);
-          }
-        })
-        .catch((err) =>
-          console.error("Failed to fetch language preference:", err),
-        );
-    }
     useUploadLimitStore.getState().fetch();
   }, []);
-
-  useEffect(() => {
-    const handleLanguageChanged = (lng: string) => {
-      const shortLng = lng.split("-")[0];
-      setAntdLocale(antdLocaleMap[shortLng] ?? enUS);
-      dayjs.locale(dayjsLocaleMap[shortLng] ?? "en");
-    };
-
-    // Set initial dayjs locale
-    dayjs.locale(dayjsLocaleMap[lang.split("-")[0]] ?? "en");
-
-    i18n.on("languageChanged", handleLanguageChanged);
-    return () => {
-      i18n.off("languageChanged", handleLanguageChanged);
-    };
-  }, [i18n]);
 
   // Disable the default browser context menu in the Tauri desktop build so
   // users cannot open DevTools via right-click. DevTools is still available
@@ -207,18 +140,12 @@ function AppInner() {
     return null;
   }
 
-  const osActive = isOsPath(window.location.pathname);
+  if (isOsPath(window.location.pathname)) {
+    window.location.replace(getConsoleRootHref(window.location.pathname));
+    return null;
+  }
 
-  // The Desktop OS shell renders OUTSIDE any Router: each window supplies its
-  // own MemoryRouter (WindowRouter.tsx) and React Router forbids nesting a
-  // <Router> inside another. The classic browser layout keeps its BrowserRouter.
-  const routedContent = osActive ? (
-    <AuthGuard useHardRedirect>
-      <Suspense fallback={null}>
-        <DesktopOSPage />
-      </Suspense>
-    </AuthGuard>
-  ) : (
+  const routedContent = (
     <BrowserRouter basename={basename}>
       <Routes>
         <Route
@@ -264,11 +191,7 @@ function AppInner() {
       >
         <AntdApp>
           <CloseWindowPrompt />
-          <DesktopUpdateProvider>
-            <UpdateTakeoverGate>
-              <ApprovalProvider>{routedContent}</ApprovalProvider>
-            </UpdateTakeoverGate>
-          </DesktopUpdateProvider>
+          <ApprovalProvider>{routedContent}</ApprovalProvider>
         </AntdApp>
       </ConfigProvider>
     </>

@@ -2,7 +2,6 @@ import { Button, Input, Select, Tooltip } from "@agentscope-ai/design";
 import { Badge } from "antd";
 import {
   AppstoreOutlined,
-  ArrowLeftOutlined,
   CloseOutlined,
   DeleteOutlined,
   ReloadOutlined,
@@ -10,13 +9,10 @@ import {
   SyncOutlined,
   UnorderedListOutlined,
 } from "@ant-design/icons";
-import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { useSearchParams } from "react-router-dom";
 import { ImportHubModal } from "../../Agent/Skills/components/ImportHubModal";
 import { SkillFilterDropdown } from "../../Agent/Skills/components/SkillFilterDropdown";
 import { AddSkillDropdown } from "../../Agent/Skills/components/AddSkillDropdown";
-import { MarketPanel } from "../Market/MarketPanel";
 import {
   BroadcastModal,
   ImportBuiltinModal,
@@ -34,56 +30,12 @@ import styles from "./index.module.less";
 function SkillPoolPage() {
   const { t } = useTranslation();
   const pool = useSkillPool();
-  const { handleRefresh } = pool;
   const builtinNoticeLines = getBuiltinNoticeLines(pool.builtinNotice, t);
   const {
     visibleItems: visibleSkills,
     hasMore,
     sentinelRef,
   } = useProgressiveRender(pool.sortedSkills);
-
-  const [searchParams, setSearchParams] = useSearchParams();
-  const marketView = searchParams.get("view") === "market";
-
-  const openMarket = useCallback(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("view", "market");
-      return next;
-    });
-  }, [setSearchParams]);
-
-  const closeMarket = useCallback(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete("view");
-      return next;
-    });
-  }, [setSearchParams]);
-
-  const handleMarketInstalled = useCallback(() => {
-    void handleRefresh();
-  }, [handleRefresh]);
-
-  if (marketView) {
-    return (
-      <div className={styles.skillsPage}>
-        <PageHeader
-          items={[
-            { title: t("nav.settings") },
-            { title: t("nav.skillPool") },
-            { title: t("nav.market") },
-          ]}
-          extra={
-            <Button icon={<ArrowLeftOutlined />} onClick={closeMarket}>
-              {t("common.back")}
-            </Button>
-          }
-        />
-        <MarketPanel installTarget="pool" onInstalled={handleMarketInstalled} />
-      </div>
-    );
-  }
 
   return (
     <div className={styles.skillsPage}>
@@ -182,8 +134,6 @@ function SkillPoolPage() {
                   <AddSkillDropdown
                     onCreate={pool.openCreate}
                     onUploadZip={() => pool.zipInputRef.current?.click()}
-                    onFromUrl={() => pool.setImportModalOpen(true)}
-                    onBrowseMarket={openMarket}
                   />
                 </div>
               </>

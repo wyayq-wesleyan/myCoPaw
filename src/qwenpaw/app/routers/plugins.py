@@ -641,10 +641,8 @@ async def list_plugins(request: Request):
     ),
 )
 async def get_plugin_catalog():
-    """Return official plugins from OSS metadata (server-side fetch)."""
-    from ...plugins.download_catalog import fetch_plugin_catalog_async
-
-    return await fetch_plugin_catalog_async()
+    """External plugin catalogs are disabled for air-gapped deployments."""
+    return {"plugins": [], "total": 0}
 
 
 class InstallPluginRequest(BaseModel):
@@ -682,27 +680,20 @@ async def install_plugin(
 
     source = body.source.strip()
     is_url = source.startswith(("http://", "https://"))
+    if is_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Offline deployment only supports local plugin directories or ZIP uploads.",
+        )
     temp_dir: Optional[Path] = None
 
     try:
-        if is_url:
-            # Download and extract the zip archive
-            temp_dir = Path(await asyncio.to_thread(tempfile.mkdtemp))
-            zip_path = temp_dir / "plugin.zip"
-            logger.info(f"Downloading plugin from {_log_safe(source)}")
-            await _async_download(source, zip_path)
-            source_path = await asyncio.to_thread(
-                _extract_downloaded_plugin_zip,
-                zip_path,
-                temp_dir,
+        source_path = await asyncio.to_thread(Path(source).resolve)
+        if not await asyncio.to_thread(source_path.exists):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Path not found: {source}",
             )
-        else:
-            source_path = await asyncio.to_thread(Path(source).resolve)
-            if not await asyncio.to_thread(source_path.exists):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Path not found: {source}",
-                )
 
         # Load + post-load setup share one lifecycle lock.
         record = await _load_plugin_with_optional_force_reinstall(

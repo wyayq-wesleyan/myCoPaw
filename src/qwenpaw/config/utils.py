@@ -400,7 +400,10 @@ def get_available_channels() -> Tuple[str, ...]:
     raw_enabled = EnvVarLoader.get_str("QWENPAW_ENABLED_CHANNELS", "").strip()
     if raw_enabled:
         enabled = {ch.strip() for ch in raw_enabled.split(",") if ch.strip()}
-        return tuple(k for k in all_keys if k in enabled) or all_keys
+        # An explicit whitelist must remain a whitelist. Returning all channels
+        # when none match turns a typo such as ``console`` into an accidental
+        # internet-facing deployment.
+        return tuple(k for k in all_keys if k in enabled)
 
     raw_disabled = EnvVarLoader.get_str(
         "QWENPAW_DISABLED_CHANNELS",

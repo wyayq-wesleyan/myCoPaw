@@ -1698,6 +1698,11 @@ async def put_agents_running_config(
     request: Request = None,
 ) -> AgentsRunningConfig:
     """Update agent running configuration."""
+    from ..auth import is_auth_enabled, require_admin_access
+    from ..user_space import get_request_username
+
+    if is_auth_enabled():
+        require_admin_access(get_request_username(request))
     workspace = await get_agent_for_request(request)
     memory_manager = workspace.memory_manager
     workspace_dir = getattr(workspace, "workspace_dir", ".")
@@ -1774,6 +1779,41 @@ async def put_agents_running_config(
                 )
 
     schedule_agent_reload(request, workspace.agent_id)
+
+    # Offline deployments use one administrator-managed running policy.  Keep
+    # per-user workspaces isolated while propagating the operational settings
+    # (memory, embedding, context, execution limits) to every user agent.
+    from ..auth import get_user_info
+    from ..user_space import get_request_username
+
+    caller = get_request_username(request)
+    caller_info = get_user_info(caller) if caller else None
+    if caller_info and caller_info.get("role") == "admin":
+        root_config = load_config()
+        target_ids = [
+            agent_id
+            for agent_id, profile in root_config.agents.profiles.items()
+            if agent_id != workspace.agent_id
+            and getattr(profile, "owner_username", None) != caller
+        ]
+
+        def apply_shared_running_config(target_config):
+            target_config.running = agent_config.running.model_copy(deep=True)
+            target_config.approval_level = agent_config.approval_level
+
+        for target_id in target_ids:
+            try:
+                await update_agent_config_async(
+                    target_id,
+                    apply_shared_running_config,
+                )
+                schedule_agent_reload(request, target_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Could not propagate running config to '%s': %s",
+                    target_id,
+                    exc,
+                )
 
     running_config.approval_level = agent_config.approval_level
     return running_config

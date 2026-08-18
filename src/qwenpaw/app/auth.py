@@ -409,14 +409,22 @@ def _get_user_record(username: str | None) -> dict | None:
     return _get_users(data).get(username)
 
 
-def get_user_info(username: str) -> dict[str, str | bool] | None:
+def get_user_info(username: str) -> dict[str, object] | None:
     record = _get_user_record(username)
     if record is None:
         return None
-    return {"username": username, "role": str(record.get("role", "user")), "enabled": bool(record.get("enabled", True))}
+    role = str(record.get("role", "user"))
+    from .user_space import get_menu_permissions
+
+    return {
+        "username": username,
+        "role": role,
+        "enabled": bool(record.get("enabled", True)),
+        "menu_permissions": get_menu_permissions(username, role),
+    }
 
 
-def list_users() -> list[dict[str, str | bool]]:
+def list_users() -> list[dict[str, object]]:
     data = _load_auth_data()
     if data.get("_auth_load_error"):
         return []
