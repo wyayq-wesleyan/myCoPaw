@@ -328,7 +328,20 @@ def is_model_allowed(username: str | None, provider_id: str, model_id: str) -> b
     if not username:
         return True
     permissions = get_model_permissions(username)
-    return permissions is None or any(
+    if permissions is None:
+        # Provider credentials and model access are managed centrally.  An
+        # account without an explicit entitlement must not inherit every
+        # configured model merely because it was created before this setting
+        # existed.  The administrator remains unrestricted.
+        try:
+            from .auth import get_user_info
+
+            user = get_user_info(username)
+            return bool(user and user.get("role") == "admin")
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not determine model access for %s", username)
+            return False
+    return any(
         item["provider_id"] == provider_id and item["model_id"] == model_id
         for item in permissions
     )

@@ -93,9 +93,24 @@ def _visible_provider_info(
 def _active_models_info(
     manager: ProviderManager,
     active_llm: ModelSlotConfig | None,
+    username: str | None = None,
 ) -> ActiveModelsInfo:
     """Build active-model metadata using the runtime context resolver."""
     effective_max_input_length = None
+    if (
+        username
+        and active_llm
+        and active_llm.provider_id
+        and active_llm.model
+        and not is_model_allowed(
+            username,
+            active_llm.provider_id,
+            active_llm.model,
+        )
+    ):
+        # Do not leak an administrator-only model into a regular user's chat
+        # selector after that user's model entitlement has been changed.
+        active_llm = None
     if active_llm and active_llm.provider_id and active_llm.model:
         provider = manager.get_provider(active_llm.provider_id)
         if provider is not None:
@@ -703,8 +718,13 @@ async def get_active_models(
     - global: ProviderManager global model only
     - agent: a specific agent's configured model only
     """
+    username = get_request_username(request)
     if scope == "global":
-        return _active_models_info(manager, manager.get_active_model())
+        return _active_models_info(
+            manager,
+            manager.get_active_model(),
+            username,
+        )
 
     if scope == "agent":
         if not agent_id:
@@ -715,6 +735,7 @@ async def get_active_models(
         return _active_models_info(
             manager,
             await _load_agent_model(request, agent_id),
+            username,
         )
 
     try:
@@ -730,7 +751,7 @@ async def get_active_models(
                 target_agent_id,
                 agent_model,
             )
-            return _active_models_info(manager, agent_model)
+            return _active_models_info(manager, agent_model, username)
     except (
         HTTPException,
         OSError,
@@ -746,7 +767,7 @@ async def get_active_models(
 
     global_model = manager.get_active_model()
     logger.info("Returning global model: %s", global_model)
-    return _active_models_info(manager, global_model)
+    return _active_models_info(manager, global_model, username)
 
 
 @router.put(
@@ -794,7 +815,11 @@ async def set_active_model(
         except Exception:
             pass
 
-        return _active_models_info(manager, manager.get_active_model())
+        return _active_models_info(
+            manager,
+            manager.get_active_model(),
+            username,
+        )
 
     if not body.agent_id:
         raise HTTPException(
@@ -846,6 +871,7 @@ async def set_active_model(
             provider_id=body.provider_id,
             model=body.model,
         ),
+        username,
     )
 
 
