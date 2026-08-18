@@ -220,7 +220,7 @@ async def share_chat(
     # request's contents.
     resource = await register_resource(
         kind="session",
-        name=chat.id,
+        name=str(chat.name or chat.id),
         creator_username=username,
         metadata={
             "chat_spec": chat.model_dump(mode="json"),
