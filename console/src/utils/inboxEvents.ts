@@ -7,6 +7,7 @@ export const PUSH_MESSAGE_SOURCES = [
   "heartbeat",
   "memory",
   "skill_autoupdate",
+  "resource_share",
 ] as const;
 
 const PUSH_MESSAGE_SOURCE_SET = new Set<string>(PUSH_MESSAGE_SOURCES);

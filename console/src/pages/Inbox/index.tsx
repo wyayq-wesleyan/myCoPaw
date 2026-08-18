@@ -32,6 +32,7 @@ import { ApprovalCard as GlobalApprovalCard } from "../../components/ApprovalCar
 import { useApprovalContext } from "../../contexts/ApprovalContext";
 import { useInboxWobble } from "../../hooks/useInboxWobble";
 import { commandsApi } from "../../api/modules/commands";
+import api from "../../api";
 import { chatApi } from "../../api/modules/chat";
 import sessionApi from "../Chat/sessionApi";
 import { PushMessageCard } from "./components";
@@ -216,6 +217,21 @@ export default function InboxPage() {
     setApprovals((prev) =>
       prev.filter((item) => item.root_session_id !== rootSessionId),
     );
+  };
+
+  const handleResourceDecision = async (
+    eventId: string,
+    requestId: string,
+    approve: boolean,
+  ) => {
+    try {
+      await api.decideSkillShare(requestId, approve);
+      markMessageAsRead(eventId);
+      message.success(approve ? "技能已安装到你的智能体" : "已拒绝技能分享");
+      await deleteMessage(eventId);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "处理分享请求失败");
+    }
   };
   const {
     detailOpen,
@@ -413,6 +429,9 @@ export default function InboxPage() {
                   selected={selectedMessageIds.includes(item.id)}
                   onSelectChange={
                     batchMode ? handleToggleMessageSelection : undefined
+                  }
+                  onResourceDecision={(requestId, approve) =>
+                    void handleResourceDecision(item.id, requestId, approve)
                   }
                 />
               ))}

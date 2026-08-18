@@ -64,6 +64,13 @@ from ...agents.skill_system.store import (
 )
 from ...security.skill_scanner import SkillScanError
 from ..inbox_store import append_event as append_inbox_event
+from ..auth import get_user_info
+from ..auth import list_users
+from ..user_resources import (
+    find_resource_sync,
+    register_resource,
+    resource_storage_dir,
+)
 from ..utils import check_upload_size, schedule_agent_reload
 
 logger = logging.getLogger(__name__)
@@ -200,6 +207,10 @@ class SkillSpec(BaseModel):
     channels: list[str] = Field(default_factory=lambda: ["all"])
     tags: list[str] = Field(default_factory=list)
     last_updated: str = ""
+    resource_id: str = ""
+    creator_username: str = ""
+    source_label: str = ""
+    can_share: bool = False
 
 
 class SkillDetail(SkillSpec):
@@ -306,6 +317,14 @@ class CreateSkillRequest(BaseModel):
     scripts: dict[str, Any] | None = None
     config: dict[str, Any] | None = None
     enable: bool = True
+
+
+class ShareSkillRequest(BaseModel):
+    target_usernames: list[str] = Field(default_factory=list)
+
+
+class ShareDecisionRequest(BaseModel):
+    approve: bool
 
 
 class UploadToPoolRequest(BaseModel):
@@ -467,6 +486,94 @@ async def _request_workspace_dir(request: Request) -> Path:
 
     workspace = await get_agent_for_request(request)
     return Path(workspace.workspace_dir)
+
+
+def _install_registered_skill(
+    *,
+    resource: dict[str, Any],
+    target_username: str,
+    skip_workspace: Path | None = None,
+) -> list[str]:
+    """Install a shared skill into every current agent of an account."""
+    from ..config.utils import load_config
+
+    source_dir = resource_storage_dir(str(resource["resource_id"]))
+    if not source_dir.is_dir():
+        raise ValueError("The shared skill package is missing")
+    installed: list[str] = []
+    for agent_id, profile in load_config().agents.profiles.items():
+        if getattr(profile, "owner_username", None) != target_username:
+            continue
+        workspace = Path(profile.workspace_dir)
+        if skip_workspace is not None and workspace.resolve() == skip_workspace.resolve():
+            continue
+        target_dir = get_workspace_skills_dir(workspace) / str(resource["name"])
+        if target_dir.exists():
+            raise ValueError(
+                f"Skill '{resource['name']}' already exists in agent '{agent_id}'"
+            )
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_dir, target_dir)
+        source_entry = {
+            "source": "customized",
+            "enabled": True,
+            "channels": ["all"],
+            "installed_from": f"shared:{resource['creator_username']}",
+            "resource_id": resource["resource_id"],
+            "source_label": f"由 {resource['creator_username']} 分享",
+        }
+
+        def _register(payload: dict[str, Any]) -> None:
+            payload.setdefault("skills", {})[str(resource["name"])] = source_entry
+
+        try:
+            mutate_json(
+                get_workspace_skill_manifest_path(workspace),
+                default_workspace_manifest(),
+                _register,
+            )
+            SkillService(workspace).enable_skill(str(resource["name"]))
+            installed.append(str(agent_id))
+        except Exception:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise
+    return installed
+
+
+def _store_created_skill(
+    *, workspace_dir: Path, skill_name: str, resource: dict[str, Any]
+) -> None:
+    source_dir = get_workspace_skills_dir(workspace_dir) / skill_name
+    target_dir = resource_storage_dir(str(resource["resource_id"]))
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_dir, target_dir)
+
+
+async def _notify_skill_share(
+    *, request_item: dict[str, Any], resource: dict[str, Any]
+) -> None:
+    await append_inbox_event(
+        agent_id="default",
+        source_type="resource_share",
+        source_id=str(request_item["request_id"]),
+        event_type="skill_share_request",
+        status="pending",
+        severity="info",
+        title=f"技能分享：{resource['name']}",
+        body=(
+            f"{request_item['sender_username']} 希望将技能“{resource['name']}”"
+            "分享给你，请在收件箱中选择同意或拒绝。"
+        ),
+        recipient_username=str(request_item["recipient_username"]),
+        payload={
+            "request_id": request_item["request_id"],
+            "resource_id": resource["resource_id"],
+            "resource_name": resource["name"],
+            "sender_username": request_item["sender_username"],
+            "recipient_username": request_item["recipient_username"],
+            "source_label": f"由 {request_item['sender_username']} 分享",
+        },
+    )
 
 
 async def _hub_task_set_status(
@@ -649,7 +756,11 @@ async def _run_hub_install_task(
         await _hub_task_finish_runtime(task_id)
 
 
-def _build_workspace_skill_specs(workspace_dir: Path) -> list[SkillSpec]:
+def _build_workspace_skill_specs(
+    workspace_dir: Path,
+    username: str = "",
+    is_admin: bool = False,
+) -> list[SkillSpec]:
     manifest = read_skill_manifest(workspace_dir)
     entries = manifest.get("skills", {})
     skill_root = get_workspace_skills_dir(workspace_dir)
@@ -671,6 +782,12 @@ def _build_workspace_skill_specs(workspace_dir: Path) -> list[SkillSpec]:
                 skill_dir,
                 source=source,
             )
+            resource = find_resource_sync(
+                kind="skill",
+                name=skill_name,
+                username=username,
+                admin=is_admin,
+            ) if username else None
             specs.append(
                 SkillSpec(
                     name=skill_name,
@@ -681,6 +798,22 @@ def _build_workspace_skill_specs(workspace_dir: Path) -> list[SkillSpec]:
                     channels=entry.get("channels") or ["all"],
                     tags=entry.get("tags") or [],
                     last_updated=str(metadata.get("updated_at", "") or ""),
+                    resource_id=str((resource or {}).get("resource_id", "") or ""),
+                    creator_username=str((resource or {}).get("creator_username", "") or ""),
+                    source_label=(
+                        "本人创建"
+                        if resource and resource.get("creator_username") == username
+                        else (
+                            f"由 {resource.get('creator_username', '')} 分享"
+                            if resource
+                            else ""
+                        )
+                    ),
+                    can_share=bool(
+                        resource
+                        and not resource.get("is_builtin")
+                        and resource.get("creator_username") == username
+                    ),
                 ),
             )
         except Exception:
@@ -856,10 +989,11 @@ async def list_skills(request: Request) -> list[SkillSpec]:
     from ..user_space import get_disabled_names, get_request_username
 
     username = get_request_username(request)
+    is_admin = bool(username and get_user_info(username) and get_user_info(username).get("role") == "admin")
     disabled = set(get_disabled_names(username, "disabled_skills")) if username else set()
     return [
         skill
-        for skill in _build_workspace_skill_specs(workspace_dir)
+        for skill in _build_workspace_skill_specs(workspace_dir, username or "", is_admin)
         if skill.name not in disabled
     ]
 
@@ -872,10 +1006,11 @@ async def refresh_skills(request: Request) -> list[SkillSpec]:
     from ..user_space import get_disabled_names, get_request_username
 
     username = get_request_username(request)
+    is_admin = bool(username and get_user_info(username) and get_user_info(username).get("role") == "admin")
     disabled = set(get_disabled_names(username, "disabled_skills")) if username else set()
     return [
         skill
-        for skill in _build_workspace_skill_specs(workspace_dir)
+        for skill in _build_workspace_skill_specs(workspace_dir, username or "", is_admin)
         if skill.name not in disabled
     ]
 
@@ -1021,7 +1156,122 @@ async def create_skill(
         )
     if body.enable:
         schedule_agent_reload(request, workspace.agent_id)
-    return {"created": True, "name": created}
+    username = getattr(request.state, "user", None) or ""
+    resource: dict[str, Any] | None = None
+    if username:
+        resource = await register_resource(
+            kind="skill",
+            name=created,
+            creator_username=username,
+        )
+        _store_created_skill(
+            workspace_dir=workspace_dir,
+            skill_name=created,
+            resource=resource,
+        )
+        try:
+            _install_registered_skill(
+                resource=resource,
+                target_username=username,
+                skip_workspace=workspace_dir,
+            )
+        except ValueError:
+            # A pre-existing same-named skill in another workspace should not
+            # make the successfully created source skill disappear.
+            logger.warning(
+                "Could not propagate newly created skill %s to every workspace",
+                created,
+                exc_info=True,
+            )
+    return {
+        "created": True,
+        "name": created,
+        "resource_id": (resource or {}).get("resource_id", ""),
+        "creator_username": username,
+    }
+
+
+@router.post("/{skill_name}/share")
+async def share_skill(
+    skill_name: str,
+    body: ShareSkillRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Send a user-created skill to selected users for approval."""
+    username = getattr(request.state, "user", None) or ""
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    resource = find_resource_sync(
+        kind="skill", name=skill_name, username=username, admin=False
+    )
+    if resource is None or resource.get("creator_username") != username:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the skill creator can share this skill",
+        )
+    users = {str(item["username"]): item for item in list_users()}
+    targets = [
+        target
+        for target in dict.fromkeys(body.target_usernames)
+        if target in users and users[target].get("role") != "admin" and target != username
+    ]
+    if not targets:
+        raise HTTPException(status_code=400, detail="No eligible recipients selected")
+    from ..user_resources import create_share_requests
+
+    requests = await create_share_requests(
+        resource_id=str(resource["resource_id"]),
+        sender_username=username,
+        recipient_usernames=targets,
+    )
+    for item in requests:
+        await _notify_skill_share(request_item=item, resource=resource)
+    return {"created": len(requests), "skipped": len(targets) - len(requests)}
+
+
+@router.get("/share-targets")
+async def list_skill_share_targets(request: Request) -> list[str]:
+    """Return non-admin accounts that can receive a user-created skill."""
+    if not getattr(request.state, "user", None):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return [
+        str(item["username"])
+        for item in list_users()
+        if item.get("role") != "admin"
+    ]
+
+
+@router.post("/shares/{request_id}/decision")
+async def decide_skill_share(
+    request_id: str,
+    body: ShareDecisionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    username = getattr(request.state, "user", None) or ""
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from ..user_resources import decide_share_request
+
+    try:
+        request_item, resource = await decide_share_request(
+            request_id=request_id,
+            recipient_username=username,
+            approve=body.approve,
+        )
+        installed = (
+            _install_registered_skill(resource=resource, target_username=username)
+            if body.approve
+            else []
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "request_id": request_item["request_id"],
+        "status": request_item["status"],
+        "installed_agents": installed,
+    }
 
 
 @router.post("/upload")

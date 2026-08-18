@@ -709,6 +709,20 @@ async def create_agent(
     save_config(config)
     save_agent_config(new_id, agent_config)
 
+    if username:
+        # Account entitlements are shared by every agent. Re-apply them after
+        # creating a workspace so a newly added agent cannot drift from the
+        # user's configured skill and tool set.
+        from ..user_space import (
+            get_account_skills,
+            get_account_tools,
+            set_account_skills,
+            set_account_tools,
+        )
+
+        set_account_skills(username, get_account_skills(username))
+        set_account_tools(username, get_account_tools(username))
+
     logger.info(f"Created new agent: {new_id} (name={request.name})")
 
     if http_request is not None:
@@ -843,6 +857,17 @@ async def copy_agent(
     config.agents.agent_order = _normalized_agent_order(config)
     save_config(config)
     save_agent_config(new_id, agent_config)
+
+    if username:
+        from ..user_space import (
+            get_account_skills,
+            get_account_tools,
+            set_account_skills,
+            set_account_tools,
+        )
+
+        set_account_skills(username, get_account_skills(username))
+        set_account_tools(username, get_account_tools(username))
 
     logger.info(
         "Copied agent %s -> %s "

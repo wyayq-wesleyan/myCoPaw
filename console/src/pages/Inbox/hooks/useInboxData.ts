@@ -83,6 +83,8 @@ const mapEventToPushMessage = (
       ? "wechat"
       : event.source_type === "skill_autoupdate"
       ? "skill"
+      : event.source_type === "resource_share"
+      ? "skill"
       : "email",
   channelName:
     event.source_type === "heartbeat"
@@ -93,6 +95,8 @@ const mapEventToPushMessage = (
       ? "Cron"
       : event.source_type === "skill_autoupdate"
       ? "Auto Sync"
+      : event.source_type === "resource_share"
+      ? "技能分享"
       : "System",
   title:
     event.source_type === "skill_autoupdate"
@@ -131,6 +135,11 @@ const mapEventToPushMessage = (
     payload:
       event.payload && typeof event.payload === "object"
         ? event.payload
+        : undefined,
+    resourceShareRequestId:
+      event.source_type === "resource_share" &&
+      typeof event.payload?.request_id === "string"
+        ? event.payload.request_id
         : undefined,
   },
 });

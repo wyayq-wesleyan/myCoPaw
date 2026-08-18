@@ -27,6 +27,7 @@ interface SkillCardProps {
   onMouseLeave?: () => void;
   onToggleEnabled: (e: React.MouseEvent) => void;
   onDelete?: (e?: React.MouseEvent) => void;
+  onShare?: (e: React.MouseEvent) => void;
 }
 
 const useIsMobile = () => {
@@ -146,6 +147,7 @@ export const SkillCard = React.memo(function SkillCard({
   onMouseLeave,
   onToggleEnabled,
   onDelete,
+  onShare,
 }: SkillCardProps) {
   const { t } = useTranslation();
   const batchMode = selected !== undefined;
@@ -272,6 +274,13 @@ export const SkillCard = React.memo(function SkillCard({
         <p className={styles.descriptionText}>{skill.description || "-"}</p>
       </div>
 
+      {skill.source_label && (
+        <div className={styles.metaInfoRow}>
+          <span className={styles.metaInfoLabel}>来源</span>
+          <span className={styles.metaInfoValue}>{skill.source_label}</span>
+        </div>
+      )}
+
       {/* Footer - only show on hover or batch mode, always on mobile */}
       {(isHover || batchMode || isMobile) && (
         <div className={styles.cardFooter}>
@@ -292,6 +301,18 @@ export const SkillCard = React.memo(function SkillCard({
               onClick={handleDeleteClick}
             >
               {t("common.delete")}
+            </Button>
+          )}
+          {skill.can_share && onShare && (
+            <Button
+              className={styles.actionButton}
+              disabled={batchMode}
+              onClick={(e) => {
+                e.stopPropagation();
+                onShare(e);
+              }}
+            >
+              分享
             </Button>
           )}
         </div>

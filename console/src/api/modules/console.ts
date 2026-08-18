@@ -18,6 +18,7 @@ export interface InboxEvent {
   payload?: Record<string, unknown>;
   read: boolean;
   created_at: number;
+  recipient_username?: string;
 }
 
 export interface InboxTrace {

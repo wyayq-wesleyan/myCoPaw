@@ -44,6 +44,7 @@ export interface PushMessage {
     durationMs?: number;
     agentId?: string;
     payload?: Record<string, unknown>;
+    resourceShareRequestId?: string;
   };
 }
 

@@ -12,7 +12,15 @@ from fastapi import APIRouter, Body, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
 from ...config import load_config, save_config
+from ...config.config import ToolsConfig
 from ..utils import schedule_agent_reload
+from ..user_resources import (
+    grant_resource,
+    list_resources_for_user_sync,
+    register_resource,
+)
+from ..auth import get_user_info, list_users
+from ..user_space import get_request_username
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 logger = logging.getLogger(__name__)
@@ -76,6 +84,23 @@ class ToolInfo(BaseModel):
         None,
         description="Current configuration values (sensitive fields masked)",
     )
+    resource_id: str = ""
+    creator_username: str = ""
+    source_label: str = ""
+    can_share: bool = False
+    custom: bool = False
+
+
+class CreateCustomToolRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    description: str = Field(default="", max_length=500)
+    url: str = Field(..., min_length=1, max_length=2000)
+    method: str = Field(default="POST", max_length=10)
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class ShareCustomToolRequest(BaseModel):
+    target_usernames: list[str] = Field(default_factory=list)
 
 
 class ToolConfigUpdate(BaseModel):
@@ -209,11 +234,108 @@ async def list_tools(
         if get_request_username(request)
         else []
     )
-    return [
+    result = [
         _build_tool_info(tool_config, tool_config.name)
         for tool_config in builtin_tools.values()
         if tool_config.name not in disabled
     ]
+    username = get_request_username(request) or ""
+    user = get_user_info(username) if username else None
+    is_admin = bool(user and user.get("role") == "admin")
+    result.extend(
+        ToolInfo(
+            name=str(record["name"]),
+            enabled=True,
+            description=str(record.get("description") or record.get("metadata", {}).get("description", "")),
+            icon="🔗",
+            resource_id=str(record["resource_id"]),
+            creator_username=str(record.get("creator_username", "")),
+            source_label=(
+                "本人创建"
+                if record.get("creator_username") == username
+                else f"由 {record.get('creator_username', '')} 分享"
+            ),
+            can_share=record.get("creator_username") == username,
+            custom=True,
+        )
+        for record in list_resources_for_user_sync(
+            kind="tool", username=username, admin=is_admin
+        )
+    )
+    return result
+
+
+@router.post("/custom", response_model=ToolInfo)
+async def create_custom_tool(
+    body: CreateCustomToolRequest,
+    request: Request,
+) -> ToolInfo:
+    username = get_request_username(request) or ""
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    method = body.method.upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        raise HTTPException(status_code=400, detail="Unsupported HTTP method")
+    if body.name in ToolsConfig().builtin_tools:
+        raise HTTPException(status_code=409, detail="Tool name is reserved")
+    if list_resources_for_user_sync(kind="tool", username=username, admin=True):
+        if any(item.get("name") == body.name for item in list_resources_for_user_sync(kind="tool", username=username, admin=True)):
+            raise HTTPException(status_code=409, detail="Tool name already exists")
+    from urllib.parse import urlparse
+
+    parsed = urlparse(body.url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Tool URL must be an HTTP(S) address")
+    record = await register_resource(
+        kind="tool",
+        name=body.name.strip(),
+        creator_username=username,
+        metadata={
+            "description": body.description.strip(),
+            "url": body.url.strip(),
+            "method": method,
+            "headers": body.headers,
+        },
+    )
+    for agent_id, profile in load_config().agents.profiles.items():
+        if getattr(profile, "owner_username", None) == username:
+            schedule_agent_reload(request, agent_id)
+    return ToolInfo(
+        name=record["name"], enabled=True, description=body.description,
+        icon="🔗", resource_id=record["resource_id"],
+        creator_username=username, source_label="本人创建", can_share=True, custom=True,
+    )
+
+
+@router.post("/custom/{resource_id}/share")
+async def share_custom_tool(
+    resource_id: str,
+    body: ShareCustomToolRequest,
+    request: Request,
+) -> dict[str, Any]:
+    username = get_request_username(request) or ""
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    users = {str(item["username"]): item for item in list_users()}
+    targets = [
+        name for name in dict.fromkeys(body.target_usernames)
+        if name in users and users[name].get("role") != "admin" and name != username
+    ]
+    try:
+        granted = await grant_resource(
+            resource_id=resource_id,
+            sender_username=username,
+            recipient_usernames=targets,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    for target in granted:
+        for agent_id, profile in load_config().agents.profiles.items():
+            if getattr(profile, "owner_username", None) == target:
+                schedule_agent_reload(request, agent_id)
+    return {"granted": granted, "skipped": len(targets) - len(granted)}
 
 
 @router.patch("/{tool_name}/toggle", response_model=ToolInfo)

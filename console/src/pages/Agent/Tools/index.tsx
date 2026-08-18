@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Spin } from "antd";
+import { Spin, Checkbox, message } from "antd";
 import {
   Card,
   Switch,
@@ -17,6 +17,7 @@ import {
   ThunderboltOutlined,
   ClockCircleOutlined,
   SettingOutlined,
+  PlusOutlined,
 } from "@ant-design/icons";
 import { useTools } from "./useTools";
 import { useTranslation } from "react-i18next";
@@ -277,6 +278,11 @@ export default function ToolsPage() {
   } = useTools();
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [currentTool, setCurrentTool] = useState<ToolInfo | null>(null);
+  const [createToolOpen, setCreateToolOpen] = useState(false);
+  const [shareTool, setShareTool] = useState<ToolInfo | null>(null);
+  const [shareUsers, setShareUsers] = useState<string[]>([]);
+  const [shareTargets, setShareTargets] = useState<string[]>([]);
+  const [toolForm] = Form.useForm();
 
   const handleConfigure = (tool: ToolInfo) => {
     setCurrentTool(tool);
@@ -294,6 +300,45 @@ export default function ToolsPage() {
     // implementation is the deprecated stable browser track.
     await saveToolConfig("browser", { experimental });
     await loadTools();
+  };
+
+  const handleCreateTool = async () => {
+    try {
+      const values = await toolForm.validateFields();
+      await api.createCustomTool({
+        ...values,
+        headers: values.headersText ? JSON.parse(values.headersText) : {},
+      });
+      message.success("工具已创建");
+      setCreateToolOpen(false);
+      toolForm.resetFields();
+      await loadTools();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "创建工具失败");
+    }
+  };
+
+  const openToolShare = async (tool: ToolInfo) => {
+    if (!tool.resource_id) return;
+    try {
+      setShareUsers(await api.listShareTargets());
+      setShareTargets([]);
+      setShareTool(tool);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载用户列表");
+    }
+  };
+
+  const submitToolShare = async () => {
+    if (!shareTool?.resource_id || shareTargets.length === 0) return;
+    try {
+      const result = await api.shareCustomTool(shareTool.resource_id, shareTargets);
+      message.success(`已分享给 ${result.granted.length} 个用户`);
+      setShareTool(null);
+      await loadTools();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "工具分享失败");
+    }
   };
 
   const { enabledTools, disabledTools } = useMemo(() => {
@@ -320,6 +365,9 @@ export default function ToolsPage() {
         items={[{ title: t("nav.agent") }, { title: t("tools.title") }]}
         extra={
           <div className={styles.headerAction}>
+            <Button icon={<PlusOutlined />} onClick={() => setCreateToolOpen(true)}>
+              新建工具
+            </Button>
             <Switch
               checked={enabledTools.length > 0 && disabledTools.length === 0}
               onChange={() =>
@@ -450,13 +498,23 @@ export default function ToolsPage() {
                             {t("tools.configure")}
                           </Button>
                         )}
-                        <Button
-                          className={styles.toggleButton}
-                          onClick={() => toggleEnabled(tool)}
-                          icon={<EyeInvisibleOutlined />}
-                        >
-                          {t("common.disable")}
-                        </Button>
+                        {!tool.custom && (
+                          <Button
+                            className={styles.toggleButton}
+                            onClick={() => toggleEnabled(tool)}
+                            icon={<EyeInvisibleOutlined />}
+                          >
+                            {t("common.disable")}
+                          </Button>
+                        )}
+                        {tool.can_share && (
+                          <Button
+                            className={styles.toggleButton}
+                            onClick={() => void openToolShare(tool)}
+                          >
+                            分享
+                          </Button>
+                        )}
                       </div>
                     </Card>
                   ))}
@@ -523,6 +581,48 @@ export default function ToolsPage() {
           onSave={handleSaveConfig}
         />
       )}
+      <Modal
+        title="新建工具"
+        open={createToolOpen}
+        onCancel={() => setCreateToolOpen(false)}
+        onOk={() => void handleCreateTool()}
+        okText="创建"
+        cancelText={t("common.cancel")}
+      >
+        <Form form={toolForm} layout="vertical">
+          <Form.Item name="name" label="工具名称" rules={[{ required: true }]}>
+            <Input placeholder="例如：查询工单" />
+          </Form.Item>
+          <Form.Item name="description" label="工具说明">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="url" label="内网接口地址" rules={[{ required: true, type: "url" }]}>
+            <Input placeholder="http://internal-service/api" />
+          </Form.Item>
+          <Form.Item name="method" label="请求方式" initialValue="POST">
+            <Select options={["GET", "POST", "PUT", "PATCH", "DELETE"].map((value) => ({ value, label: value }))} />
+          </Form.Item>
+          <Form.Item name="headersText" label="请求头 JSON">
+            <Input.TextArea rows={3} placeholder='例如：{"Authorization":"Bearer ..."}' />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title={`分享工具：${shareTool?.name || ""}`}
+        open={shareTool !== null}
+        onCancel={() => setShareTool(null)}
+        onOk={() => void submitToolShare()}
+        okText="分享"
+        cancelText={t("common.cancel")}
+        okButtonProps={{ disabled: shareTargets.length === 0 }}
+      >
+        <Checkbox.Group
+          value={shareTargets}
+          onChange={(values) => setShareTargets(values.map(String))}
+          style={{ display: "grid", gap: 10 }}
+          options={shareUsers.map((username) => ({ label: username, value: username }))}
+        />
+      </Modal>
     </div>
   );
 }

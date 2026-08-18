@@ -9,9 +9,15 @@ from pathlib import Path
 
 from fastapi import HTTPException, Request
 
+from ..agents.skill_system import SkillPoolService, SkillService
 from ..agents.templates import DEFAULT_AGENT_TEMPLATE, build_agent_template
 from ..agents.utils import copy_workspace_md_files, normalize_agent_language
-from ..config.config import AgentProfileRef, save_agent_config
+from ..config.config import (
+    AgentProfileRef,
+    ToolsConfig,
+    load_agent_config,
+    save_agent_config,
+)
 from ..config.utils import load_config, save_config
 from ..constant import WORKING_DIR
 
@@ -21,6 +27,8 @@ MODEL_PERMISSIONS = "model_permissions"
 DISABLED_SKILLS = "disabled_skills"
 DISABLED_TOOLS = "disabled_tools"
 MENU_PERMISSIONS = "menu_permissions"
+ACCOUNT_SKILLS = "account_skills"
+ACCOUNT_TOOLS = "account_tools"
 
 # Regular accounts start with the focused, day-to-day console.  The chat
 # entry and agent selector are rendered outside the registry menu, therefore
@@ -33,6 +41,8 @@ DEFAULT_USER_MENU_IDS = frozenset(
         "core.sessions",
         "core.cron-jobs",
         "core.token-usage",
+        "core.skills",
+        "core.tools",
     },
 )
 
@@ -75,6 +85,97 @@ def _names(values: list[str] | None) -> list[str]:
     return list(dict.fromkeys(str(value).strip() for value in values or [] if str(value).strip()))
 
 
+def _skill_pool_names() -> list[str]:
+    try:
+        return _names([skill.name for skill in SkillPoolService().list_all_skills()])
+    except Exception:  # noqa: BLE001
+        logger.warning("Unable to read the local skill pool", exc_info=True)
+        return []
+
+
+def _tool_pool() -> dict:
+    try:
+        return ToolsConfig().builtin_tools
+    except Exception:  # noqa: BLE001
+        logger.warning("Unable to read the local tool pool", exc_info=True)
+        return {}
+
+
+def get_account_skills(username: str) -> list[str]:
+    state = load_user_state(username)
+    pool = _skill_pool_names()
+    if ACCOUNT_SKILLS in state:
+        selected = set(_names(state.get(ACCOUNT_SKILLS)))
+        return [name for name in pool if name in selected]
+    disabled = set(get_disabled_names(username, DISABLED_SKILLS))
+    return [name for name in pool if name not in disabled]
+
+
+def get_account_tools(username: str) -> list[str]:
+    state = load_user_state(username)
+    pool = list(_tool_pool())
+    if ACCOUNT_TOOLS in state:
+        selected = set(_names(state.get(ACCOUNT_TOOLS)))
+        return [name for name in pool if name in selected]
+    disabled = set(get_disabled_names(username, DISABLED_TOOLS))
+    return [name for name in pool if name not in disabled]
+
+
+def set_account_skills(username: str, skill_names: list[str] | None) -> None:
+    pool = _skill_pool_names()
+    selected = set(_names(skill_names))
+    unknown = selected - set(pool)
+    if unknown:
+        raise ValueError(f"Unknown skill(s): {', '.join(sorted(unknown))}")
+    state = load_user_state(username)
+    state[ACCOUNT_SKILLS] = [name for name in pool if name in selected]
+    state.pop(DISABLED_SKILLS, None)
+    save_user_state(username, state)
+
+    service = SkillPoolService()
+    for _agent_id, profile in _owned_agent_profiles(username):
+        workspace = Path(profile.workspace_dir)
+        for name in pool:
+            if name in selected:
+                result = service.download_to_workspace(name, workspace, overwrite=False)
+                if not result.get("success") and result.get("reason") not in {
+                    "already_exists",
+                    "conflict",
+                }:
+                    logger.warning("Could not assign skill %s to %s: %s", name, workspace, result)
+                try:
+                    SkillService(workspace).enable_skill(name)
+                except Exception:  # noqa: BLE001
+                    logger.warning("Could not enable skill %s in %s", name, workspace, exc_info=True)
+            else:
+                SkillService(workspace).disable_skill(name)
+
+
+def set_account_tools(username: str, tool_names: list[str] | None) -> None:
+    catalog = _tool_pool()
+    selected = set(_names(tool_names))
+    unknown = selected - set(catalog)
+    if unknown:
+        raise ValueError(f"Unknown tool(s): {', '.join(sorted(unknown))}")
+    state = load_user_state(username)
+    state[ACCOUNT_TOOLS] = [name for name in catalog if name in selected]
+    state.pop(DISABLED_TOOLS, None)
+    save_user_state(username, state)
+
+    for agent_id, _profile in _owned_agent_profiles(username):
+        try:
+            config = load_agent_config(agent_id)
+            if config.tools is None:
+                config.tools = ToolsConfig()
+            for name, template in catalog.items():
+                if name not in config.tools.builtin_tools:
+                    config.tools.builtin_tools[name] = template.model_copy(deep=True)
+                config.tools.builtin_tools[name].enabled = name in selected
+            save_agent_config(agent_id, config)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not apply account tools to %s", agent_id, exc_info=True)
+
+
 def get_model_permissions(username: str) -> list[dict[str, str]] | None:
     state = load_user_state(username)
     if MODEL_PERMISSIONS not in state:
@@ -103,7 +204,14 @@ def set_model_permissions(username: str, permissions: list[dict[str, str]] | Non
 
 
 def get_disabled_names(username: str, key: str) -> list[str]:
-    value = load_user_state(username).get(key, [])
+    state = load_user_state(username)
+    if key == DISABLED_SKILLS and ACCOUNT_SKILLS in state:
+        selected = set(_names(state.get(ACCOUNT_SKILLS)))
+        return [name for name in _skill_pool_names() if name not in selected]
+    if key == DISABLED_TOOLS and ACCOUNT_TOOLS in state:
+        selected = set(_names(state.get(ACCOUNT_TOOLS)))
+        return [name for name in _tool_pool() if name not in selected]
+    value = state.get(key, [])
     return _names(value if isinstance(value, list) else [])
 
 
@@ -199,7 +307,12 @@ def get_menu_permissions(username: str, role: str = "user") -> list[str] | None:
     if MENU_PERMISSIONS not in state:
         return sorted(DEFAULT_USER_MENU_IDS)
     values = state.get(MENU_PERMISSIONS, [])
-    return _names(values if isinstance(values, list) else [])
+    # Skills and tools are account-owned daily-use resources. Keep them
+    # available to existing users created before this default was introduced.
+    return sorted(
+        set(_names(values if isinstance(values, list) else []))
+        | {"core.skills", "core.tools"}
+    )
 
 
 def set_menu_permissions(username: str, permissions: list[str] | None) -> None:

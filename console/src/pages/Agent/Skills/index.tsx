@@ -16,10 +16,12 @@ import {
 } from "./components";
 import type { SkillSpec } from "../../../api/types";
 import type { HarnessDiscoveredSkill } from "../../../api/modules/harness";
+import api from "../../../api";
 import { PageHeader } from "@/components/PageHeader";
 import { useSkillsPage } from "./useSkillsPage";
 import styles from "./index.module.less";
 import { useMemo, useCallback, useState } from "react";
+import { Checkbox, Modal, Spin, message } from "antd";
 import { LockKeyhole, Sparkles } from "lucide-react";
 
 function SkillsPage() {
@@ -86,6 +88,10 @@ function SkillsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedProviderSkill, setSelectedProviderSkill] =
     useState<HarnessDiscoveredSkill | null>(null);
+  const [shareSkill, setShareSkill] = useState<SkillSpec | null>(null);
+  const [shareTargets, setShareTargets] = useState<string[]>([]);
+  const [shareUsers, setShareUsers] = useState<string[]>([]);
+  const [shareLoading, setShareLoading] = useState(false);
   const marketView = searchParams.get("view") === "market";
 
   const openMarket = useCallback(() => {
@@ -107,6 +113,38 @@ function SkillsPage() {
   const handleMarketInstalled = useCallback(() => {
     void refreshSkills();
   }, [refreshSkills]);
+
+  const openShare = useCallback(async (skill: SkillSpec) => {
+    setShareSkill(skill);
+    setShareTargets([]);
+    setShareLoading(true);
+    try {
+      setShareUsers(
+        (await api.listShareTargets()).filter(
+          (username) => username !== skill.creator_username,
+        ),
+      );
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载用户列表");
+      setShareSkill(null);
+    } finally {
+      setShareLoading(false);
+    }
+  }, []);
+
+  const submitShare = useCallback(async () => {
+    if (!shareSkill || shareTargets.length === 0) return;
+    setShareLoading(true);
+    try {
+      const result = await api.shareSkill(shareSkill.name, shareTargets);
+      message.success(`已发送 ${result.created} 条审批请求`);
+      setShareSkill(null);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "技能分享失败");
+    } finally {
+      setShareLoading(false);
+    }
+  }, [shareSkill, shareTargets]);
 
   // Split skills into enabled and disabled groups
   const { enabledSkills, disabledSkills } = useMemo(() => {
@@ -298,6 +336,7 @@ function SkillsPage() {
                       onMouseLeave={() => {}}
                       onToggleEnabled={(e) => handleToggleEnabled(skill, e)}
                       onDelete={(e) => handleDelete(skill, e)}
+                      onShare={() => void openShare(skill)}
                     />
                   ))}
                 </div>
@@ -415,6 +454,27 @@ function SkillsPage() {
         skill={selectedProviderSkill}
         onClose={() => setSelectedProviderSkill(null)}
       />
+
+      <Modal
+        title={`分享技能：${shareSkill?.name || ""}`}
+        open={shareSkill !== null}
+        onCancel={() => setShareSkill(null)}
+        onOk={() => void submitShare()}
+        okText="发送审批"
+        cancelText="取消"
+        confirmLoading={shareLoading}
+        okButtonProps={{ disabled: shareTargets.length === 0 }}
+      >
+        <Spin spinning={shareLoading && shareUsers.length === 0}>
+          <p>选择目标用户后，对方会在收件箱中审批；已接收的技能不能再次转发。</p>
+          <Checkbox.Group
+            value={shareTargets}
+            onChange={(values) => setShareTargets(values.map(String))}
+            style={{ display: "grid", gap: 10 }}
+            options={shareUsers.map((username) => ({ label: username, value: username }))}
+          />
+        </Spin>
+      </Modal>
 
       <PoolTransferModal
         mode={poolModal}

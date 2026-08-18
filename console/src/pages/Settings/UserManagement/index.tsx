@@ -12,6 +12,7 @@ import {
   Table,
   Tag,
   message,
+  List,
 } from "antd";
 import {
   EditOutlined,
@@ -32,6 +33,8 @@ type ResourceOptions = {
   models: string[];
   skills: string[];
   tools: string[];
+  selectedSkills: string[];
+  selectedTools: string[];
 };
 
 type FormValues = {
@@ -56,6 +59,8 @@ const DEFAULT_MENUS = [
   "core.sessions",
   "core.cron-jobs",
   "core.token-usage",
+  "core.skills",
+  "core.tools",
 ];
 
 const MENU_OPTIONS = [
@@ -99,10 +104,20 @@ export default function UserManagementPage() {
     models: [],
     skills: [],
     tools: [],
+    selectedSkills: [],
+    selectedTools: [],
   });
   const [dialog, setDialog] = useState<"create" | "edit" | null>(null);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
   const [saving, setSaving] = useState(false);
+  const [resourceSelection, setResourceSelection] = useState<{
+    skills: string[];
+    tools: string[];
+  }>({ skills: [], tools: [] });
+  const [resourceDialog, setResourceDialog] = useState<"skills" | "tools" | null>(null);
+  const [resourceUser, setResourceUser] = useState<string>("");
+  const [resourceSearch, setResourceSearch] = useState("");
+  const [resourceSaving, setResourceSaving] = useState(false);
   const [form] = Form.useForm<FormValues>();
   const [passwordForm] = Form.useForm<PasswordFormValues>();
 
@@ -123,8 +138,8 @@ export default function UserManagementPage() {
     }
   };
 
-  const loadResources = async (): Promise<ResourceOptions> => {
-    const [providers, skills, tools] = await Promise.all([
+  const loadResources = async (username: string): Promise<ResourceOptions> => {
+    const [providers, accountResources] = await Promise.all([
       request<
         Array<{
           id: string;
@@ -132,8 +147,7 @@ export default function UserManagementPage() {
           extra_models?: Array<{ id: string }>;
         }>
       >("/models"),
-      request<Array<{ name?: string }>>("/skills"),
-      request<Array<{ name?: string }>>("/tools"),
+      authApi.getUserResources(username),
     ]);
     const next = {
       models: providers.flatMap((provider) =>
@@ -141,8 +155,10 @@ export default function UserManagementPage() {
           (model) => `${provider.id}::${model.id}`,
         ),
       ),
-      skills: skills.map((item) => item.name || "").filter(Boolean),
-      tools: tools.map((item) => item.name || "").filter(Boolean),
+      skills: accountResources.available_skills.map((item) => item.name),
+      tools: accountResources.available_tools.map((item) => item.name),
+      selectedSkills: accountResources.skills,
+      selectedTools: accountResources.tools,
     };
     setResources(next);
     return next;
@@ -154,15 +170,22 @@ export default function UserManagementPage() {
 
   const openCreate = async () => {
     try {
-      const options = await loadResources();
+      if (!currentUser) {
+        throw new Error("当前登录状态已失效");
+      }
+      const options = await loadResources(currentUser.username);
       setEditingUser(null);
       form.setFieldsValue({
         username: "",
         password: "",
         models: options.models,
-        skills: options.skills,
-        tools: options.tools,
+        skills: options.selectedSkills,
+        tools: options.selectedTools,
         menus: DEFAULT_MENUS,
+      });
+      setResourceSelection({
+        skills: options.selectedSkills,
+        tools: options.selectedTools,
       });
       setDialog("create");
     } catch (error) {
@@ -172,12 +195,11 @@ export default function UserManagementPage() {
 
   const openEdit = async (user: ManagedUser) => {
     try {
-      const [options, modelResult, skillResult, toolResult, menuResult] =
+      const [options, accountResources, modelResult, menuResult] =
         await Promise.all([
-          loadResources(),
+          loadResources(user.username),
+          authApi.getUserResources(user.username),
           authApi.getUserModelPermissions(user.username),
-          authApi.getUserNamedPermissions(user.username, "skill"),
-          authApi.getUserNamedPermissions(user.username, "tool"),
           authApi.getUserMenuPermissions(user.username),
         ]);
       form.setFieldsValue({
@@ -189,19 +211,91 @@ export default function UserManagementPage() {
             : modelResult.permissions.map(
                 (item) => `${item.provider_id}::${item.model_id}`,
               ),
-        skills: options.skills.filter(
-          (item) => !skillResult.disabled.includes(item),
-        ),
-        tools: options.tools.filter(
-          (item) => !toolResult.disabled.includes(item),
-        ),
+        skills: accountResources.skills,
+        tools: accountResources.tools,
         menus: menuResult.permissions ?? MENU_OPTIONS.map(([id]) => id),
+      });
+      setResourceSelection({
+        skills: accountResources.skills,
+        tools: accountResources.tools,
       });
       setEditingUser(user);
       setDialog("edit");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "无法加载用户授权");
     }
+  };
+
+  const openResourceDialog = async (kind: "skills" | "tools", username?: string) => {
+    const target = username || resourceUser || users[0]?.username;
+    if (!target) return;
+    try {
+      const accountResources = await authApi.getUserResources(target);
+      setResourceUser(target);
+      setResourceDialog(kind);
+      setResourceSearch("");
+      setResourceSelection({
+        skills: accountResources.skills,
+        tools: accountResources.tools,
+      });
+      setResources((current) => ({
+        ...current,
+        skills: accountResources.available_skills.map((item) => item.name),
+        tools: accountResources.available_tools.map((item) => item.name),
+      }));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载资源");
+    }
+  };
+
+  const switchResourceUser = async (username: string) => {
+    await openResourceDialog(resourceDialog || "skills", username);
+  };
+
+  const saveResourceDialog = async () => {
+    if (!resourceDialog || !resourceUser) return;
+    setResourceSaving(true);
+    try {
+      await authApi.setUserResources(resourceUser, {
+        skills: resourceSelection.skills,
+        tools: resourceSelection.tools,
+      });
+      message.success(`${resourceDialog === "skills" ? "技能" : "工具"}权限已更新`);
+      setUsers(await authApi.listUsers());
+      setResourceDialog(null);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "资源权限更新失败");
+    } finally {
+      setResourceSaving(false);
+    }
+  };
+
+  const currentResourceNames = resourceDialog === "skills" ? resources.skills : resources.tools;
+  const visibleResourceNames = currentResourceNames.filter((name) =>
+    name.toLowerCase().includes(resourceSearch.trim().toLowerCase()),
+  );
+  const currentSelectedResources = resourceDialog === "skills"
+    ? resourceSelection.skills
+    : resourceSelection.tools;
+  const setCurrentSelectedResources = (values: string[]) => {
+    setResourceSelection((current) =>
+      resourceDialog === "skills"
+        ? { ...current, skills: values }
+        : { ...current, tools: values },
+    );
+  };
+  const selectAllVisibleResources = () => {
+    setCurrentSelectedResources(
+      Array.from(new Set([...currentSelectedResources, ...visibleResourceNames])),
+    );
+  };
+  const invertVisibleResources = () => {
+    const selected = new Set(currentSelectedResources);
+    visibleResourceNames.forEach((name) => {
+      if (selected.has(name)) selected.delete(name);
+      else selected.add(name);
+    });
+    setCurrentSelectedResources(Array.from(selected));
   };
 
   const save = async () => {
@@ -213,12 +307,8 @@ export default function UserManagementPage() {
           username: values.username.trim(),
           password: values.password || "",
           model_permissions: selectionToModels(values.models),
-          disabled_skills: resources.skills.filter(
-            (item) => !values.skills.includes(item),
-          ),
-          disabled_tools: resources.tools.filter(
-            (item) => !values.tools.includes(item),
-          ),
+          skills: resourceSelection.skills,
+          tools: resourceSelection.tools,
           menu_permissions: values.menus,
         };
         await authApi.createUser(payload);
@@ -229,16 +319,10 @@ export default function UserManagementPage() {
             editingUser.username,
             selectionToModels(values.models),
           ),
-          authApi.setUserNamedPermissions(
-            editingUser.username,
-            "skill",
-            resources.skills.filter((item) => !values.skills.includes(item)),
-          ),
-          authApi.setUserNamedPermissions(
-            editingUser.username,
-            "tool",
-            resources.tools.filter((item) => !values.tools.includes(item)),
-          ),
+          authApi.setUserResources(editingUser.username, {
+            skills: resourceSelection.skills,
+            tools: resourceSelection.tools,
+          }),
           authApi.setUserMenuPermissions(editingUser.username, values.menus),
           values.password
             ? authApi.setUserPassword(editingUser.username, values.password)
@@ -400,6 +484,22 @@ export default function UserManagementPage() {
               ),
             },
             {
+              title: "技能",
+              render: (_: unknown, user: ManagedUser) => (
+                <Button size="small" onClick={() => void openResourceDialog("skills", user.username)}>
+                  技能（{user.skills?.length ?? 0}）
+                </Button>
+              ),
+            },
+            {
+              title: "工具",
+              render: (_: unknown, user: ManagedUser) => (
+                <Button size="small" onClick={() => void openResourceDialog("tools", user.username)}>
+                  工具（{user.tools?.length ?? 0}）
+                </Button>
+              ),
+            },
+            {
               title: "菜单数",
               render: (_: unknown, user: ManagedUser) =>
                 user.role === "admin"
@@ -453,7 +553,7 @@ export default function UserManagementPage() {
             : `编辑用户：${editingUser?.username || ""}`
         }
         open={dialog !== null}
-        width={780}
+        width={980}
         onCancel={() => setDialog(null)}
         onOk={() => void save()}
         confirmLoading={saving}
@@ -496,13 +596,22 @@ export default function UserManagementPage() {
                   }))}
                 />
               </Form.Item>
-              <Divider orientation="left">技能与工具</Divider>
-              <Form.Item name="skills" label="技能">
-                <Checkbox.Group options={resources.skills} />
-              </Form.Item>
-              <Form.Item name="tools" label="工具">
-                <Checkbox.Group options={resources.tools} />
-              </Form.Item>
+              <Divider orientation="left">账号技能与工具</Divider>
+              {dialog === "create" ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="新账号将继承管理员当前的技能和工具配置。创建完成后，可在用户列表中点击“编辑授权”进行调整。"
+                  description={`当前将继承 ${resourceSelection.skills.length} 项技能、${resourceSelection.tools.length} 项工具。`}
+                />
+              ) : (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="技能和工具请在用户列表的“技能”或“工具”按钮中统一管理。"
+                  description="弹窗支持按用户查看，并提供搜索、全选和反选。"
+                />
+              )}
               <Divider orientation="left">可见菜单</Divider>
               <Form.Item
                 name="menus"
@@ -523,6 +632,72 @@ export default function UserManagementPage() {
             />
           )}
         </Form>
+      </Modal>
+      <Modal
+        title={`${resourceDialog === "skills" ? "技能" : "工具"}管理`}
+        open={resourceDialog !== null}
+        width={860}
+        onCancel={() => setResourceDialog(null)}
+        onOk={() => void saveResourceDialog()}
+        confirmLoading={resourceSaving}
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", minHeight: 420 }}>
+          <div style={{ borderRight: "1px solid #edf0f4", paddingRight: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>用户</div>
+            <List
+              size="small"
+              dataSource={users}
+              rowKey="username"
+              renderItem={(user) => (
+                <List.Item
+                  style={{
+                    cursor: "pointer",
+                    padding: "10px 12px",
+                    borderRadius: 6,
+                    background: resourceUser === user.username ? "#eef5ff" : undefined,
+                  }}
+                  onClick={() => void switchResourceUser(user.username)}
+                >
+                  <span>{user.username}</span>
+                  <Tag color={user.role === "admin" ? "orange" : "blue"}>
+                    {user.role === "admin" ? "管理员" : "普通用户"}
+                  </Tag>
+                </List.Item>
+              )}
+            />
+          </div>
+          <div style={{ paddingLeft: 20 }}>
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <strong>{resourceUser} 的{resourceDialog === "skills" ? "技能" : "工具"}</strong>
+                <Space>
+                  <Button size="small" onClick={selectAllVisibleResources}>全选</Button>
+                  <Button size="small" onClick={invertVisibleResources}>反选</Button>
+                </Space>
+              </div>
+              <Input
+                allowClear
+                value={resourceSearch}
+                onChange={(event) => setResourceSearch(event.target.value)}
+                placeholder="搜索资源名称"
+              />
+              <div style={{ maxHeight: 330, overflow: "auto", padding: "4px 2px" }}>
+                <Checkbox.Group
+                  value={currentSelectedResources}
+                  onChange={(values) => setCurrentSelectedResources(values.map(String))}
+                  style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}
+                  options={visibleResourceNames.map((name) => ({ label: name, value: name }))}
+                />
+              </div>
+              <span style={{ color: "#697386" }}>
+                已选择 {currentSelectedResources.length} 项，共 {currentResourceNames.length} 项
+              </span>
+            </Space>
+          </div>
+        </div>
       </Modal>
     </div>
   );

@@ -129,6 +129,24 @@ export const skillApi = {
     return data;
   },
 
+  shareSkill: (skillName: string, targetUsernames: string[]) =>
+    request<{ created: number; skipped: number }>(
+      `/skills/${encodeURIComponent(skillName)}/share`,
+      {
+        method: "POST",
+        body: JSON.stringify({ target_usernames: targetUsernames }),
+      },
+    ),
+  listShareTargets: () => request<string[]>("/skills/share-targets"),
+  decideSkillShare: (requestId: string, approve: boolean) =>
+    request<{ request_id: string; status: string; installed_agents: string[] }>(
+      `/skills/shares/${encodeURIComponent(requestId)}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify({ approve }),
+      },
+    ),
+
   listSkillWorkspaces: async () => {
     const cacheKey = "/skills/workspaces";
     const cached = getCached<WorkspaceSkillSummary[]>(cacheKey);

@@ -554,6 +554,7 @@ async def get_push_messages(
 
 @router.get("/inbox/events")
 async def get_inbox_events(
+    request: Request,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     source_type: str | None = Query(None),
@@ -574,6 +575,7 @@ async def get_inbox_events(
         status=status,
         agent_id=agent_id,
         unread_only=unread_only,
+        recipient_username=getattr(request.state, "user", None),
     )
     return {
         "events": events,

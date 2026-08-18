@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ...constant import EnvVarLoader
+from ...agents.skill_system import SkillPoolService
 from ..auth import (
     authenticate,
     create_user_account,
@@ -27,13 +28,18 @@ from ..auth import (
 from ..rate_limiter import rate_limiter
 from ..utils import schedule_agent_reload
 from ..user_space import (
-    get_disabled_names,
     get_menu_permissions,
     get_model_permissions,
-    set_disabled_names,
     set_menu_permissions,
     set_model_permissions,
+    get_account_skills,
+    get_account_tools,
+    set_account_skills,
+    set_account_tools,
+    _tool_pool,
+    _skill_pool_names,
 )
+from ..user_resources import list_resources_for_user_sync
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -78,6 +84,8 @@ class CurrentUserResponse(BaseModel):
     role: str
     enabled: bool
     menu_permissions: list[str] | None = None
+    skills: list[str] = []
+    tools: list[str] = []
 
 
 class ModelPermission(BaseModel):
@@ -92,6 +100,8 @@ class CreateUserRequest(BaseModel):
     disabled_skills: list[str] | None = None
     disabled_tools: list[str] | None = None
     menu_permissions: list[str] | None = None
+    skills: list[str] | None = None
+    tools: list[str] | None = None
 
 
 class UpdateUserStatusRequest(BaseModel):
@@ -112,6 +122,102 @@ class UpdateNamePermissionsRequest(BaseModel):
 
 class UpdateMenuPermissionsRequest(BaseModel):
     permissions: list[str] | None = None
+
+
+class AccountResourceItem(BaseModel):
+    name: str
+    description: str = ""
+    icon: str = ""
+
+
+class UserResourcesResponse(BaseModel):
+    username: str
+    skills: list[str]
+    tools: list[str]
+    available_skills: list[AccountResourceItem]
+    available_tools: list[AccountResourceItem]
+
+
+class UpdateUserResourcesRequest(BaseModel):
+    skills: list[str] = []
+    tools: list[str] = []
+
+
+def _resource_response(username: str) -> UserResourcesResponse:
+    available_skills = [
+        AccountResourceItem(
+            name=skill.name,
+            description=str(getattr(skill, "description", "") or ""),
+            icon=str(getattr(skill, "emoji", "") or ""),
+        )
+        for skill in SkillPoolService().list_all_skills()
+    ]
+    available_tools = [
+        AccountResourceItem(
+            name=name,
+            description=str(getattr(tool, "description", "") or ""),
+            icon=str(getattr(tool, "icon", "") or ""),
+        )
+        for name, tool in _tool_pool().items()
+    ]
+    custom_skills = list_resources_for_user_sync(
+        kind="skill", username=username, admin=True
+    )
+    custom_tools = list_resources_for_user_sync(
+        kind="tool", username=username, admin=True
+    )
+    available_skills.extend(
+        AccountResourceItem(
+            name=str(item["name"]),
+            description=f"自建技能，创建者：{item.get('creator_username', '')}",
+        )
+        for item in custom_skills
+    )
+    available_tools.extend(
+        AccountResourceItem(
+            name=str(item["name"]),
+            description=f"自建工具，创建者：{item.get('creator_username', '')}",
+        )
+        for item in custom_tools
+    )
+    return UserResourcesResponse(
+        username=username,
+        skills=get_account_skills(username) + [
+            str(item["name"]) for item in custom_skills
+            if username == item.get("creator_username")
+            or username in (item.get("recipients") or [])
+        ],
+        tools=get_account_tools(username) + [
+            str(item["name"]) for item in custom_tools
+            if username == item.get("creator_username")
+            or username in (item.get("recipients") or [])
+        ],
+        available_skills=available_skills,
+        available_tools=available_tools,
+    )
+
+
+def _user_response(user: dict) -> CurrentUserResponse:
+    username = str(user["username"])
+    custom_skills = list_resources_for_user_sync(
+        kind="skill", username=username, admin=True
+    )
+    custom_tools = list_resources_for_user_sync(
+        kind="tool", username=username, admin=True
+    )
+    return CurrentUserResponse(
+        **user,
+        skills=get_account_skills(username) + [
+            str(item["name"]) for item in custom_skills
+            if username == item.get("creator_username")
+            or username in (item.get("recipients") or [])
+        ],
+        tools=get_account_tools(username) + [
+            str(item["name"]) for item in custom_tools
+            if username == item.get("creator_username")
+            or username in (item.get("recipients") or [])
+        ],
+    )
 
 
 @router.post("/login")
@@ -251,18 +357,53 @@ async def get_current_user(request: Request) -> CurrentUserResponse:
     user = get_user_info(username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return CurrentUserResponse(**user)
+    return _user_response(user)
 
 
 @router.get("/users", response_model=list[CurrentUserResponse])
 async def get_users(request: Request) -> list[CurrentUserResponse]:
     require_admin_access(_request_username(request))
-    return [CurrentUserResponse(**user) for user in list_users()]
+    return [_user_response(user) for user in list_users()]
+
+
+@router.get("/users/{username}/resources", response_model=UserResourcesResponse)
+async def get_user_resources(username: str, request: Request) -> UserResourcesResponse:
+    require_admin_access(_request_username(request))
+    if get_user_info(username) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _resource_response(username)
+
+
+@router.put("/users/{username}/resources", response_model=UserResourcesResponse)
+async def update_user_resources(
+    username: str,
+    req: UpdateUserResourcesRequest,
+    request: Request,
+) -> UserResourcesResponse:
+    require_admin_access(_request_username(request))
+    if get_user_info(username) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        # Custom resources are granted through their owner's share approval.
+        # This endpoint manages the built-in offline pool only.
+        set_account_skills(
+            username,
+            [item for item in req.skills if item in _skill_pool_names()],
+        )
+        set_account_tools(
+            username,
+            [item for item in req.tools if item in _tool_pool()],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _schedule_user_agent_reloads(request, username)
+    return _resource_response(username)
 
 
 @router.post("/users", response_model=CurrentUserResponse, status_code=201)
 async def create_user(req: CreateUserRequest, request: Request) -> CurrentUserResponse:
-    require_admin_access(_request_username(request))
+    acting_username = _request_username(request)
+    require_admin_access(acting_username)
     try:
         user = create_user_account(req.username, req.password)
     except ValueError as exc:
@@ -276,12 +417,37 @@ async def create_user(req: CreateUserRequest, request: Request) -> CurrentUserRe
         if req.model_permissions is not None
         else None,
     )
-    set_disabled_names(req.username, "disabled_skills", req.disabled_skills)
-    set_disabled_names(req.username, "disabled_tools", req.disabled_tools)
+    # Skills and tools belong to the account. The same entitlement is applied
+    # to every current and future agent owned by this user.
+    selected_skills = req.skills
+    if selected_skills is None:
+        selected_skills = [
+            name
+            for name in get_account_skills(acting_username)
+            if name not in set(req.disabled_skills or [])
+        ]
+    selected_tools = req.tools
+    if selected_tools is None:
+        selected_tools = [
+            name
+            for name in get_account_tools(acting_username)
+            if name not in set(req.disabled_tools or [])
+        ]
+    # A newly created account receives the selected built-in resources. Custom
+    # resources keep their creator/approval boundary and are never silently
+    # copied into another account during account creation.
+    set_account_skills(
+        req.username,
+        [name for name in selected_skills if name in _skill_pool_names()],
+    )
+    set_account_tools(
+        req.username,
+        [name for name in selected_tools if name in _tool_pool()],
+    )
     set_menu_permissions(req.username, req.menu_permissions)
     _schedule_user_agent_reloads(request, req.username)
     user = get_user_info(req.username) or user
-    return CurrentUserResponse(**user)
+    return _user_response(user)
 
 
 @router.patch("/users/{username}/status")
@@ -342,7 +508,15 @@ async def update_model_permissions(
 @router.get("/users/{username}/skill-permissions")
 async def user_skill_permissions(username: str, request: Request) -> dict:
     require_admin_access(_request_username(request))
-    return {"username": username, "disabled": get_disabled_names(username, "disabled_skills")}
+    selected = set(get_account_skills(username))
+    return {
+        "username": username,
+        "disabled": [
+            skill.name
+            for skill in SkillPoolService().list_all_skills()
+            if skill.name not in selected
+        ],
+    }
 
 
 @router.put("/users/{username}/skill-permissions")
@@ -352,7 +526,15 @@ async def update_skill_permissions(
     request: Request,
 ) -> dict:
     require_admin_access(_request_username(request))
-    set_disabled_names(username, "disabled_skills", req.disabled)
+    blocked = set(req.disabled or [])
+    set_account_skills(
+        username,
+        [
+            skill.name
+            for skill in SkillPoolService().list_all_skills()
+            if skill.name not in blocked
+        ],
+    )
     _schedule_user_agent_reloads(request, username)
     return await user_skill_permissions(username, request)
 
@@ -360,7 +542,11 @@ async def update_skill_permissions(
 @router.get("/users/{username}/tool-permissions")
 async def user_tool_permissions(username: str, request: Request) -> dict:
     require_admin_access(_request_username(request))
-    return {"username": username, "disabled": get_disabled_names(username, "disabled_tools")}
+    selected = set(get_account_tools(username))
+    return {
+        "username": username,
+        "disabled": [name for name in _tool_pool() if name not in selected],
+    }
 
 
 @router.put("/users/{username}/tool-permissions")
@@ -370,7 +556,11 @@ async def update_tool_permissions(
     request: Request,
 ) -> dict:
     require_admin_access(_request_username(request))
-    set_disabled_names(username, "disabled_tools", req.disabled)
+    blocked = set(req.disabled or [])
+    set_account_tools(
+        username,
+        [name for name in _tool_pool() if name not in blocked],
+    )
     _schedule_user_agent_reloads(request, username)
     return await user_tool_permissions(username, request)
 

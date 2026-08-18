@@ -57,6 +57,7 @@ async def append_event(
     body: str,
     severity: str = "info",
     payload: dict[str, Any] | None = None,
+    recipient_username: str | None = None,
 ) -> dict[str, Any]:
     event = {
         "id": str(uuid.uuid4()),
@@ -72,6 +73,8 @@ async def append_event(
         "read": False,
         "created_at": time.time(),
     }
+    if recipient_username:
+        event["recipient_username"] = recipient_username
     async with _LOCK:
         events = await run_sync_io(_load_events)
         events.insert(0, event)
@@ -88,6 +91,7 @@ async def list_events(
     status: str | None = None,
     agent_id: str | None = None,
     unread_only: bool = False,
+    recipient_username: str | None = None,
 ) -> list[dict[str, Any]]:
     async with _LOCK:
         events = await run_sync_io(_load_events)
@@ -103,6 +107,13 @@ async def list_events(
         events = [
             event for event in events if event.get("agent_id") == agent_id
         ]
+    if recipient_username:
+        events = [
+            event
+            for event in events
+            if not event.get("recipient_username")
+            or event.get("recipient_username") == recipient_username
+        ]
     if unread_only:
         events = [event for event in events if not bool(event.get("read"))]
     return events[offset : offset + max(limit, 0)]
@@ -116,6 +127,7 @@ async def query_events(
     status: str | None = None,
     agent_id: str | None = None,
     unread_only: bool = False,
+    recipient_username: str | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Return a filtered page with exact total and unread counts."""
     async with _LOCK:
@@ -131,6 +143,13 @@ async def query_events(
     if agent_id:
         events = [
             event for event in events if event.get("agent_id") == agent_id
+        ]
+    if recipient_username:
+        events = [
+            event
+            for event in events
+            if not event.get("recipient_username")
+            or event.get("recipient_username") == recipient_username
         ]
     unread_count = sum(not bool(event.get("read")) for event in events)
     if unread_only:

@@ -14,6 +14,10 @@ export interface SkillSpec {
   tags?: string[];
   last_updated?: string;
   emoji?: string;
+  resource_id?: string;
+  creator_username?: string;
+  source_label?: string;
+  can_share?: boolean;
 }
 
 export interface SkillDetail extends SkillSpec {

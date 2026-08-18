@@ -63,6 +63,19 @@ class Workspace:
 
         # Per-workspace pluggable registries (tools, hooks, commands, prompts)
         self.plugins = WorkspacePlugins()
+        # User-created HTTP tools are account-scoped and registered into each
+        # owned workspace at startup, alongside the offline built-ins.
+        try:
+            profile = load_config().agents.profiles.get(agent_id)
+            owner_username = getattr(profile, "owner_username", "") if profile else ""
+            if owner_username:
+                from ..user_resources import build_custom_tool_descriptors
+
+                self.plugins.tool_registry.register_many(
+                    build_custom_tool_descriptors(owner_username),
+                )
+        except Exception:  # pragma: no cover - a malformed optional resource must not block boot
+            logger.warning("Failed to load account custom tools", exc_info=True)
         self._local_workspace = QwenPawLocalWorkspace(
             tool_registry=self.plugins.tool_registry,
             workdir=str(self.workspace_dir),

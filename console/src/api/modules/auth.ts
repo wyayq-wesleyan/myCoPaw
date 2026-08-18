@@ -17,8 +17,22 @@ export interface ManagedUser {
   role: string;
   enabled: boolean;
   menu_permissions: string[] | null;
+  skills: string[];
+  tools: string[];
 }
 export interface ModelPermission { provider_id: string; model_id: string }
+export interface AccountResourceItem {
+  name: string;
+  description: string;
+  icon: string;
+}
+export interface UserResourcesResponse {
+  username: string;
+  skills: string[];
+  tools: string[];
+  available_skills: AccountResourceItem[];
+  available_tools: AccountResourceItem[];
+}
 export interface CreateUserPayload {
   username: string;
   password: string;
@@ -26,6 +40,8 @@ export interface CreateUserPayload {
   disabled_skills?: string[] | null;
   disabled_tools?: string[] | null;
   menu_permissions?: string[] | null;
+  skills?: string[] | null;
+  tools?: string[] | null;
 }
 
 export const authApi = {
@@ -80,6 +96,18 @@ export const authApi = {
     request<{ disabled: string[] }>(`/auth/users/${encodeURIComponent(username)}/${kind}-permissions`),
   setUserNamedPermissions: (username: string, kind: "skill" | "tool", disabled: string[]) =>
     request(`/auth/users/${encodeURIComponent(username)}/${kind}-permissions`, { method: "PUT", body: JSON.stringify({ disabled }) }),
+  getUserResources: (username: string) =>
+    request<UserResourcesResponse>(
+      `/auth/users/${encodeURIComponent(username)}/resources`,
+    ),
+  setUserResources: (
+    username: string,
+    resources: { skills: string[]; tools: string[] },
+  ) =>
+    request<UserResourcesResponse>(
+      `/auth/users/${encodeURIComponent(username)}/resources`,
+      { method: "PUT", body: JSON.stringify(resources) },
+    ),
   getUserMenuPermissions: (username: string) =>
     request<{ permissions: string[] | null }>(`/auth/users/${encodeURIComponent(username)}/menu-permissions`),
   setUserMenuPermissions: (username: string, permissions: string[] | null) =>

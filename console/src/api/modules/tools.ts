@@ -22,6 +22,11 @@ export interface ToolInfo {
   requires_config?: boolean;
   config_fields?: ToolConfigField[];
   config_values?: Record<string, any>;
+  resource_id?: string;
+  creator_username?: string;
+  source_label?: string;
+  can_share?: boolean;
+  custom?: boolean;
 }
 
 export const toolsApi = {
@@ -67,6 +72,25 @@ export const toolsApi = {
       {
         method: "POST",
         body: JSON.stringify({ config }),
+      },
+    ),
+  createCustomTool: (body: {
+    name: string;
+    description: string;
+    url: string;
+    method: string;
+    headers?: Record<string, string>;
+  }) =>
+    request<ToolInfo>("/tools/custom", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  shareCustomTool: (resourceId: string, targetUsernames: string[]) =>
+    request<{ granted: string[]; skipped: number }>(
+      `/tools/custom/${encodeURIComponent(resourceId)}/share`,
+      {
+        method: "POST",
+        body: JSON.stringify({ target_usernames: targetUsernames }),
       },
     ),
 };

@@ -1,4 +1,4 @@
-import { Card, Button, Tag, Avatar, Popconfirm, Checkbox } from "antd";
+import { Card, Button, Tag, Avatar, Popconfirm, Checkbox, Space } from "antd";
 import {
   MessageCircle,
   Hash,
@@ -20,6 +20,7 @@ interface PushMessageCardProps {
   onDelete: (id: string) => void;
   selected?: boolean;
   onSelectChange?: (id: string, checked: boolean) => void;
+  onResourceDecision?: (requestId: string, approve: boolean) => void;
 }
 
 const CHANNEL_ICONS = {
@@ -51,7 +52,14 @@ const normalizeCronTaskName = (title: string): string =>
     .trim();
 
 export function PushMessageCard(props: PushMessageCardProps) {
-  const { message, onView, onDelete, selected = false, onSelectChange } = props;
+  const {
+    message,
+    onView,
+    onDelete,
+    selected = false,
+    onSelectChange,
+    onResourceDecision,
+  } = props;
   const { t } = useTranslation();
   const IconComponent = CHANNEL_ICONS[message.channelType];
   const channelColor = CHANNEL_COLORS[message.channelType];
@@ -129,6 +137,28 @@ export function PushMessageCard(props: PushMessageCardProps) {
       <div className={styles.cardBody}>
         <h4 className={styles.messageTitle}>{displayTitle}</h4>
         <p className={styles.messageContent}>{message.content}</p>
+        {message.metadata?.resourceShareRequestId && onResourceDecision ? (
+          <Space onClick={(event) => event.stopPropagation()}>
+            <Button
+              size="small"
+              danger
+              onClick={() =>
+                onResourceDecision(message.metadata!.resourceShareRequestId!, false)
+              }
+            >
+              拒绝
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              onClick={() =>
+                onResourceDecision(message.metadata!.resourceShareRequestId!, true)
+              }
+            >
+              同意并安装
+            </Button>
+          </Space>
+        ) : null}
       </div>
     </Card>
   );
