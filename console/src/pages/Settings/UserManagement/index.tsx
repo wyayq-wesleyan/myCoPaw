@@ -40,6 +40,7 @@ type ResourceOptions = {
 type FormValues = {
   username: string;
   password?: string;
+  confirmPassword?: string;
   models: string[];
   skills: string[];
   tools: string[];
@@ -178,6 +179,7 @@ export default function UserManagementPage() {
       form.setFieldsValue({
         username: "",
         password: "",
+        confirmPassword: "",
         models: options.models,
         skills: options.selectedSkills,
         tools: options.selectedTools,
@@ -205,6 +207,7 @@ export default function UserManagementPage() {
       form.setFieldsValue({
         username: user.username,
         password: "",
+        confirmPassword: "",
         models:
           modelResult.permissions === null
             ? options.models
@@ -608,6 +611,25 @@ export default function UserManagementPage() {
               autoComplete="new-password"
             />
           </Form.Item>
+          {dialog === "create" && (
+            <Form.Item
+              name="confirmPassword"
+              label="确认初始密码"
+              dependencies={["password"]}
+              rules={[
+                { required: true, message: "请再次输入初始密码" },
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    return value === getFieldValue("password")
+                      ? Promise.resolve()
+                      : Promise.reject(new Error("两次输入的密码不一致"));
+                  },
+                }),
+              ]}
+            >
+              <Input.Password autoComplete="new-password" />
+            </Form.Item>
+          )}
           {regularUser || dialog === "create" ? (
             <>
               <Divider orientation="left">可用模型</Divider>

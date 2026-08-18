@@ -248,11 +248,16 @@ async def login(request: Request, req: LoginRequest):
     if not is_auth_enabled():
         return LoginResponse(token="", username="")
 
+    # User creation normalizes account names. Do the same at login so copied
+    # names or accidental surrounding whitespace cannot cause a false password
+    # error for a newly created account.
+    username = req.username.strip()
+
     # Get client IP for rate limiting
     client_ip = resolve_client_ip(request)
 
     # Check if user account is locked
-    if rate_limiter.is_user_locked(req.username):
+    if rate_limiter.is_user_locked(username):
         raise HTTPException(
             status_code=423,
             detail="Account temporarily locked. Please try again later",
@@ -272,12 +277,12 @@ async def login(request: Request, req: LoginRequest):
         )
 
     # Attempt authentication
-    token = authenticate(req.username, req.password, req.expires_in)
+    token = authenticate(username, req.password, req.expires_in)
     if token is None:
         # Record failed attempt
         rate_limiter.record_login_attempt(
             client_ip,
-            req.username,
+            username,
             success=False,
         )
         raise HTTPException(
@@ -286,9 +291,9 @@ async def login(request: Request, req: LoginRequest):
         )
 
     # Record successful attempt
-    rate_limiter.record_login_attempt(client_ip, req.username, success=True)
+    rate_limiter.record_login_attempt(client_ip, username, success=True)
 
-    return LoginResponse(token=token, username=req.username)
+    return LoginResponse(token=token, username=username)
 
 
 @router.post("/register")
@@ -426,9 +431,10 @@ async def create_user(req: CreateUserRequest, request: Request) -> CurrentUserRe
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     from ..user_space import ensure_user_default_agent
 
-    ensure_user_default_agent(req.username)
+    username = str(user["username"])
+    ensure_user_default_agent(username)
     set_model_permissions(
-        req.username,
+        username,
         [entry.model_dump() for entry in req.model_permissions]
         if req.model_permissions is not None
         else None,
@@ -453,16 +459,16 @@ async def create_user(req: CreateUserRequest, request: Request) -> CurrentUserRe
     # resources keep their creator/approval boundary and are never silently
     # copied into another account during account creation.
     set_account_skills(
-        req.username,
+        username,
         [name for name in selected_skills if name in _skill_pool_names()],
     )
     set_account_tools(
-        req.username,
+        username,
         [name for name in selected_tools if name in _tool_pool()],
     )
-    set_menu_permissions(req.username, req.menu_permissions)
-    _schedule_user_agent_reloads(request, req.username)
-    user = get_user_info(req.username) or user
+    set_menu_permissions(username, req.menu_permissions)
+    _schedule_user_agent_reloads(request, username)
+    user = get_user_info(username) or user
     return _user_response(user)
 
 

@@ -56,14 +56,14 @@ export default function LoginPage() {
     setLoading(true);
     try {
       if (isRegister) {
-        const res = await authApi.register(values.username, values.password);
+        const res = await authApi.register(values.username.trim(), values.password);
         if (res.token) {
           setAuthToken(res.token);
           message.success(t("login.registerSuccess"));
           finishNavigation(redirect);
         }
       } else {
-        const res = await authApi.login(values.username, values.password);
+        const res = await authApi.login(values.username.trim(), values.password);
         if (res.token) {
           setAuthToken(res.token);
           finishNavigation(redirect);
@@ -164,6 +164,7 @@ export default function LoginPage() {
                 />
               }
               placeholder={t("login.usernamePlaceholder")}
+              autoComplete="username"
               autoFocus
             />
           </Form.Item>
@@ -181,6 +182,7 @@ export default function LoginPage() {
                 />
               }
               placeholder={t("login.passwordPlaceholder")}
+              autoComplete="current-password"
             />
           </Form.Item>
 
