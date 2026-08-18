@@ -26,6 +26,7 @@ import {
   type ModelPermission,
 } from "../../../api/modules/auth";
 import { request } from "../../../api/request";
+import { clearAuthToken } from "../../../api/config";
 
 type ResourceOptions = {
   models: string[];
@@ -42,7 +43,14 @@ type FormValues = {
   menus: string[];
 };
 
+type PasswordFormValues = {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+};
+
 const DEFAULT_MENUS = [
+  "core.user-management",
   "core.agents",
   "core.files",
   "core.sessions",
@@ -83,6 +91,7 @@ function selectionToModels(values: string[]): ModelPermission[] {
 }
 
 export default function UserManagementPage() {
+  const [currentUser, setCurrentUser] = useState<ManagedUser | null>(null);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
@@ -95,10 +104,17 @@ export default function UserManagementPage() {
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<FormValues>();
+  const [passwordForm] = Form.useForm<PasswordFormValues>();
 
   const load = async () => {
     setLoading(true);
     try {
+      const current = await authApi.getCurrentUser();
+      setCurrentUser(current);
+      if (current.role !== "admin") {
+        setUsers([]);
+        return;
+      }
       setUsers(await authApi.listUsers());
     } catch (error) {
       message.error(error instanceof Error ? error.message : "无法加载用户列表");
@@ -247,6 +263,77 @@ export default function UserManagementPage() {
       : users;
   }, [keyword, users]);
 
+  const changeOwnPassword = async () => {
+    const values = await passwordForm.validateFields();
+    setSaving(true);
+    try {
+      await authApi.updateProfile(
+        values.currentPassword,
+        undefined,
+        values.newPassword,
+      );
+      message.success("密码已修改，请使用新密码重新登录");
+      clearAuthToken();
+      window.location.href = "/login";
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "密码修改失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!loading && currentUser?.role === "user") {
+    return (
+      <div style={{ padding: 24, maxWidth: 640, margin: "0 auto" }}>
+        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <div>
+            <h2 style={{ margin: 0 }}>用户管理</h2>
+            <span style={{ color: "#697386" }}>修改当前账户的登录密码。</span>
+          </div>
+          <Form form={passwordForm} layout="vertical" onFinish={changeOwnPassword}>
+            <Form.Item
+              name="currentPassword"
+              label="当前密码"
+              rules={[{ required: true, message: "请输入当前密码" }]}
+            >
+              <Input.Password autoComplete="current-password" />
+            </Form.Item>
+            <Form.Item
+              name="newPassword"
+              label="新密码"
+              rules={[
+                { required: true, message: "请输入新密码" },
+                { min: 8, message: "密码至少 8 位" },
+              ]}
+            >
+              <Input.Password autoComplete="new-password" />
+            </Form.Item>
+            <Form.Item
+              name="confirmPassword"
+              label="确认新密码"
+              dependencies={["newPassword"]}
+              rules={[
+                { required: true, message: "请再次输入新密码" },
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    return value === getFieldValue("newPassword")
+                      ? Promise.resolve()
+                      : Promise.reject(new Error("两次输入的密码不一致"));
+                  },
+                }),
+              ]}
+            >
+              <Input.Password autoComplete="new-password" />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" loading={saving}>
+              修改密码
+            </Button>
+          </Form>
+        </Space>
+      </div>
+    );
+  }
+
   const regularUser = editingUser?.role !== "admin";
   return (
     <div style={{ padding: 24, maxWidth: 1240, margin: "0 auto" }}>
@@ -260,7 +347,7 @@ export default function UserManagementPage() {
           }}
         >
           <div>
-            <h2 style={{ margin: 0 }}>账户管理</h2>
+            <h2 style={{ margin: 0 }}>用户管理</h2>
             <span style={{ color: "#697386" }}>
               管理员统一分配模型、技能、工具和菜单权限。
             </span>

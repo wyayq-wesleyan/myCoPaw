@@ -25,6 +25,7 @@ const ALWAYS_ALLOWED_ROUTE_IDS = new Set([
   "core.root",
   "core.chat",
   "core.acp-alias",
+  "core.user-management",
 ]);
 const OFFLINE_DISABLED_ROUTE_IDS = new Set(["core.channels"]);
 

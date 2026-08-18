@@ -2,9 +2,6 @@ import {
   Layout,
   Menu,
   Button,
-  Modal,
-  Input,
-  Form,
   Tooltip,
   Badge,
   Popover,
@@ -12,12 +9,10 @@ import {
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { useAppMessage } from "../hooks/useAppMessage";
 import AgentSelector from "../components/AgentSelector";
 import {
   SparkChatTabFill,
   SparkExitFullscreenLine,
-  SparkSearchUserLine,
   SparkMenuExpandLine,
   SparkMenuFoldLine,
   SparkEmailLine,
@@ -70,8 +65,8 @@ const INBOX_BADGE_POLLING_MS = 6000;
 
 const ADMIN_ONLY_MENU_IDS = new Set([
   "core.models",
-  "core.user-management",
 ]);
+const ALWAYS_USER_MENU_IDS = new Set(["core.user-management"]);
 
 // This edition is a browser-console product for air-gapped networks. External
 // channel adapters are deliberately not loaded by the service, so leaving a
@@ -98,7 +93,10 @@ function filterMenuForRole(
     }
     if (OFFLINE_DISABLED_MENU_IDS.has(item.id)) return [];
     if (isAdmin) return [item];
-    return !ADMIN_ONLY_MENU_IDS.has(item.id) && allowed.has(item.id)
+    return (
+      !ADMIN_ONLY_MENU_IDS.has(item.id) &&
+      (ALWAYS_USER_MENU_IDS.has(item.id) || allowed.has(item.id))
+    )
       ? [item]
       : [];
   });
@@ -114,6 +112,7 @@ const SIMPLE_MODE_WHITELIST = new Set([
   "core.cron-jobs",
   "core.agent-config",
   "core.models",
+  "core.user-management",
 ]);
 
 /**
@@ -151,7 +150,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
-  const { message } = useAppMessage();
   const { isDark } = useTheme();
   const currentSessionId = getSessionIdFromPath(location.pathname);
   const chatPath = buildChatPath(currentSessionId);
@@ -160,9 +158,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   const [menuPermissions, setMenuPermissions] = useState<string[] | null>(
     null,
   );
-  const [accountModalOpen, setAccountModalOpen] = useState(false);
-  const [accountLoading, setAccountLoading] = useState(false);
-  const [accountForm] = Form.useForm();
   // Start collapsed on mobile so the first paint does not overlay/obscure
   // the main content on narrow viewports.
   const [collapsed, setCollapsed] = useState(isMobileSidebarViewport);
@@ -496,59 +491,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
     [navigate],
   );
 
-  const handleUpdateProfile = async (values: {
-    currentPassword: string;
-    newUsername?: string;
-    newPassword?: string;
-  }) => {
-    const trimmedUsername = values.newUsername?.trim() || undefined;
-    const trimmedPassword = values.newPassword?.trim() || undefined;
-
-    if (values.newPassword && !trimmedPassword) {
-      message.error(t("account.passwordEmpty"));
-      return;
-    }
-
-    if (values.newUsername && !trimmedUsername) {
-      message.error(t("account.usernameEmpty"));
-      return;
-    }
-
-    if (!trimmedUsername && !trimmedPassword) {
-      message.warning(t("account.nothingToUpdate"));
-      return;
-    }
-
-    setAccountLoading(true);
-    try {
-      await authApi.updateProfile(
-        values.currentPassword,
-        trimmedUsername,
-        trimmedPassword,
-      );
-      message.success(t("account.updateSuccess"));
-      setAccountModalOpen(false);
-      accountForm.resetFields();
-      clearAuthToken();
-      window.location.href = "/login";
-    } catch (err: unknown) {
-      const raw = err instanceof Error ? err.message : "";
-      let msg = t("account.updateFailed");
-      if (raw.includes("password is incorrect")) {
-        msg = t("account.wrongPassword");
-      } else if (raw.includes("Nothing to update")) {
-        msg = t("account.nothingToUpdate");
-      } else if (raw.includes("cannot be empty")) {
-        msg = t("account.nothingToUpdate");
-      } else if (raw) {
-        msg = raw;
-      }
-      message.error(msg);
-    } finally {
-      setAccountLoading(false);
-    }
-  };
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   const siderWidth = collapsed ? (isMobile ? 56 : 72) : 240;
@@ -729,20 +671,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
         <div className={styles.authActions}>
           <Button
             type="text"
-            icon={<SparkSearchUserLine size={16} />}
-            onClick={() => {
-              accountForm.resetFields();
-              setAccountModalOpen(true);
-            }}
-            block
-            className={`${styles.authBtn} ${
-              collapsed ? styles.authBtnCollapsed : ""
-            }`}
-          >
-            {!collapsed && t("account.title")}
-          </Button>
-          <Button
-            type="text"
             icon={<SparkExitFullscreenLine size={16} />}
             onClick={() => {
               clearAuthToken();
@@ -791,70 +719,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
         />
       </div>
 
-      <Modal
-        open={accountModalOpen}
-        onCancel={() => setAccountModalOpen(false)}
-        title={t("account.title")}
-        footer={null}
-        destroyOnHidden
-        centered
-      >
-        <Form
-          form={accountForm}
-          layout="vertical"
-          onFinish={handleUpdateProfile}
-        >
-          <Form.Item
-            name="currentPassword"
-            label={t("account.currentPassword")}
-            rules={[
-              { required: true, message: t("account.currentPasswordRequired") },
-            ]}
-          >
-            <Input.Password />
-          </Form.Item>
-          <Form.Item name="newUsername" label={t("account.newUsername")}>
-            <Input placeholder={t("account.newUsernamePlaceholder")} />
-          </Form.Item>
-          <Form.Item name="newPassword" label={t("account.newPassword")}>
-            <Input.Password placeholder={t("account.newPasswordPlaceholder")} />
-          </Form.Item>
-          <Form.Item
-            name="confirmPassword"
-            label={t("account.confirmPassword")}
-            dependencies={["newPassword"]}
-            rules={[
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  if (!value && !getFieldValue("newPassword")) {
-                    return Promise.resolve();
-                  }
-                  if (value === getFieldValue("newPassword")) {
-                    return Promise.resolve();
-                  }
-                  return Promise.reject(
-                    new Error(t("account.passwordMismatch")),
-                  );
-                },
-              }),
-            ]}
-          >
-            <Input.Password
-              placeholder={t("account.confirmPasswordPlaceholder")}
-            />
-          </Form.Item>
-          <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={accountLoading}
-              block
-            >
-              {t("account.save")}
-            </Button>
-          </Form.Item>
-        </Form>
-      </Modal>
     </Sider>
   );
 }

@@ -27,6 +27,7 @@ MENU_PERMISSIONS = "menu_permissions"
 # they do not need an explicit entry here.
 DEFAULT_USER_MENU_IDS = frozenset(
     {
+        "core.user-management",
         "core.agents",
         "core.files",
         "core.sessions",
