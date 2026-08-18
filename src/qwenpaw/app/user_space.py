@@ -472,7 +472,14 @@ def require_owned_agent_id(config, username: str | None, requested: str | None) 
     if username:
         ensure_user_default_agent(username)
         config = load_config()
-    agent_id = requested or default_agent_id(config, username)
+    # Older browser state and the initial frontend render use the literal
+    # ``default`` agent id.  That id belongs to the administrator in a
+    # multi-user deployment, so resolve it to the current user's own default
+    # agent before applying the ownership check.
+    if username and requested in (None, "", "default"):
+        agent_id = default_agent_id(config, username)
+    else:
+        agent_id = requested or default_agent_id(config, username)
     if not agent_id or not is_agent_owned(config, username, agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     return agent_id

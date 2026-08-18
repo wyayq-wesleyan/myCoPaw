@@ -104,7 +104,25 @@ export const useAgentStore = create<AgentStore>()(
         }
 
         agentRefreshPromise = agentsApi.listAgents().then((response) => {
-          set({ agents: response.agents });
+          const nextAgents = response.agents;
+          const currentSelected = get().selectedAgent;
+          const currentAgent = nextAgents.find(
+            (agent) => agent.id === currentSelected && agent.enabled,
+          );
+          const fallbackAgent = nextAgents.find((agent) => agent.enabled) ??
+            nextAgents[0];
+
+          if (!currentAgent && fallbackAgent) {
+            set({ agents: nextAgents, selectedAgent: fallbackAgent.id });
+            try {
+              localStorage.setItem(LAST_USED_AGENT_KEY, fallbackAgent.id);
+            } catch {
+              /* ignore */
+            }
+            menuRegistry.refresh();
+          } else {
+            set({ agents: nextAgents });
+          }
         });
         try {
           await agentRefreshPromise;

@@ -81,6 +81,15 @@ describe("agentStore", () => {
     expect(useAgentStore.getState().agents).toEqual([mockAgent("1")]);
   });
 
+  it("selects the user's available agent when a stale default is unavailable", async () => {
+    const userAgent = { ...mockAgent("user_alice_default"), enabled: true };
+    mocks.listAgents.mockResolvedValue({ agents: [userAgent] });
+
+    await useAgentStore.getState().refreshAgents();
+
+    expect(useAgentStore.getState().selectedAgent).toBe("user_alice_default");
+  });
+
   it("allows a new refresh after the previous request settles", async () => {
     mocks.listAgents.mockResolvedValue({ agents: [] });
 
