@@ -3,7 +3,6 @@ import {
   CloseOutlined,
   DeleteOutlined,
   ReloadOutlined,
-  SwapOutlined,
   EyeOutlined,
   EyeInvisibleOutlined,
 } from "@ant-design/icons";
@@ -19,18 +18,13 @@ interface HeaderActionsProps {
   fileInputRef: React.RefObject<HTMLInputElement>;
   onSelectAll: () => void;
   onClearSelection: () => void;
-  onUploadToPool: (names: string[]) => void;
   onBatchEnable: () => void;
   onBatchDisable: () => void;
   onBatchDelete: () => void;
   onToggleBatchMode: () => void;
   onHardRefresh: () => void;
-  onOpenDownloadPool: () => void;
-  onOpenUploadPool: () => void;
   onUploadClick: () => void;
-  onImportHub: () => void;
   onCreate: () => void;
-  onBrowseMarket: () => void;
   onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
@@ -42,18 +36,13 @@ export function HeaderActions({
   fileInputRef,
   onSelectAll,
   onClearSelection,
-  onUploadToPool,
   onBatchEnable,
   onBatchDisable,
   onBatchDelete,
   onToggleBatchMode,
   onHardRefresh,
-  onOpenDownloadPool,
-  onOpenUploadPool,
   onUploadClick,
-  onImportHub,
   onCreate,
-  onBrowseMarket,
   onFileChange,
 }: HeaderActionsProps) {
   const { t } = useTranslation();
@@ -83,21 +72,6 @@ export function HeaderActions({
             >
               {t("skills.clearSelection")}
             </Button>
-            <Tooltip title={t("skills.uploadToPoolHint")}>
-              <Button
-                type="default"
-                className={styles.primaryTransferButton}
-                onClick={() => {
-                  const names = Array.from(selectedSkills);
-                  if (names.length === 0) return;
-                  onClearSelection();
-                  void onUploadToPool(names);
-                }}
-                icon={<SwapOutlined />}
-              >
-                {t("skills.uploadToPool")}
-              </Button>
-            </Tooltip>
             <Button
               type="default"
               icon={<EyeOutlined />}
@@ -131,16 +105,6 @@ export function HeaderActions({
                 disabled={loading}
               />
             </Tooltip>
-            <Tooltip title={t("skills.uploadToPoolHint")}>
-              <Button
-                type="default"
-                className={styles.primaryTransferButton}
-                onClick={onOpenUploadPool}
-                icon={<SwapOutlined />}
-              >
-                {t("skills.uploadToPool")}
-              </Button>
-            </Tooltip>
           </div>
           <div className={styles.headerActionsRight}>
             <Button type="primary" onClick={onToggleBatchMode}>
@@ -148,10 +112,7 @@ export function HeaderActions({
             </Button>
             <AddSkillDropdown
               onCreate={onCreate}
-              onFromPool={onOpenDownloadPool}
               onUploadZip={onUploadClick}
-              onFromUrl={onImportHub}
-              onBrowseMarket={onBrowseMarket}
               uploading={uploading}
             />
           </div>

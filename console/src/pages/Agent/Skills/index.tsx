@@ -1,13 +1,9 @@
 import { useTranslation } from "react-i18next";
-import { useSearchParams } from "react-router-dom";
-import { ArrowLeftOutlined, PlusOutlined } from "@ant-design/icons";
+import { PlusOutlined } from "@ant-design/icons";
 import { Button } from "@agentscope-ai/design";
-import { MarketPanel } from "../../Settings/Market/MarketPanel";
 import {
   SkillCard,
   SkillDrawer,
-  PoolTransferModal,
-  ImportHubModal,
   HeaderActions,
   SkillsToolbar,
   SkillListItem,
@@ -32,23 +28,17 @@ function SkillsPage() {
     visibleSkills,
     hasMore,
     sentinelRef,
-    poolSkills,
     allTags,
     sortedSkills,
     conflictRenameModal,
     loading,
     uploading,
-    importing,
     drawerOpen,
     drawerLoading,
     editingSkillName,
-    importModalOpen,
-    setImportModalOpen,
     editingSkill,
     form,
     fileInputRef,
-    poolModal,
-    setPoolModal,
     selectedSkills,
     batchModeEnabled,
     viewMode,
@@ -65,16 +55,11 @@ function SkillsPage() {
     handleDelete,
     handleDrawerClose,
     handleSubmit,
-    handleUploadToPool,
-    handleDownloadFromPool,
     handleBatchEnable,
     handleBatchDisable,
     handleBatchDelete,
     handleUploadClick,
     handleFileChange,
-    handleConfirmImport,
-    closeImportModal,
-    closePoolModal,
     toggleSelect,
     selectAll,
     clearSelection,
@@ -82,37 +67,14 @@ function SkillsPage() {
     toggleEnabled,
     refreshSkills,
     hardRefresh,
-    cancelImport,
   } = useSkillsPage();
 
-  const [searchParams, setSearchParams] = useSearchParams();
   const [selectedProviderSkill, setSelectedProviderSkill] =
     useState<HarnessDiscoveredSkill | null>(null);
   const [shareSkill, setShareSkill] = useState<SkillSpec | null>(null);
   const [shareTargets, setShareTargets] = useState<string[]>([]);
   const [shareUsers, setShareUsers] = useState<string[]>([]);
   const [shareLoading, setShareLoading] = useState(false);
-  const marketView = searchParams.get("view") === "market";
-
-  const openMarket = useCallback(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("view", "market");
-      return next;
-    });
-  }, [setSearchParams]);
-
-  const closeMarket = useCallback(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete("view");
-      return next;
-    });
-  }, [setSearchParams]);
-
-  const handleMarketInstalled = useCallback(() => {
-    void refreshSkills();
-  }, [refreshSkills]);
 
   const openShare = useCallback(async (skill: SkillSpec) => {
     setShareSkill(skill);
@@ -185,29 +147,6 @@ function SkillsPage() {
     ],
   );
 
-  if (marketView) {
-    return (
-      <div className={styles.skillsPage}>
-        <PageHeader
-          items={[
-            { title: t("nav.agent") },
-            { title: t("skills.title") },
-            { title: t("nav.market") },
-          ]}
-          extra={
-            <Button icon={<ArrowLeftOutlined />} onClick={closeMarket}>
-              {t("common.back")}
-            </Button>
-          }
-        />
-        <MarketPanel
-          installTarget="workspace"
-          onInstalled={handleMarketInstalled}
-        />
-      </div>
-    );
-  }
-
   return (
     <div className={styles.skillsPage}>
       <PageHeader
@@ -221,31 +160,18 @@ function SkillsPage() {
             fileInputRef={fileInputRef}
             onSelectAll={selectAll}
             onClearSelection={clearSelection}
-            onUploadToPool={handleUploadToPool}
             onBatchEnable={handleBatchEnable}
             onBatchDisable={handleBatchDisable}
             onBatchDelete={handleBatchDelete}
             onToggleBatchMode={toggleBatchMode}
             onHardRefresh={hardRefresh}
-            onOpenDownloadPool={() => setPoolModal("download")}
-            onOpenUploadPool={() => setPoolModal("upload")}
             onUploadClick={handleUploadClick}
-            onImportHub={() => setImportModalOpen(true)}
             onCreate={handleCreate}
-            onBrowseMarket={openMarket}
             onFileChange={handleFileChange}
           />
         }
       />
 
-      <ImportHubModal
-        open={importModalOpen}
-        importing={importing}
-        onCancel={closeImportModal}
-        onConfirm={handleConfirmImport}
-        cancelImport={cancelImport}
-        hint={t("skillPool.externalHubHint")}
-      />
 
       {providerSkills.length > 0 && (
         <div className={styles.managementBanner}>
@@ -475,15 +401,6 @@ function SkillsPage() {
           />
         </Spin>
       </Modal>
-
-      <PoolTransferModal
-        mode={poolModal}
-        skills={skills}
-        poolSkills={poolSkills}
-        onCancel={closePoolModal}
-        onUpload={handleUploadToPool}
-        onDownload={handleDownloadFromPool}
-      />
 
       {conflictRenameModal}
 
