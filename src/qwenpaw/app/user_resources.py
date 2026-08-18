@@ -61,6 +61,11 @@ def resource_storage_dir(resource_id: str) -> Path:
     return _RESOURCE_ROOT / "skills" / resource_id
 
 
+def session_resource_storage_dir(resource_id: str) -> Path:
+    """Return the storage directory containing a shared session snapshot."""
+    return _RESOURCE_ROOT / "sessions" / resource_id
+
+
 def install_skill_resource_for_workspace(
     *, resource: dict[str, Any], workspace_dir: Path, enabled: bool
 ) -> bool:
@@ -122,7 +127,13 @@ async def notify_resource_share(
     """Send one console inbox approval event for a shared resource."""
     from .inbox_store import append_event as append_inbox_event
 
-    kind = "技能" if resource.get("kind") == "skill" else "工具"
+    kind_labels = {"skill": "技能", "tool": "工具", "session": "会话"}
+    kind = kind_labels.get(str(resource.get("kind")), "资源")
+    action = (
+        "请在收件箱中选择同意或拒绝"
+        if resource.get("kind") != "session"
+        else "同意后会复制到你的会话列表"
+    )
     await append_inbox_event(
         agent_id="default",
         source_type="resource_share",
@@ -133,7 +144,7 @@ async def notify_resource_share(
         title=f"{kind}分享：{resource['name']}",
         body=(
             f"{request_item['sender_username']} 希望将{kind}“{resource['name']}”"
-            "分享给你，请在收件箱中选择同意或拒绝。"
+            f"分享给你，{action}。"
         ),
         recipient_username=str(request_item["recipient_username"]),
         payload={
@@ -146,6 +157,75 @@ async def notify_resource_share(
             "source_label": f"由 {request_item['sender_username']} 分享",
         },
     )
+
+
+async def install_session_resource_for_user(
+    *, resource: dict[str, Any], target_username: str
+) -> list[str]:
+    """Create independent copies of a shared session for all current agents."""
+    if resource.get("kind") != "session":
+        return []
+    metadata = resource.get("metadata") or {}
+    chat_spec = metadata.get("chat_spec")
+    if not isinstance(chat_spec, dict):
+        raise ValueError("Shared session metadata is missing")
+
+    snapshot = session_resource_storage_dir(str(resource["resource_id"])) / "state.json"
+    if not snapshot.is_file():
+        raise ValueError("Shared session snapshot is missing")
+
+    from .chats.models import ChatSpec
+    from .chats.repo.json_repo import JsonChatRepository
+    from .chats.session import sanitize_filename, session_filename
+    from .config.utils import load_config
+
+    installed: list[str] = []
+    for agent_id, profile in load_config().agents.profiles.items():
+        if getattr(profile, "owner_username", None) != target_username:
+            continue
+        workspace = Path(profile.workspace_dir)
+        repo = JsonChatRepository(workspace / "chats.json")
+        chats_file = await repo.load()
+        if any(
+            (chat.meta or {}).get("shared_resource_id") == resource["resource_id"]
+            for chat in chats_file.chats
+        ):
+            continue
+
+        new_session_id = f"console:shared:{resource['resource_id']}"
+        new_chat_id = str(uuid.uuid4())
+        new_meta = dict(chat_spec.get("meta") or {})
+        new_meta.update(
+            {
+                "shared_resource_id": resource["resource_id"],
+                "shared_from": resource["creator_username"],
+                "shared_snapshot": True,
+            }
+        )
+        new_chat = ChatSpec.model_validate(
+            {
+                **chat_spec,
+                "id": new_chat_id,
+                "session_id": new_session_id,
+                "user_id": "default",
+                "meta": new_meta,
+                "status": "idle",
+                "archived_at": None,
+            }
+        )
+
+        channel = new_chat.channel or "console"
+        session_dir = workspace / "sessions" / sanitize_filename(channel)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        session_path = session_dir / session_filename(
+            new_chat.session_id,
+            new_chat.user_id,
+        )
+        await asyncio.to_thread(shutil.copy2, snapshot, session_path)
+        chats_file.chats.append(new_chat)
+        await repo.save(chats_file)
+        installed.append(str(agent_id))
+    return installed
 
 
 def find_resource_sync(
@@ -182,7 +262,7 @@ def register_resource_sync(
     *, kind: str, name: str, creator_username: str, source_label: str = "本人创建"
 ) -> dict[str, Any]:
     """Register a resource from synchronous skill/tool service code."""
-    if kind not in {"skill", "tool"}:
+    if kind not in {"skill", "tool", "session"}:
         raise ValueError("Unsupported resource type")
     record = {
         "resource_id": str(uuid.uuid4()),
@@ -208,7 +288,7 @@ async def register_resource(
     source_label: str = "本人创建",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if kind not in {"skill", "tool"}:
+    if kind not in {"skill", "tool", "session"}:
         raise ValueError("Unsupported resource type")
     record = {
         "resource_id": str(uuid.uuid4()),

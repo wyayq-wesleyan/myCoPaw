@@ -147,7 +147,7 @@ export const skillApi = {
       request_id: string;
       status: string;
       installed_agents: string[];
-      resource_kind: "skill" | "tool" | "";
+      resource_kind: "skill" | "tool" | "session" | "";
     }>(
       getAgentScopedApiPath(
         `/skills/shares/${encodeURIComponent(requestId)}/decision`,

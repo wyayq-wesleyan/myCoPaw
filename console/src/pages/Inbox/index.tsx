@@ -227,10 +227,17 @@ export default function InboxPage() {
     try {
       const result = await api.decideSkillShare(requestId, approve);
       markMessageAsRead(eventId);
-      const resourceLabel = result.resource_kind === "tool" ? "工具" : "技能";
+      const resourceLabel =
+        result.resource_kind === "tool"
+          ? "工具"
+          : result.resource_kind === "session"
+            ? "会话"
+            : "技能";
       message.success(
         approve
-          ? `${resourceLabel}已同步到你的智能体`
+          ? result.resource_kind === "session"
+            ? "会话已添加到你的会话列表"
+            : `${resourceLabel}已同步到你的智能体`
           : `已拒绝${resourceLabel}分享`,
       );
       await deleteMessage(eventId);

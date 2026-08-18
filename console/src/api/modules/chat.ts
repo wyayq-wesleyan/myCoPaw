@@ -1,6 +1,6 @@
 import { request } from "../request";
 import { getApiUrl, getApiToken } from "../config";
-import { buildAuthHeaders } from "../authHeaders";
+import { buildAuthHeaders, getAgentScopedApiPath } from "../authHeaders";
 import type {
   ChatSpec,
   ChatHistory,
@@ -156,6 +156,14 @@ export const sessionApi = {
       method: "PUT",
       body: JSON.stringify(session),
     }),
+  shareSession: (sessionId: string, targetUsernames: string[]) =>
+    request<{ created: number; skipped: number }>(
+      getAgentScopedApiPath(`/chats/${encodeURIComponent(sessionId)}/share`),
+      {
+        method: "POST",
+        body: JSON.stringify({ target_usernames: targetUsernames }),
+      },
+    ),
 
   batchDeleteSessions: (sessionIds: string[]) =>
     request<{ success: boolean; deleted_count: number }>(

@@ -165,7 +165,9 @@ export function PushMessageCard(props: PushMessageCardProps) {
             >
               {message.metadata?.payload?.resource_kind === "tool"
                 ? "同意并启用"
-                : "同意并安装"}
+                : message.metadata?.payload?.resource_kind === "session"
+                  ? "同意并添加"
+                  : "同意并安装"}
             </Button>
           </Space>
         ) : null}

@@ -79,7 +79,9 @@ const mapEventToPushMessage = (
     event.source_type === "resource_share"
       ? event.payload?.resource_kind === "tool"
         ? "工具分享"
-        : "技能分享"
+        : event.payload?.resource_kind === "session"
+          ? "会话分享"
+          : "技能分享"
       : "控制台",
   title:
     event.source_type === "skill_autoupdate"

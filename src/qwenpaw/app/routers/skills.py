@@ -69,6 +69,7 @@ from ..auth import list_users
 from ..user_resources import (
     find_resource_sync,
     install_skill_resource_for_workspace,
+    install_session_resource_for_user,
     notify_resource_share,
     register_resource,
     resource_storage_dir,
@@ -1223,6 +1224,11 @@ async def decide_skill_share(
             for agent_id, profile in load_config().agents.profiles.items():
                 if getattr(profile, "owner_username", None) == username:
                     schedule_agent_reload(request, str(agent_id))
+        elif body.approve and resource.get("kind") == "session":
+            installed = await install_session_resource_for_user(
+                resource=resource,
+                target_username=username,
+            )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

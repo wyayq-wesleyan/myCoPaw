@@ -1,6 +1,7 @@
 import { useEffect, useState, useDeferredValue } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, Form, Modal, Table, Button, Tabs } from "@agentscope-ai/design";
+import { Checkbox, Spin } from "antd";
 import { useAppMessage } from "../../../hooks/useAppMessage";
 import { useTranslation } from "react-i18next";
 import {
@@ -12,6 +13,8 @@ import {
 } from "./components";
 import { useSessions } from "./useSessions";
 import api from "../../../api";
+import { authApi } from "../../../api/modules/auth";
+import { sessionApi } from "../../../api/modules/chat";
 import { PageHeader } from "@/components/PageHeader";
 import { ChannelIcon } from "../Channels/components";
 import styles from "./index.module.less";
@@ -41,6 +44,10 @@ function SessionsPage() {
   const [form] = Form.useForm<Session>();
 
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [shareSession, setShareSession] = useState<Session | null>(null);
+  const [shareUsers, setShareUsers] = useState<string[]>([]);
+  const [shareTargets, setShareTargets] = useState<string[]>([]);
+  const [shareLoading, setShareLoading] = useState(false);
 
   // Filter states
   const [filterUserId, setFilterUserId] = useState<string>("");
@@ -136,6 +143,43 @@ function SessionsPage() {
     }
   };
 
+  const handleOpenShare = async (session: Session) => {
+    setShareSession(session);
+    setShareTargets([]);
+    setShareLoading(true);
+    try {
+      const [targets, currentUser] = await Promise.all([
+        api.listShareTargets(),
+        authApi.getCurrentUser(),
+      ]);
+      setShareUsers(
+        targets.filter((username) => username !== currentUser.username),
+      );
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载用户列表");
+      setShareSession(null);
+    } finally {
+      setShareLoading(false);
+    }
+  };
+
+  const handleSubmitShare = async () => {
+    if (!shareSession || shareTargets.length === 0) return;
+    setShareLoading(true);
+    try {
+      const result = await sessionApi.shareSession(
+        shareSession.id,
+        shareTargets,
+      );
+      message.success(`已发送 ${result.created} 条会话审批请求`);
+      setShareSession(null);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "会话分享失败");
+    } finally {
+      setShareLoading(false);
+    }
+  };
+
   const handleBatchDelete = () => {
     if (selectedRowKeys.length === 0) {
       message.warning(t("sessions.batchDeleteConfirm", { count: 0 }));
@@ -204,6 +248,7 @@ function SessionsPage() {
     onDelete: handleDelete,
     onView: handleView,
     onArchiveToggle: handleArchiveToggle,
+    onShare: (session) => void handleOpenShare(session),
     isArchivedTab,
   });
 
@@ -308,6 +353,13 @@ function SessionsPage() {
                     <Button
                       size="small"
                       className={styles.mobileActionBtn}
+                      onClick={() => void handleOpenShare(session)}
+                    >
+                      分享
+                    </Button>
+                    <Button
+                      size="small"
+                      className={styles.mobileActionBtn}
                       danger
                       onClick={() => handleDelete(session.id)}
                     >
@@ -336,6 +388,13 @@ function SessionsPage() {
                       onClick={() => handleArchiveToggle(session)}
                     >
                       {t("sessions.archive.action", "Archive")}
+                    </Button>
+                    <Button
+                      size="small"
+                      className={styles.mobileActionBtn}
+                      onClick={() => void handleOpenShare(session)}
+                    >
+                      分享
                     </Button>
                     <Button
                       size="small"
@@ -379,6 +438,32 @@ function SessionsPage() {
         onClose={handleDrawerClose}
         onSubmit={handleSubmit}
       />
+
+      <Modal
+        title={`分享会话：${shareSession?.name || ""}`}
+        open={shareSession !== null}
+        onCancel={() => setShareSession(null)}
+        onOk={() => void handleSubmitShare()}
+        okText="发送审批"
+        cancelText={t("common.cancel")}
+        confirmLoading={shareLoading}
+        okButtonProps={{ disabled: shareTargets.length === 0 }}
+      >
+        <Spin spinning={shareLoading && shareUsers.length === 0}>
+          <p>
+            选择目标用户后，对方会在收件箱中审批；批准后会添加一份独立的会话副本，双方后续互不影响。
+          </p>
+          <Checkbox.Group
+            value={shareTargets}
+            onChange={(values) => setShareTargets(values.map(String))}
+            style={{ display: "grid", gap: 10 }}
+            options={shareUsers.map((username) => ({
+              label: username,
+              value: username,
+            }))}
+          />
+        </Spin>
+      </Modal>
     </div>
   );
 }

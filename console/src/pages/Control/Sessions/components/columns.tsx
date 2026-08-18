@@ -10,6 +10,7 @@ interface ColumnHandlers {
   onDelete: (sessionId: string) => void;
   onView: (session: Session) => void;
   onArchiveToggle: (session: Session) => void;
+  onShare: (session: Session) => void;
   isArchivedTab?: boolean;
 }
 
@@ -98,7 +99,7 @@ export const createColumns = (
   cols.push({
     title: "Action",
     key: "action",
-    width: isArchived ? 160 : 200,
+    width: isArchived ? 210 : 250,
     fixed: "right",
     render: (_: unknown, record: Session) => (
       <div className={styles.actionColumn}>
@@ -110,6 +111,13 @@ export const createColumns = (
               onClick={() => handlers.onArchiveToggle(record)}
             >
               {t("sessions.archive.unaction", "Unarchive")}
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => handlers.onShare(record)}
+            >
+              分享
             </Button>
             <Button
               type="link"
@@ -143,6 +151,13 @@ export const createColumns = (
               onClick={() => handlers.onArchiveToggle(record)}
             >
               {t("sessions.archive.action", "Archive")}
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => handlers.onShare(record)}
+            >
+              分享
             </Button>
             <Button
               type="link"

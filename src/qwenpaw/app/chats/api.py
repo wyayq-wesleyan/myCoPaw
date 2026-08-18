@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -28,6 +29,15 @@ from ...services.project_directory import (
     session_project_dir,
 )
 from ...checkpoints.runtime import RUNTIME as CHECKPOINT_RUNTIME
+from ...config.utils import load_config
+from ..auth import list_users
+from ..user_resources import (
+    create_share_requests,
+    notify_resource_share,
+    register_resource,
+    session_resource_storage_dir,
+)
+from ..user_space import get_request_username
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +92,12 @@ class ProjectDirectoryUpdate(BaseModel):
     """Controlled Session project directory update."""
 
     project_dir: str
+
+
+class ShareChatRequest(BaseModel):
+    """Users selected to receive a snapshot of one chat."""
+
+    target_usernames: list[str] = Field(default_factory=list)
 
 
 async def _project_directory_response(chat: ChatSpec, workspace) -> dict:
@@ -165,6 +181,76 @@ async def create_chat(
         meta=request.meta,
     )
     return await mgr.create_chat(spec)
+
+
+@router.post("/{chat_id}/share")
+async def share_chat(
+    chat_id: str,
+    payload: ShareChatRequest,
+    request: Request,
+    mgr: ChatManager = Depends(get_chat_manager),
+    session: SafeJSONSession = Depends(get_session),
+    workspace=Depends(get_workspace),
+) -> dict:
+    """Send a point-in-time chat snapshot to selected users for approval."""
+    username = get_request_username(request) or ""
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    chat = await mgr.get_chat(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    profile = load_config().agents.profiles.get(workspace.agent_id)
+    if not profile or getattr(profile, "owner_username", None) != username:
+        raise HTTPException(status_code=403, detail="You do not own this chat")
+
+    users = {str(item["username"]): item for item in list_users()}
+    targets = [
+        target
+        for target in dict.fromkeys(payload.target_usernames)
+        if target in users
+        and users[target].get("role") != "admin"
+        and target != username
+    ]
+    if not targets:
+        raise HTTPException(status_code=400, detail="No eligible recipients selected")
+
+    # Every send gets its own resource and snapshot. Reusing a previous
+    # resource would let a later share silently change an already-pending
+    # request's contents.
+    resource = await register_resource(
+        kind="session",
+        name=chat.id,
+        creator_username=username,
+        metadata={
+            "chat_spec": chat.model_dump(mode="json"),
+            "source_agent_id": workspace.agent_id,
+        },
+    )
+    snapshot_dir = session_resource_storage_dir(str(resource["resource_id"]))
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    source_path = Path(
+        await asyncio.to_thread(
+            session._get_save_path,
+            chat.session_id,
+            chat.user_id,
+            chat.channel,
+        )
+    )
+    snapshot_path = snapshot_dir / "state.json"
+    if source_path.is_file():
+        await asyncio.to_thread(shutil.copy2, source_path, snapshot_path)
+    else:
+        await asyncio.to_thread(snapshot_path.write_text, "{}", "utf-8")
+
+    requests = await create_share_requests(
+        resource_id=str(resource["resource_id"]),
+        sender_username=username,
+        recipient_usernames=targets,
+    )
+    for item in requests:
+        await notify_resource_share(request_item=item, resource=resource)
+    return {"created": len(requests), "skipped": len(targets) - len(requests)}
 
 
 @router.post("/batch-delete", response_model=dict)
