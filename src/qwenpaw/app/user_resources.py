@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import shutil
 import time
 import uuid
 from urllib.error import HTTPError, URLError
@@ -58,6 +59,93 @@ def _save_registry(payload: dict[str, list[dict[str, Any]]]) -> None:
 def resource_storage_dir(resource_id: str) -> Path:
     """Return the canonical directory containing a custom skill's files."""
     return _RESOURCE_ROOT / "skills" / resource_id
+
+
+def install_skill_resource_for_workspace(
+    *, resource: dict[str, Any], workspace_dir: Path, enabled: bool
+) -> bool:
+    """Install a registered custom skill into one agent workspace.
+
+    ``enabled`` is intentionally explicit: approved shares are enabled for
+    existing agents, while a newly created agent only receives the skill as an
+    available resource until the user enables it.
+    """
+    if resource.get("kind") != "skill":
+        return False
+    source_dir = resource_storage_dir(str(resource.get("resource_id", "")))
+    if not source_dir.is_dir():
+        raise ValueError("The shared skill package is missing")
+
+    from ..agents.skill_system import SkillService
+    from ..agents.skill_system.store import (
+        default_workspace_manifest,
+        get_workspace_skill_manifest_path,
+        get_workspace_skills_dir,
+        mutate_json,
+    )
+
+    workspace_dir = Path(workspace_dir)
+    target_dir = get_workspace_skills_dir(workspace_dir) / str(resource["name"])
+    if target_dir.exists():
+        return False
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_dir, target_dir)
+    source_entry = {
+        "source": "customized",
+        "enabled": enabled,
+        "channels": ["all"],
+        "installed_from": f"shared:{resource['creator_username']}",
+        "resource_id": resource["resource_id"],
+        "source_label": f"由 {resource['creator_username']} 分享",
+    }
+
+    def _register(payload: dict[str, Any]) -> None:
+        payload.setdefault("skills", {})[str(resource["name"])] = source_entry
+
+    try:
+        mutate_json(
+            get_workspace_skill_manifest_path(workspace_dir),
+            default_workspace_manifest(),
+            _register,
+        )
+        if enabled:
+            SkillService(workspace_dir).enable_skill(str(resource["name"]))
+    except Exception:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
+    return True
+
+
+async def notify_resource_share(
+    *, request_item: dict[str, Any], resource: dict[str, Any]
+) -> None:
+    """Send one console inbox approval event for a shared resource."""
+    from .inbox_store import append_event as append_inbox_event
+
+    kind = "技能" if resource.get("kind") == "skill" else "工具"
+    await append_inbox_event(
+        agent_id="default",
+        source_type="resource_share",
+        source_id=str(request_item["request_id"]),
+        event_type="resource_share_request",
+        status="pending",
+        severity="info",
+        title=f"{kind}分享：{resource['name']}",
+        body=(
+            f"{request_item['sender_username']} 希望将{kind}“{resource['name']}”"
+            "分享给你，请在收件箱中选择同意或拒绝。"
+        ),
+        recipient_username=str(request_item["recipient_username"]),
+        payload={
+            "request_id": request_item["request_id"],
+            "resource_id": resource["resource_id"],
+            "resource_kind": resource["kind"],
+            "resource_name": resource["name"],
+            "sender_username": request_item["sender_username"],
+            "recipient_username": request_item["recipient_username"],
+            "source_label": f"由 {request_item['sender_username']} 分享",
+        },
+    )
 
 
 def find_resource_sync(

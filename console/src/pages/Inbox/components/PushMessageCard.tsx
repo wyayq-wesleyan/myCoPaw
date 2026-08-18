@@ -24,6 +24,7 @@ interface PushMessageCardProps {
 }
 
 const CHANNEL_ICONS = {
+  console: MessageSquare,
   wechat: MessageCircle,
   slack: Hash,
   telegram: Send,
@@ -35,6 +36,7 @@ const CHANNEL_ICONS = {
 };
 
 const CHANNEL_COLORS = {
+  console: "#2a63ad",
   wechat: "#07C160",
   slack: "#4A154B",
   telegram: "#0088CC",
@@ -143,7 +145,10 @@ export function PushMessageCard(props: PushMessageCardProps) {
               size="small"
               danger
               onClick={() =>
-                onResourceDecision(message.metadata!.resourceShareRequestId!, false)
+                onResourceDecision(
+                  message.metadata!.resourceShareRequestId!,
+                  false,
+                )
               }
             >
               拒绝
@@ -152,10 +157,15 @@ export function PushMessageCard(props: PushMessageCardProps) {
               size="small"
               type="primary"
               onClick={() =>
-                onResourceDecision(message.metadata!.resourceShareRequestId!, true)
+                onResourceDecision(
+                  message.metadata!.resourceShareRequestId!,
+                  true,
+                )
               }
             >
-              同意并安装
+              {message.metadata?.payload?.resource_kind === "tool"
+                ? "同意并启用"
+                : "同意并安装"}
             </Button>
           </Space>
         ) : null}

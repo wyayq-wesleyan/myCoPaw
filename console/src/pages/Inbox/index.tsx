@@ -225,12 +225,19 @@ export default function InboxPage() {
     approve: boolean,
   ) => {
     try {
-      await api.decideSkillShare(requestId, approve);
+      const result = await api.decideSkillShare(requestId, approve);
       markMessageAsRead(eventId);
-      message.success(approve ? "技能已安装到你的智能体" : "已拒绝技能分享");
+      const resourceLabel = result.resource_kind === "tool" ? "工具" : "技能";
+      message.success(
+        approve
+          ? `${resourceLabel}已同步到你的智能体`
+          : `已拒绝${resourceLabel}分享`,
+      );
       await deleteMessage(eventId);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "处理分享请求失败");
+      message.error(
+        error instanceof Error ? error.message : "处理分享请求失败",
+      );
     }
   };
   const {

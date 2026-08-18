@@ -68,6 +68,8 @@ from ..auth import get_user_info
 from ..auth import list_users
 from ..user_resources import (
     find_resource_sync,
+    install_skill_resource_for_workspace,
+    notify_resource_share,
     register_resource,
     resource_storage_dir,
 )
@@ -498,9 +500,6 @@ def _install_registered_skill(
     """Install a shared skill into every current agent of an account."""
     from ..config.utils import load_config
 
-    source_dir = resource_storage_dir(str(resource["resource_id"]))
-    if not source_dir.is_dir():
-        raise ValueError("The shared skill package is missing")
     installed: list[str] = []
     for agent_id, profile in load_config().agents.profiles.items():
         if getattr(profile, "owner_username", None) != target_username:
@@ -508,35 +507,14 @@ def _install_registered_skill(
         workspace = Path(profile.workspace_dir)
         if skip_workspace is not None and workspace.resolve() == skip_workspace.resolve():
             continue
-        target_dir = get_workspace_skills_dir(workspace) / str(resource["name"])
-        if target_dir.exists():
-            raise ValueError(
-                f"Skill '{resource['name']}' already exists in agent '{agent_id}'"
-            )
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source_dir, target_dir)
-        source_entry = {
-            "source": "customized",
-            "enabled": True,
-            "channels": ["all"],
-            "installed_from": f"shared:{resource['creator_username']}",
-            "resource_id": resource["resource_id"],
-            "source_label": f"由 {resource['creator_username']} 分享",
-        }
-
-        def _register(payload: dict[str, Any]) -> None:
-            payload.setdefault("skills", {})[str(resource["name"])] = source_entry
-
         try:
-            mutate_json(
-                get_workspace_skill_manifest_path(workspace),
-                default_workspace_manifest(),
-                _register,
-            )
-            SkillService(workspace).enable_skill(str(resource["name"]))
-            installed.append(str(agent_id))
+            if install_skill_resource_for_workspace(
+                resource=resource,
+                workspace_dir=workspace,
+                enabled=True,
+            ):
+                installed.append(str(agent_id))
         except Exception:
-            shutil.rmtree(target_dir, ignore_errors=True)
             raise
     return installed
 
@@ -548,33 +526,6 @@ def _store_created_skill(
     target_dir = resource_storage_dir(str(resource["resource_id"]))
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source_dir, target_dir)
-
-
-async def _notify_skill_share(
-    *, request_item: dict[str, Any], resource: dict[str, Any]
-) -> None:
-    await append_inbox_event(
-        agent_id="default",
-        source_type="resource_share",
-        source_id=str(request_item["request_id"]),
-        event_type="skill_share_request",
-        status="pending",
-        severity="info",
-        title=f"技能分享：{resource['name']}",
-        body=(
-            f"{request_item['sender_username']} 希望将技能“{resource['name']}”"
-            "分享给你，请在收件箱中选择同意或拒绝。"
-        ),
-        recipient_username=str(request_item["recipient_username"]),
-        payload={
-            "request_id": request_item["request_id"],
-            "resource_id": resource["resource_id"],
-            "resource_name": resource["name"],
-            "sender_username": request_item["sender_username"],
-            "recipient_username": request_item["recipient_username"],
-            "source_label": f"由 {request_item['sender_username']} 分享",
-        },
-    )
 
 
 async def _hub_task_set_status(
@@ -1227,7 +1178,7 @@ async def share_skill(
         recipient_usernames=targets,
     )
     for item in requests:
-        await _notify_skill_share(request_item=item, resource=resource)
+        await notify_resource_share(request_item=item, resource=resource)
     return {"created": len(requests), "skipped": len(targets) - len(requests)}
 
 
@@ -1260,11 +1211,18 @@ async def decide_skill_share(
             recipient_username=username,
             approve=body.approve,
         )
-        installed = (
-            _install_registered_skill(resource=resource, target_username=username)
-            if body.approve
-            else []
-        )
+        installed = []
+        if body.approve and resource.get("kind") == "skill":
+            installed = _install_registered_skill(
+                resource=resource,
+                target_username=username,
+            )
+        elif body.approve and resource.get("kind") == "tool":
+            from ..config.utils import load_config
+
+            for agent_id, profile in load_config().agents.profiles.items():
+                if getattr(profile, "owner_username", None) == username:
+                    schedule_agent_reload(request, str(agent_id))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1273,6 +1231,7 @@ async def decide_skill_share(
         "request_id": request_item["request_id"],
         "status": request_item["status"],
         "installed_agents": installed,
+        "resource_kind": resource.get("kind", ""),
     }
 
 

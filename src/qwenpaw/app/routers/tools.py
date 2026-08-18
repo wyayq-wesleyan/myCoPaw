@@ -15,8 +15,9 @@ from ...config import load_config, save_config
 from ...config.config import ToolsConfig
 from ..utils import schedule_agent_reload
 from ..user_resources import (
-    grant_resource,
+    create_share_requests,
     list_resources_for_user_sync,
+    notify_resource_share,
     register_resource,
 )
 from ..auth import get_user_info, list_users
@@ -323,8 +324,23 @@ async def share_custom_tool(
         name for name in dict.fromkeys(body.target_usernames)
         if name in users and users[name].get("role") != "admin" and name != username
     ]
+    resource = next(
+        (
+            item
+            for item in list_resources_for_user_sync(
+                kind="tool", username=username, admin=False
+            )
+            if str(item.get("resource_id")) == resource_id
+        ),
+        None,
+    )
+    if resource is None or resource.get("creator_username") != username:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the tool creator can share this tool",
+        )
     try:
-        granted = await grant_resource(
+        requests = await create_share_requests(
             resource_id=resource_id,
             sender_username=username,
             recipient_usernames=targets,
@@ -333,11 +349,12 @@ async def share_custom_tool(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    for target in granted:
-        for agent_id, profile in load_config().agents.profiles.items():
-            if getattr(profile, "owner_username", None) == target:
-                schedule_agent_reload(request, agent_id)
-    return {"granted": granted, "skipped": len(targets) - len(granted)}
+    for item in requests:
+        await notify_resource_share(request_item=item, resource=resource)
+    return {
+        "created": len(requests),
+        "skipped": len(targets) - len(requests),
+    }
 
 
 @router.patch("/{tool_name}/toggle", response_model=ToolInfo)

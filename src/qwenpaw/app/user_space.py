@@ -43,6 +43,7 @@ DEFAULT_USER_MENU_IDS = frozenset(
         "core.token-usage",
         "core.skills",
         "core.tools",
+        "core.inbox",
     },
 )
 
@@ -307,11 +308,11 @@ def get_menu_permissions(username: str, role: str = "user") -> list[str] | None:
     if MENU_PERMISSIONS not in state:
         return sorted(DEFAULT_USER_MENU_IDS)
     values = state.get(MENU_PERMISSIONS, [])
-    # Skills and tools are account-owned daily-use resources. Keep them
-    # available to existing users created before this default was introduced.
+    # Resource sharing approvals are delivered through the local console
+    # inbox. Keep it available to existing accounts as well as new ones.
     return sorted(
         set(_names(values if isinstance(values, list) else []))
-        | {"core.skills", "core.tools"}
+        | {"core.skills", "core.tools", "core.inbox"}
     )
 
 

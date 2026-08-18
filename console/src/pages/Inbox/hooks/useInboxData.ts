@@ -74,30 +74,13 @@ const mapEventToPushMessage = (
   t: TFunction,
 ): PushMessage => ({
   id: event.id,
-  channelType:
-    event.source_type === "heartbeat"
-      ? "heartbeat"
-      : event.source_type === "memory"
-      ? "memory"
-      : event.source_type === "cron"
-      ? "wechat"
-      : event.source_type === "skill_autoupdate"
-      ? "skill"
-      : event.source_type === "resource_share"
-      ? "skill"
-      : "email",
+  channelType: "console",
   channelName:
-    event.source_type === "heartbeat"
-      ? "Heartbeat"
-      : event.source_type === "memory"
-      ? "Memory"
-      : event.source_type === "cron"
-      ? "Cron"
-      : event.source_type === "skill_autoupdate"
-      ? "Auto Sync"
-      : event.source_type === "resource_share"
-      ? "技能分享"
-      : "System",
+    event.source_type === "resource_share"
+      ? event.payload?.resource_kind === "tool"
+        ? "工具分享"
+        : "技能分享"
+      : "控制台",
   title:
     event.source_type === "skill_autoupdate"
       ? t("inbox.skillAutoUpdateTitle")
@@ -106,8 +89,8 @@ const mapEventToPushMessage = (
     event.source_type === "heartbeat"
       ? getHeartbeatSummary(event.status)
       : event.source_type === "skill_autoupdate"
-      ? getSkillAutoUpdateSummary(event, t)
-      : stripExecutionTimeText(event.body),
+        ? getSkillAutoUpdateSummary(event, t)
+        : stripExecutionTimeText(event.body),
   sender: {
     userId: event.agent_id || "default",
     username:

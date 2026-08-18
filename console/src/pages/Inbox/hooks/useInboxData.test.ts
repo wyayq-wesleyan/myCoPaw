@@ -157,7 +157,7 @@ describe("useInboxData", () => {
 
     await waitFor(() => expect(result.current.pushMessages).toHaveLength(1));
     const msg = result.current.pushMessages[0];
-    expect(msg.channelType).toBe("heartbeat");
+    expect(msg.channelType).toBe("console");
     expect(msg.content).toBe("Heartbeat 执行成功");
   });
 

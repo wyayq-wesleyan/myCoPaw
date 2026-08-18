@@ -91,7 +91,7 @@ export const toolsApi = {
       body: JSON.stringify(body),
     }),
   shareCustomTool: (resourceId: string, targetUsernames: string[]) =>
-    request<{ granted: string[]; skipped: number }>(
+    request<{ created: number; skipped: number }>(
       getAgentScopedApiPath(
         `/tools/custom/${encodeURIComponent(resourceId)}/share`,
       ),

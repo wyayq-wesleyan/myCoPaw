@@ -325,15 +325,20 @@ export default function ToolsPage() {
       setShareTargets([]);
       setShareTool(tool);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "无法加载用户列表");
+      message.error(
+        error instanceof Error ? error.message : "无法加载用户列表",
+      );
     }
   };
 
   const submitToolShare = async () => {
     if (!shareTool?.resource_id || shareTargets.length === 0) return;
     try {
-      const result = await api.shareCustomTool(shareTool.resource_id, shareTargets);
-      message.success(`已分享给 ${result.granted.length} 个用户`);
+      const result = await api.shareCustomTool(
+        shareTool.resource_id,
+        shareTargets,
+      );
+      message.success(`已发送 ${result.created} 条审批请求`);
       setShareTool(null);
       await loadTools();
     } catch (error) {
@@ -348,17 +353,31 @@ export default function ToolsPage() {
   }, [tools]);
 
   const enabledToolGroups = useMemo(
-    () => [
-      { title: "初始工具", items: enabledTools.filter((tool) => tool.is_builtin !== false) },
-      { title: "后续新建工具", items: enabledTools.filter((tool) => tool.is_builtin === false) },
-    ].filter((group) => group.items.length > 0),
+    () =>
+      [
+        {
+          title: "初始工具",
+          items: enabledTools.filter((tool) => tool.is_builtin !== false),
+        },
+        {
+          title: "后续新建工具",
+          items: enabledTools.filter((tool) => tool.is_builtin === false),
+        },
+      ].filter((group) => group.items.length > 0),
     [enabledTools],
   );
   const disabledToolGroups = useMemo(
-    () => [
-      { title: "初始工具", items: disabledTools.filter((tool) => tool.is_builtin !== false) },
-      { title: "后续新建工具", items: disabledTools.filter((tool) => tool.is_builtin === false) },
-    ].filter((group) => group.items.length > 0),
+    () =>
+      [
+        {
+          title: "初始工具",
+          items: disabledTools.filter((tool) => tool.is_builtin !== false),
+        },
+        {
+          title: "后续新建工具",
+          items: disabledTools.filter((tool) => tool.is_builtin === false),
+        },
+      ].filter((group) => group.items.length > 0),
     [disabledTools],
   );
 
@@ -380,7 +399,10 @@ export default function ToolsPage() {
         items={[{ title: t("nav.agent") }, { title: t("tools.title") }]}
         extra={
           <div className={styles.headerAction}>
-            <Button icon={<PlusOutlined />} onClick={() => setCreateToolOpen(true)}>
+            <Button
+              icon={<PlusOutlined />}
+              onClick={() => setCreateToolOpen(true)}
+            >
               新建工具
             </Button>
             <Switch
@@ -417,129 +439,135 @@ export default function ToolsPage() {
               {enabledTools.length > 0 ? (
                 <div>
                   {enabledToolGroups.map((group) => (
-                    <section key={group.title} className={styles.resourceSubgroup}>
+                    <section
+                      key={group.title}
+                      className={styles.resourceSubgroup}
+                    >
                       <div className={styles.resourceSubgroupTitle}>
                         <span>{group.title}</span>
-                        <span className={styles.resourceSubgroupCount}>{group.items.length}</span>
+                        <span className={styles.resourceSubgroupCount}>
+                          {group.items.length}
+                        </span>
                       </div>
                       <div className={styles.toolsGrid}>
-                  {group.items.map((tool) => (
-                    <Card
-                      key={tool.name}
-                      className={`${styles.toolCard} ${styles.enabledCard}`}
-                    >
-                      <div className={styles.cardHeader}>
-                        <h3 className={styles.toolName} title={tool.name}>
-                          <ToolIcon icon={tool.icon} name={tool.name} />{" "}
-                          <span className={styles.toolNameText}>
-                            {tool.name}
-                          </span>
-                        </h3>
-                        <div className={styles.statusContainer}>
-                          <span className={styles.statusDot} />
-                          <span className={styles.statusText}>
-                            {t("common.enabled")}
-                          </span>
-                        </div>
-                      </div>
+                        {group.items.map((tool) => (
+                          <Card
+                            key={tool.name}
+                            className={`${styles.toolCard} ${styles.enabledCard}`}
+                          >
+                            <div className={styles.cardHeader}>
+                              <h3 className={styles.toolName} title={tool.name}>
+                                <ToolIcon icon={tool.icon} name={tool.name} />{" "}
+                                <span className={styles.toolNameText}>
+                                  {tool.name}
+                                </span>
+                              </h3>
+                              <div className={styles.statusContainer}>
+                                <span className={styles.statusDot} />
+                                <span className={styles.statusText}>
+                                  {t("common.enabled")}
+                                </span>
+                              </div>
+                            </div>
 
-                      <p className={styles.toolDescription}>
-                        {tool.name === "browser"
-                          ? browserTrackLabel(tool, t)
-                          : tool.description}
-                        {tool.name === "browser" &&
-                          browserRestartPending(tool) && (
-                            <span
-                              className={styles.browserRestartPending}
-                              role="status"
-                            >
-                              {t("tools.browserRestartPending", {
-                                mode: browserModeLabel(
-                                  tool.config_values?.experimental !== false,
-                                  t,
-                                ),
-                              })}
-                            </span>
-                          )}
-                      </p>
+                            <p className={styles.toolDescription}>
+                              {tool.name === "browser"
+                                ? browserTrackLabel(tool, t)
+                                : tool.description}
+                              {tool.name === "browser" &&
+                                browserRestartPending(tool) && (
+                                  <span
+                                    className={styles.browserRestartPending}
+                                    role="status"
+                                  >
+                                    {t("tools.browserRestartPending", {
+                                      mode: browserModeLabel(
+                                        tool.config_values?.experimental !==
+                                          false,
+                                        t,
+                                      ),
+                                    })}
+                                  </span>
+                                )}
+                            </p>
 
-                      {/* Show config status */}
-                      {tool.requires_config && (
-                        <div className={styles.configStatus}>
-                          {tool.config_values &&
-                          Object.keys(tool.config_values).length > 0 ? (
-                            <span className={styles.configured}>
-                              ✓ {t("tools.configured")}
-                            </span>
-                          ) : (
-                            <span className={styles.notConfigured}>
-                              ⚠ {t("tools.requiresConfig")}
-                            </span>
-                          )}
-                        </div>
-                      )}
+                            {/* Show config status */}
+                            {tool.requires_config && (
+                              <div className={styles.configStatus}>
+                                {tool.config_values &&
+                                Object.keys(tool.config_values).length > 0 ? (
+                                  <span className={styles.configured}>
+                                    ✓ {t("tools.configured")}
+                                  </span>
+                                ) : (
+                                  <span className={styles.notConfigured}>
+                                    ⚠ {t("tools.requiresConfig")}
+                                  </span>
+                                )}
+                              </div>
+                            )}
 
-                      <div className={styles.cardFooter}>
-                        {BROWSER_TOOL_NAMES.has(tool.name) && (
-                          <BrowserExperimentalToggle
-                            toolName={tool.name}
-                            experimental={
-                              tool.config_values?.experimental !== false
-                            }
-                            onChange={handleExperimentalChange}
-                          />
-                        )}
-                        {[
-                          "execute_shell_command",
-                          "delegate_external_agent",
-                        ].includes(tool.name) && (
-                          <Button
-                            className={styles.toggleButton}
-                            onClick={() => toggleAsyncExecution(tool)}
-                            disabled={!tool.enabled}
-                            icon={
-                              tool.async_execution ? (
-                                <ThunderboltOutlined />
-                              ) : (
-                                <ClockCircleOutlined />
-                              )
-                            }
-                          >
-                            {tool.async_execution
-                              ? t("tools.asyncExecutionEnabled")
-                              : t("tools.asyncExecutionDisabled")}
-                          </Button>
-                        )}
-                        {/* Add configure button */}
-                        {tool.requires_config && (
-                          <Button
-                            className={styles.toggleButton}
-                            onClick={() => handleConfigure(tool)}
-                            icon={<SettingOutlined />}
-                          >
-                            {t("tools.configure")}
-                          </Button>
-                        )}
-                        {!tool.custom && (
-                          <Button
-                            className={styles.toggleButton}
-                            onClick={() => toggleEnabled(tool)}
-                            icon={<EyeInvisibleOutlined />}
-                          >
-                            {t("common.disable")}
-                          </Button>
-                        )}
-                        {tool.can_share && (
-                          <Button
-                            className={styles.toggleButton}
-                            onClick={() => void openToolShare(tool)}
-                          >
-                            分享
-                          </Button>
-                        )}
-                      </div>
-                    </Card>
-                  ))}
+                            <div className={styles.cardFooter}>
+                              {BROWSER_TOOL_NAMES.has(tool.name) && (
+                                <BrowserExperimentalToggle
+                                  toolName={tool.name}
+                                  experimental={
+                                    tool.config_values?.experimental !== false
+                                  }
+                                  onChange={handleExperimentalChange}
+                                />
+                              )}
+                              {[
+                                "execute_shell_command",
+                                "delegate_external_agent",
+                              ].includes(tool.name) && (
+                                <Button
+                                  className={styles.toggleButton}
+                                  onClick={() => toggleAsyncExecution(tool)}
+                                  disabled={!tool.enabled}
+                                  icon={
+                                    tool.async_execution ? (
+                                      <ThunderboltOutlined />
+                                    ) : (
+                                      <ClockCircleOutlined />
+                                    )
+                                  }
+                                >
+                                  {tool.async_execution
+                                    ? t("tools.asyncExecutionEnabled")
+                                    : t("tools.asyncExecutionDisabled")}
+                                </Button>
+                              )}
+                              {/* Add configure button */}
+                              {tool.requires_config && (
+                                <Button
+                                  className={styles.toggleButton}
+                                  onClick={() => handleConfigure(tool)}
+                                  icon={<SettingOutlined />}
+                                >
+                                  {t("tools.configure")}
+                                </Button>
+                              )}
+                              {!tool.custom && (
+                                <Button
+                                  className={styles.toggleButton}
+                                  onClick={() => toggleEnabled(tool)}
+                                  icon={<EyeInvisibleOutlined />}
+                                >
+                                  {t("common.disable")}
+                                </Button>
+                              )}
+                              {tool.can_share && (
+                                <Button
+                                  className={styles.toggleButton}
+                                  onClick={() => void openToolShare(tool)}
+                                >
+                                  分享
+                                </Button>
+                              )}
+                            </div>
+                          </Card>
+                        ))}
                       </div>
                     </section>
                   ))}
@@ -570,32 +598,37 @@ export default function ToolsPage() {
                 </div>
                 <div>
                   {disabledToolGroups.map((group) => (
-                    <section key={group.title} className={styles.resourceSubgroup}>
+                    <section
+                      key={group.title}
+                      className={styles.resourceSubgroup}
+                    >
                       <div className={styles.resourceSubgroupTitle}>
                         <span>{group.title}</span>
-                        <span className={styles.resourceSubgroupCount}>{group.items.length}</span>
+                        <span className={styles.resourceSubgroupCount}>
+                          {group.items.length}
+                        </span>
                       </div>
                       <div className={styles.availableGrid}>
-                  {group.items.map((tool) => (
-                    <div
-                      key={tool.name}
-                      className={styles.availableItem}
-                      onClick={() => handleAvailableItemClick(tool)}
-                    >
-                      <ToolIcon icon={tool.icon} name={tool.name} />
-                      <span
-                        className={styles.availableItemName}
-                        title={tool.name}
-                      >
-                        {tool.name}
-                      </span>
-                      <span className={styles.availableItemAction}>
-                        {tool.requires_config && !isToolConfigured(tool)
-                          ? t("tools.configureAction")
-                          : t("tools.enableAction")}
-                      </span>
-                    </div>
-                  ))}
+                        {group.items.map((tool) => (
+                          <div
+                            key={tool.name}
+                            className={styles.availableItem}
+                            onClick={() => handleAvailableItemClick(tool)}
+                          >
+                            <ToolIcon icon={tool.icon} name={tool.name} />
+                            <span
+                              className={styles.availableItemName}
+                              title={tool.name}
+                            >
+                              {tool.name}
+                            </span>
+                            <span className={styles.availableItemAction}>
+                              {tool.requires_config && !isToolConfigured(tool)
+                                ? t("tools.configureAction")
+                                : t("tools.enableAction")}
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     </section>
                   ))}
@@ -631,14 +664,25 @@ export default function ToolsPage() {
           <Form.Item name="description" label="工具说明">
             <Input.TextArea rows={2} />
           </Form.Item>
-          <Form.Item name="url" label="内网接口地址" rules={[{ required: true, type: "url" }]}>
+          <Form.Item
+            name="url"
+            label="内网接口地址"
+            rules={[{ required: true, type: "url" }]}
+          >
             <Input placeholder="http://internal-service/api" />
           </Form.Item>
           <Form.Item name="method" label="请求方式" initialValue="POST">
-            <Select options={["GET", "POST", "PUT", "PATCH", "DELETE"].map((value) => ({ value, label: value }))} />
+            <Select
+              options={["GET", "POST", "PUT", "PATCH", "DELETE"].map(
+                (value) => ({ value, label: value }),
+              )}
+            />
           </Form.Item>
           <Form.Item name="headersText" label="请求头 JSON">
-            <Input.TextArea rows={3} placeholder='例如：{"Authorization":"Bearer ..."}' />
+            <Input.TextArea
+              rows={3}
+              placeholder='例如：{"Authorization":"Bearer ..."}'
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -647,15 +691,19 @@ export default function ToolsPage() {
         open={shareTool !== null}
         onCancel={() => setShareTool(null)}
         onOk={() => void submitToolShare()}
-        okText="分享"
+        okText="发送审批"
         cancelText={t("common.cancel")}
         okButtonProps={{ disabled: shareTargets.length === 0 }}
       >
+        <p>选择目标用户后，对方会在收件箱中审批；接收后的工具不能再次转发。</p>
         <Checkbox.Group
           value={shareTargets}
           onChange={(values) => setShareTargets(values.map(String))}
           style={{ display: "grid", gap: 10 }}
-          options={shareUsers.map((username) => ({ label: username, value: username }))}
+          options={shareUsers.map((username) => ({
+            label: username,
+            value: username,
+          }))}
         />
       </Modal>
     </div>

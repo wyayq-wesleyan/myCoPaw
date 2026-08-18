@@ -724,6 +724,31 @@ async def create_agent(
         set_account_skills(username, get_account_skills(username))
         set_account_tools(username, get_account_tools(username))
 
+        # Account-created and approved shared skills are visible to every
+        # agent, but a newly created agent starts with those custom skills
+        # disabled. Built-in account entitlements were applied above.
+        from ..user_resources import (
+            install_skill_resource_for_workspace,
+            list_resources_for_user_sync,
+        )
+
+        for resource in list_resources_for_user_sync(
+            kind="skill", username=username
+        ):
+            try:
+                install_skill_resource_for_workspace(
+                    resource=resource,
+                    workspace_dir=workspace_dir,
+                    enabled=False,
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Could not add custom skill %s to new agent %s: %s",
+                    resource.get("name", ""),
+                    new_id,
+                    exc,
+                )
+
     logger.info(f"Created new agent: {new_id} (name={request.name})")
 
     if http_request is not None:

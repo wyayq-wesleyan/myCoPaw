@@ -143,7 +143,12 @@ export const skillApi = {
   listShareTargets: () =>
     request<string[]>(getAgentScopedApiPath("/skills/share-targets")),
   decideSkillShare: (requestId: string, approve: boolean) =>
-    request<{ request_id: string; status: string; installed_agents: string[] }>(
+    request<{
+      request_id: string;
+      status: string;
+      installed_agents: string[];
+      resource_kind: "skill" | "tool" | "";
+    }>(
       getAgentScopedApiPath(
         `/skills/shares/${encodeURIComponent(requestId)}/decision`,
       ),
