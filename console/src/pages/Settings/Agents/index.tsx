@@ -146,6 +146,9 @@ export default function AgentsPage() {
 
       const providerId = values.active_model_provider;
       const modelId = values.active_model_model;
+      if (!editingAgent && (!providerId || !modelId)) {
+        throw new Error("请先选择模型");
+      }
       const active_model =
         values.backend === "qwenpaw" && providerId && modelId
           ? { provider_id: providerId, model: modelId }
@@ -182,7 +185,6 @@ export default function AgentsPage() {
         const result = await agentsApi.createAgent({
           ...payload,
           language: i18n.language,
-          skill_names: values.backend === "qwenpaw" ? selectedSkills : [],
         });
         message.success(`${t("agent.createSuccess")} (ID: ${result.id})`);
       }

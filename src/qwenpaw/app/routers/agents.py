@@ -604,9 +604,8 @@ async def create_agent(
 ) -> AgentProfileRef:
     """Create a new agent.
 
-    When ``request.id`` is provided, it is used as the agent identifier
-    (validated for URL-safe characters, length, reserved words, and
-    uniqueness).  Otherwise a random short UUID is generated.
+    Authenticated console users receive a generated identifier and isolated
+    workspace. Legacy unauthenticated API callers may still provide an ID.
     """
     if request.backend != "qwenpaw":
         _get_available_third_party_provider(request.backend)
@@ -614,7 +613,12 @@ async def create_agent(
     config = load_config()
     existing_ids = set(config.agents.profiles.keys())
 
-    if request.id:
+    username = get_request_username(http_request)
+    # Console users do not choose identifiers.  Keeping this server-side
+    # prevents a crafted request from escaping the isolated naming scheme.
+    if username:
+        new_id = _generate_unique_id(existing_ids)
+    elif request.id:
         try:
             validate_agent_id(request.id, existing_ids)
         except ValueError as e:
@@ -626,7 +630,6 @@ async def create_agent(
     else:
         new_id = _generate_unique_id(existing_ids)
 
-    username = get_request_username(http_request)
     if username:
         workspace_dir = get_user_root(username) / "workspaces" / new_id
     else:
@@ -691,9 +694,7 @@ async def create_agent(
 
     _initialize_agent_workspace(
         workspace_dir,
-        skill_names=(
-            request.skill_names if request.skill_names is not None else []
-        ),
+        skill_names=[] if username else (request.skill_names or []),
         language=language,
     )
 

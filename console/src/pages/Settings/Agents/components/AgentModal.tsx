@@ -198,26 +198,17 @@ export function AgentModal({
           <Input />
         </Form.Item>
 
-        <AgentBackendFields form={form} open={open} />
+        {editingAgent ? (
+          <AgentBackendFields form={form} open={open} />
+        ) : (
+          <Form.Item name="backend" hidden>
+            <Input />
+          </Form.Item>
+        )}
 
         {editingAgent && (
           <Form.Item name="id" label={t("agent.id")}>
             <Input disabled />
-          </Form.Item>
-        )}
-        {!editingAgent && (
-          <Form.Item
-            name="id"
-            label={t("agent.idLabel")}
-            help={t("agent.idHelp")}
-            rules={[
-              {
-                pattern: /^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$/,
-                message: t("agent.idPattern"),
-              },
-            ]}
-          >
-            <Input placeholder={t("agent.idPlaceholder")} />
           </Form.Item>
         )}
         <Form.Item
@@ -236,15 +227,19 @@ export function AgentModal({
         <Form.Item
           hidden={selectedBackend !== "qwenpaw"}
           label={t("agent.model")}
-          help={t("agent.modelHelp")}
+          help={
+            editingAgent
+              ? t("agent.modelHelp")
+              : "仅显示管理员为当前账号授权的模型。"
+          }
         >
           <Space.Compact style={{ width: "100%" }}>
             <Select
               value={selectedProviderId || undefined}
               onChange={handleProviderChange}
               placeholder={t("agent.modelPlaceholder")}
-              allowClear
-              onClear={handleClearModel}
+              allowClear={!!editingAgent}
+              onClear={editingAgent ? handleClearModel : undefined}
               loading={loadingProviders}
               style={{ width: "45%", gap: "8px" }}
               showSearch
@@ -296,85 +291,73 @@ export function AgentModal({
             />
           </Space.Compact>
         </Form.Item>
-        <Form.Item
-          name="workspace_dir"
-          label={t("agent.workspace")}
-          help={!editingAgent ? t("agent.workspaceHelp") : undefined}
-        >
-          <Input
-            placeholder="~/.qwenpaw/workspaces/my-agent"
-            disabled={!!editingAgent}
-          />
-        </Form.Item>
+        {editingAgent && (
+          <Form.Item name="workspace_dir" label={t("agent.workspace")}>
+            <Input disabled />
+          </Form.Item>
+        )}
       </Form>
 
-      <div
-        style={{
-          marginTop: 4,
-          display: selectedBackend === "qwenpaw" ? undefined : "none",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 8,
-          }}
-        >
-          <Text type="secondary" style={{ fontSize: 13 }}>
-            {editingAgent
-              ? t("agent.addSkillsToAgent")
-              : t("agent.initialSkills")}
-          </Text>
-          <Space size={4}>
-            <Button size="small" type="primary" onClick={handleSelectAll}>
-              {t("agent.selectAll")}
-            </Button>
-            <Button size="small" type="default" onClick={handleSelectBuiltin}>
-              {t("agent.selectBuiltin")}
-            </Button>
-            <Button size="small" type="default" onClick={handleSelectNone}>
-              {t("agent.selectNone")}
-            </Button>
-          </Space>
+      {editingAgent && selectedBackend === "qwenpaw" && (
+        <div style={{ marginTop: 4 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 8,
+            }}
+          >
+            <Text type="secondary" style={{ fontSize: 13 }}>
+              {t("agent.addSkillsToAgent")}
+            </Text>
+            <Space size={4}>
+              <Button size="small" type="primary" onClick={handleSelectAll}>
+                {t("agent.selectAll")}
+              </Button>
+              <Button size="small" type="default" onClick={handleSelectBuiltin}>
+                {t("agent.selectBuiltin")}
+              </Button>
+              <Button size="small" type="default" onClick={handleSelectNone}>
+                {t("agent.selectNone")}
+              </Button>
+            </Space>
+          </div>
+          {loadingSkills ? (
+            <div style={{ textAlign: "center", padding: "16px 0" }}>
+              <Spin size="small" />
+            </div>
+          ) : poolSkills.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t("agent.noPoolSkills")}
+            />
+          ) : (
+            <div className={styles.pickerGrid}>
+              {poolSkills.map((skill) => {
+                const selected = selectedSkills.includes(skill.name);
+                const isInstalled = installedSkills.includes(skill.name);
+                return (
+                  <div
+                    key={skill.name}
+                    className={`${styles.pickerCard} ${
+                      selected ? styles.pickerCardSelected : ""
+                    } ${isInstalled ? styles.pickerCardDisabled : ""}`}
+                    onClick={() => toggleSkill(skill.name)}
+                  >
+                    {selected && (
+                      <span className={styles.pickerCheck}>
+                        <CheckOutlined />
+                      </span>
+                    )}
+                    <div className={styles.pickerCardTitle}>{skill.name}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
-
-        {loadingSkills ? (
-          <div style={{ textAlign: "center", padding: "16px 0" }}>
-            <Spin size="small" />
-          </div>
-        ) : poolSkills.length === 0 ? (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={t("agent.noPoolSkills")}
-          />
-        ) : (
-          <div className={styles.pickerGrid}>
-            {poolSkills.map((skill) => {
-              const selected = selectedSkills.includes(skill.name);
-              const isInstalled =
-                !!editingAgent && installedSkills.includes(skill.name);
-              return (
-                <div
-                  key={skill.name}
-                  className={`${styles.pickerCard} ${
-                    selected ? styles.pickerCardSelected : ""
-                  } ${isInstalled ? styles.pickerCardDisabled : ""}`}
-                  onClick={() => toggleSkill(skill.name)}
-                >
-                  {selected && (
-                    <span className={styles.pickerCheck}>
-                      <CheckOutlined />
-                    </span>
-                  )}
-                  <div className={styles.pickerCardTitle}>{skill.name}</div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+      )}
     </Modal>
   );
 }
