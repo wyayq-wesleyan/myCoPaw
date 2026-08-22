@@ -1,566 +1,599 @@
-<div align="center">
+# 汇智小助手
 
-# QwenPaw
+这是基于官方 `v2.1.0` 代码改造的内网版智能体应用，面向没有互联网访问条件的 Ubuntu 服务器和 Docker 环境。项目保留智能体、技能、工具、文件、定时任务和会话能力，并增加多用户隔离、管理员统一管理和离线部署适配。
 
-[![GitHub Repo](https://img.shields.io/badge/GitHub-Repo-black.svg?logo=github)](https://github.com/agentscope-ai/QwenPaw)
-[![PyPI](https://img.shields.io/pypi/v/qwenpaw?color=3775A9&label=PyPI&logo=pypi)](https://pypi.org/project/qwenpaw/)
-[![Documentation](https://img.shields.io/badge/Docs-Website-green.svg?logo=readthedocs&label=Docs)](https://qwenpaw.agentscope.io/)
-[![Python Version](https://img.shields.io/badge/python-3.11%20~%20%3C3.14-blue.svg?logo=python&label=Python)](https://www.python.org/downloads/)
-[![Last Commit](https://img.shields.io/github/last-commit/agentscope-ai/QwenPaw)](https://github.com/agentscope-ai/QwenPaw)
-[![License](https://img.shields.io/badge/license-Apache%202.0-red.svg?logo=apache&label=License)](LICENSE)
-[![Code Style](https://img.shields.io/badge/code%20style-black-black.svg?logo=python&label=CodeStyle)](https://github.com/psf/black)
-[![GitHub Stars](https://img.shields.io/github/stars/agentscope-ai/QwenPaw?style=flat&logo=github&color=yellow&label=Stars)](https://github.com/agentscope-ai/QwenPaw/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/agentscope-ai/QwenPaw?style=flat&logo=github&color=purple&label=Forks)](https://github.com/agentscope-ai/QwenPaw/network)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-Ask_Devin-navy.svg?logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/agentscope-ai/QwenPaw)
-[![Discord](https://img.shields.io/badge/Discord-Join_Us-blueviolet.svg?logo=discord)](https://discord.gg/eYMpfnkG8h)
-[![X](https://img.shields.io/badge/X-Follow_Us-black.svg?logo=x)](https://x.com/agentscope_ai)
-[![DingTalk](https://img.shields.io/badge/DingTalk-Join_Us-orange.svg)](https://qr.dingtalk.com/action/joingroup?code=v1,k1,OmDlBXpjW+I2vWjKDsjvI9dhcXjGZi3bQiojOq3dlDw=&_dt_no_comment=1&origin=11)
-[![AgentScope Platform](https://img.shields.io/badge/%E2%98%81_AgentScope_Platform-%F0%9F%90%BE_7%2F24_Online_%26_Free-FF6B2B.svg)](https://platform.agentscope.io/)
+当前代码基线：`v2.1.0`
 
-<a href="https://trendshift.io/repositories/25882" target="_blank"><img src="https://trendshift.io/api/badge/trendshift/repositories/25882/daily" alt="agentscope-ai%2FQwenPaw | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+当前开发目录：`/Users/wesley/Desktop/projects/mycopaw-v2.0.1`
 
-[[Documentation](https://qwenpaw.agentscope.io/)] [[中文](README_zh.md)] [[日本語](README_ja.md)] [[Русский](README_ru.md)]
+当前本机验证容器：`huizhi-v210-check`
 
-<p align="center">
-  <img src="https://gw.alicdn.com/imgextra/i1/O1CN01sens5C1TuwioeGexL_!!6000000002443-55-tps-771-132.svg" alt="QwenPaw Logo" width="120">
-</p>
+## 1. 改造目标
 
-<p align="center"><b>Works for you, grows with you.</b></p>
+- 所有用户通过浏览器使用汇智小助手，不依赖桌面模式和外部频道。
+- 服务部署在内网，模型通过内网 OpenAI 兼容接口访问，例如 vLLM 或本地模型服务。
+- 管理员集中配置模型、运行规则、菜单权限、技能和工具。
+- 普通用户只看到自己被授权的内容，用户之间的工作区、会话和资源互相隔离。
+- 代码与运行镜像分离，功能修改时只更新代码并重启容器，不反复构建大镜像。
+- ARM64 用于本机测试，AMD64 用于生产服务器；底座镜像按目标架构分别准备。
 
-</div>
+## 2. 当前已完成的功能
 
-Your personal AI assistant — deploy locally or in the cloud, extend with Skills & Plugins, connect across every channel.
+### 2.1 本地化和品牌
 
-| | |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Never forgets**                       | Three-layer memory — live working context, full verbatim history, and a self-evolving personal knowledge base powered by [ReMe](https://github.com/agentscope-ai/ReMe). Conversations and resources continuously become readable, editable, searchable, and linked Markdown memory. |
-| **Local or cloud, runs free**           | QwenPaw-Flash models (2B / 4B / 9B) trained for agent tasks. Built-in QwenPaw Local runtime — no API key, no cloud dependency. Also works with Ollama, LM Studio, or 14+ cloud providers.   |
-| **Security built in**                   | Kernel-level Sandbox, Tool Guard, File Guard, Skill Scanner, and Access Policy. Dangerous commands are blocked before they run.                                                                   |
-| **Multi-agent & parallel**              | Spawn independent agents with their own memory and skills. Sub-agents at runtime. Agent Communication Protocol (ACP) for cross-system orchestration.                               |
-| **File workspace**                      | Unified file navigation, preview, editing, diffs, upload, and download across project and Agent files.                                                                            |
-| **Extensible**                          | Skills for scheduling, documents, browser, news, and more. Plugin architecture with a marketplace. MCP integration for external tools. Combine them into purpose-built workflows.  |
-| **Reachable anywhere**                  | DingTalk, Lark, WeChat, Discord, Telegram, iMessage, QQ — one instance, all channels. Console, TUI, and desktop app for direct access.                                            |
-| **Yours, not ours**                     | Deploy locally — data stays on your machine. No third-party hosting, no data upload.                                                                                               |
+- 页面品牌统一为“汇智小助手”。
+- 移除页面中的官方品牌文字、在线文档、更新日志、GitHub、常见问题和语言切换入口。
+- 默认使用简体中文。
+- 内网版默认使用浅色主题，页面不依赖互联网功能。
+- 顶部显示当前登录用户名，点击用户名可进入账户管理或退出登录。
+- 左下角不再放置退出登录入口。
 
-<details>
-<summary><b>What you can do with QwenPaw</b></summary>
+### 2.2 多用户和工作区隔离
 
-<br>
+- 系统支持管理员和普通用户两种角色。
+- 每个用户拥有独立的用户目录、工作区、智能体、会话和配置状态。
+- 普通用户只能访问自己拥有的智能体和会话。
+- 创建普通用户时自动创建默认智能体。
+- 新建智能体时不再手动填写工作方式、智能体 ID、工作区路径和初始技能，相关内容由系统自动生成。
+- 管理员可以查看用户列表、添加用户、启用或禁用用户、删除用户和修改用户密码。
+- 普通用户的账户管理只保留修改密码能力。
 
-- **Automation & scheduling**: Set up recurring tasks — news digests, report generation, multi-channel broadcasting — all on your schedule.
-- **Code & development**: Read, edit, review, and test code in your projects with the unified file workspace.
-- **Document processing**: Read, write, and convert PDF, Word, Excel, and PowerPoint files.
-- **Information gathering**: Search the web, follow subscriptions, summarize videos, and find what you need in your personal knowledge base.
-- **Multi-channel ops**: Push alerts, summaries, or AI-generated content to DingTalk, Lark, Discord, Telegram, and more — simultaneously or per channel.
-- **Custom workflows**: Combine built-in capabilities, plugins, and scheduled tasks into workflows tailored to your needs.
+### 2.3 管理员权限和普通用户菜单
 
-</details>
+管理员统一管理以下内容：
 
----
+- 模型和模型供应商
+- 普通用户的模型授权
+- 技能和工具权限
+- 普通用户的菜单权限
+- 全局运行配置
+- 特定普通用户的运行配置覆盖项
 
-## News
+普通用户默认只开放日常使用菜单：
 
-- [2026-08-13] **v2.1.0** | QwenPaw OS Shell, unified Files workspace, QwenPaw Creator, Codex/Qoder Agent integration, Browser-use, Computer-use, workspace checkpoints, and long-running conversation continuity. [v2.1.0 Release Notes →](https://qwenpaw.agentscope.io/release-notes#v2.1.0)
+- 对话、会话
+- 智能体和智能体管理
+- 文件
+- 定时任务
+- 技能和工具
+- 收件箱
+- Token 消耗
 
-- [2026-07-24] **v2.0.1** | PawApp mini-app platform, user-editable Agent Modes, Oh-My-Paw plugins, [ReMe](https://github.com/agentscope-ai/ReMe) memory enhancements, desktop UX improvements, and more. [v2.0.1 Release Notes →](https://qwenpaw.agentscope.io/release-notes#v2.0.1)
+模型、供应商、环境变量、心跳、技能池、MCP、ACP、应用中心、插件管理、频道、会话调试等管理型菜单默认收归管理员。管理员可以在用户管理中按用户开放其他菜单。
 
-- [2026-07-10] **v2.0.0 — QwenPaw 2.0 Official Release** 🎉 | An AgentScope 2.0 based ground-up rewrite delivering the Agent OS architecture, Loop Engineering, Scroll Context, [ReMe](https://github.com/agentscope-ai/ReMe) v0.4 Self-evolving Personal Knowledge Base, and a bundled Terminal UI.
+### 2.4 模型权限
 
-  | Highlight | What's new |
-  |-----------|------------|
-  | **Agent OS — Workspace** | Three pillars per agent: **Resources** (transparent on disk), **Governance** (allow/deny/ask/sandbox), **Sandbox** (macOS / Linux / Windows). |
-  | **Agent OS — Drivers** | Protocol-neutral MCP / A2A / ACP connector layer with encrypted credentials and per-call policy gate. |
-  | **Loop Engineering** | Advanced agent loop templates (Coding Mode, Mission Mode, more to come) with composable approval gates. |
-  | **Scroll Context** | Every turn persisted; evicted turns indexed with on-demand recall — nothing summarized away. |
-  | **[ReMe](https://github.com/agentscope-ai/ReMe) v0.4 Self-evolving Personal Knowledge Base** | Continuously turns conversations and resources into readable, editable, searchable, and linked Markdown memory. |
-  | **Terminal UI (TUI)** | Full-screen terminal chat — same agent, memory, and sessions as Console and channels. |
+模型权限采用“管理员配置、普通用户授权”的方式：
 
-  Built on Agent OS, we will be launching out-of-box QwenPaw applications — such as **QwenPaw Creator** and **QwenPaw Insight** — stay tuned. [v2.0.0 Release Notes →](https://qwenpaw.agentscope.io/release-notes#v2.0.0)
+1. 管理员在模型设置中创建内网模型供应商。
+2. 供应商使用标准 OpenAI 兼容协议配置地址、API Key 和模型。
+3. 管理员在用户管理中选择允许某个普通用户使用的模型。
+4. 普通用户在聊天页面只能从授权列表中选择模型。
 
-- [2026-06-17] **v1.1.12 — Models Page Overhaul & Simple Mode** | Redesigned Models page with provider aggregation; new Simple Mode for streamlined navigation. [v1.1.12 Release Notes →](https://qwenpaw.agentscope.io/release-notes#v1.1.12)
+当前模型选择器的规则：
 
-- [2026-06-11] **AgentScope Platform is live** — Free QwenPaw deployment, plugin sharing, and Skill marketplace. [Try it now →](https://platform.agentscope.io/)
+- 管理员可以看到已配置的模型。
+- 普通用户只能看到管理员授权的模型。
+- 未授权模型不会通过聊天界面或切换接口使用。
+- 普通用户没有授权模型时显示“暂无可用模型，请联系管理员授权模型”。
+- 聊天顶部显示“供应商 - 模型名称”。
+- 已移除旧版 PRO/FREE 分组、在线供应商入口、OAuth 入口和 API Key 引导。
+- 没有配置供应商时列表为空，这是正常状态，不会自动出现官方初始模型。
 
-- [2026-06-10] **v1.1.11** — Free Model OAuth, Plugin Market, MCP Tool Whitelisting. [v1.1.11 Release Notes →](https://qwenpaw.agentscope.io/release-notes#v1.1.11)
+后端接口也会过滤供应商和模型，并在切换模型时再次校验权限。即使浏览器缓存了旧模型，也无法通过接口绕过授权。
 
-[All release notes →](https://qwenpaw.agentscope.io/release-notes)
+### 2.5 技能、工具和资源分享
 
----
+- 技能和工具权限按用户账号管理，同一账号下的所有智能体共享该账号拥有的技能和工具。
+- 管理员可以为用户分配或收回内置技能和工具。
+- 内置技能、工具和用户后续创建的资源分开处理。
+- 用户新建的技能和工具默认只有创建者和管理员可见。
+- 用户可以分享自己创建的技能或工具给其他普通用户。
+- 接收方通过收件箱审批，同意后资源安装到自己的资源列表。
+- 资源带有创建者、来源和唯一标识，接收方不能再次转分享别人的资源。
+- 普通用户也保留技能、工具和收件箱菜单，便于查看资源和处理分享请求。
 
-## Table of Contents
+### 2.6 会话功能
 
-- [News](#news)
-- [Quick Start](#quick-start)
-- [API Key](#api-key)
-- [Local Models](#local-models)
-- [Security Features](#security-features)
-- [Documentation](#documentation)
-- [FAQ](#faq)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [Install From Source](#install-from-source)
-- [Why QwenPaw?](#why-qwenpaw)
-- [Built By](#built-by)
-- [License](#license)
+- 支持新建、切换和删除会话。
+- 会话可以修改展示名称，手动修改后的名称不会再被自动标题生成覆盖。
+- 会话支持分享，接收方审批通过后，会话内容复制到接收方的会话列表中。
+- 会话消息显示对应时间。
+- 聊天模型选择器支持搜索和模型能力标识。
+- 当前版本使用官方 `v2.1.0` 的 Scroll Context 和会话导航能力作为长对话基础。
 
----
+此前针对历史分页、滚动卡死、push-messages 频繁请求做过多轮排查。当前版本已移除部分旧版前端逻辑并以 `v2.1.0` 官方会话实现为基线，长时间运行的定时任务仍需要在实际数据量下持续验证。
 
-## Quick Start
+### 2.7 工具审批和安全审查
 
-### Option 1: Pip Install
+根据内网使用场景，当前聊天窗口：
 
-If you prefer managing Python yourself (requires Python >= 3.11, < 3.14):
+- 移除工具调用模式选择。
+- 移除麦克风入口。
+- 工具审批模式固定为 `OFF`。
+- 聊天中不会弹出工具审批等待框。
+
+这意味着系统默认不会拦截工具调用。生产环境使用前应通过账号权限、容器权限、文件挂载范围和网络策略限制风险。
+
+### 2.8 文件和下载
+
+- 工作区支持文件查看、上传和下载。
+- 智能体生成文件后，文件应通过页面中的下载链接获取。
+- 数据目录、工作区和数据库需要挂载到宿主机，否则容器重启会丢失数据。
+- 当前文件工作区主要是文件管理能力，不等同于已经完成的企业业务知识库。
+
+## 3. 离线模型和依赖环境
+
+### 3.1 模型服务
+
+内网模型建议使用 OpenAI 兼容接口配置，例如：
+
+```text
+供应商名称：内网模型服务
+接口地址：http://模型服务器地址:端口/v1
+API Key：按模型服务要求填写
+模型：从服务端提供的模型列表中选择或手动添加
+协议：OpenAI Chat Completions 兼容协议
+```
+
+Docker 容器访问宿主机上的模型服务时：
+
+- Linux 生产环境优先使用 `network_mode: host`。
+- 使用桥接网络时，模型地址不能填写容器内的 `127.0.0.1`。
+- 宿主机模型服务必须监听可被容器访问的地址，而不能只监听宿主机回环地址。
+- 模型服务的 API Key 只由管理员配置，普通用户不接触供应商凭据。
+
+### 3.2 基础镜像
+
+底座镜像用于承载通用 Python 和系统依赖，应用代码单独挂载。当前底座设计覆盖：
+
+- 数据处理：`numpy`、`pandas`、`polars`、`pyarrow`、`dask`、`duckdb`、`fastparquet`
+- 文件和文档：`openpyxl`、`pypdf`、`PyMuPDF`、`pdfplumber`、`python-docx`、`pillow`、`lxml`
+- Web 和接口：`fastapi`、`flask`、`httpx`、`aiohttp`、`jinja2`
+- 数据库：Oracle、MySQL、PostgreSQL、SQL Server、MongoDB、ClickHouse、Cassandra、Neo4j、Redis 等常用客户端
+- 运维和大数据：`ansible-core`、`paramiko`、`netmiko`、`fabric`、`kubernetes`、`hdfs`、`pyhive`
+- 浏览器和办公：Playwright、LibreOffice、Tesseract、Pandoc、FFmpeg
+- 生产客户端：Oracle Instant Client、Hadoop 3、Hive 3 由生产环境验证过的资产提供；Hadoop/Hive 配置文件通过 Compose 挂载。
+
+Oracle 客户端和 Hadoop/Hive 客户端属于架构相关资产，ARM64 和 AMD64 不应混用。离线构建前必须准备目标架构的压缩包或安装包。
+
+## 4. Docker 部署
+
+### 4.1 代码挂载模式
+
+代码挂载模式是当前推荐的开发和测试方式：
+
+- 镜像只包含 Python、系统依赖、浏览器和运行时环境。
+- 主机代码挂载到容器 `/workspace/app`。
+- 前端静态文件使用 `/workspace/app/console/dist`。
+- 修改代码后重新构建前端（如果修改了前端），然后重启容器即可。
+- 工作数据、密钥和备份目录必须单独挂载。
+
+当前 ARM64 Compose 示例位于 `deploy/docker-compose.code-mount.arm64.yml`。该配置使用 `network_mode: host`，用于访问内网其他主机、宿主机模型服务以及需要通过主机名连接的生产系统。
+
+### 4.2 持久化目录
+
+至少需要持久化以下三个目录：
+
+| 容器目录 | 用途 |
+| --- | --- |
+| `/app/working` | 用户、工作区、会话、技能、定时任务和业务数据 |
+| `/app/working.secret` | 模型供应商、API Key、认证和其他敏感配置 |
+| `/app/working.backups` | 备份数据 |
+
+禁止只挂载代码而不挂载以上数据目录。容器重建或删除后，未挂载的数据无法保证保留。
+
+### 4.3 默认认证配置
+
+代码挂载示例默认开启认证：
+
+```text
+QWENPAW_AUTH_ENABLED=true
+QWENPAW_AUTH_USERNAME=admin
+QWENPAW_AUTH_PASSWORD=Admin@123456
+QWENPAW_FORCE_AUTH_ON_LOCALHOST=true
+QWENPAW_ENABLED_CHANNELS=console
+```
+
+生产环境应在 `.env` 或部署密钥中明确配置认证参数，并确保 `.env` 不进入代码包或 Git 仓库。
+
+## 5. 目录和配置说明
+
+```text
+src/qwenpaw/                  后端代码
+console/src/                  前端源代码
+console/dist/                 前端构建产物
+deploy/                       Dockerfile、Compose 和启动脚本
+deploy/offline-assets/        离线构建资产说明
+plugins/bundle/               可离线集成的插件资源
+/app/working                  持久化业务数据
+/app/working.secret           持久化密钥和模型配置
+/app/working.backups          持久化备份
+```
+
+用户级状态主要保存在 `/app/working/users/<用户名>/state.json`，其中包括模型授权、菜单权限、账号技能、账号工具和运行配置覆盖标记等信息。
+
+## 6. 已撤回或暂不迁移的功能
+
+### 6.1 第三方 API、iframe 和后台任务 API
+
+之前尝试过智能体对外 API、iframe 嵌入、后台任务、状态轮询、回调和临时会话管理。该方案曾出现认证、会话污染、新建聊天跳转异常、临时会话过多和结果追踪不理想等问题。
+
+当前版本已撤回这部分后加逻辑，不应再按照旧文档配置对外 API 或 iframe。相关问题和踩坑记录应保留在独立的开发记录中，后续重新设计时再实现。
+
+### 6.2 传统企业业务知识库
+
+官方 `v2.1.0` 已包含 Files、Memory 和 ReMe 相关能力，但这不等同于之前计划的企业业务文档知识库。当前版本不能宣称已经完整实现以下能力：
+
+- 上传 PDF、DOCX、DOC、XLSX、XLS、CSV、TXT、MD 后自动建立企业知识库。
+- 表格和正文的分块向量检索。
+- 文档中图片的自动视觉识别并参与问答。
+- 聊天时自动检索业务知识并注入智能体上下文。
+
+如果继续开发，建议在当前 Files/Memory 能力之上单独设计文档解析队列、串行处理、向量库、图片抽取、视觉模型调用、索引状态和智能体检索工具，不要再次把它和普通工作区文件混在一起。
+
+## 6A. 知识服务改造记录
+
+### 6A.1 背景
+
+为实现企业文档知识库能力，独立部署了知识服务（`knowledge-service/`），与汇智小助手主容器分离。知识服务负责文档解析、向量化存储和检索，通过 REST API 提供服务。
+
+### 6A.2 初始架构（存在问题）
+
+**初始设计：**
+```
+用户提问 → 智能体调用 query_knowledge 工具
+    ↓
+工具调用知识服务 /v1/query 接口
+    ↓
+知识服务执行 RAG 检索 + 模型生成 answer
+    ↓
+工具返回完整内容（answer + 12个证据片段）
+    ↓
+智能体直接使用返回内容回答用户
+```
+
+**存在的问题：**
+
+1. **上下文污染**：工具一次性返回大量内容（answer + 证据片段），可能撑爆上下文窗口
+2. **知识服务answer不可靠**：知识服务模型没有对话上下文，生成的答案可能偏离用户意图
+3. **缺乏agentic特性**：智能体被动接收所有信息，无法自主决定检索策略
+
+### 6A.3 问题分析
+
+用户在测试中发现：当询问"天津大学硕士毕业论文格式要求"时，智能体调用 query_knowledge 工具后，虽然工具返回了相关内容，但智能体的回答却说内容是关于"多智能体协作协议"的，与问题不相关。
+
+**根本原因：**
+- 系统提示词没有明确告诉大模型如何处理工具返回的内容格式
+- 大模型混淆了"知识服务生成的answer"和"检索证据"
+- 大模型可能将对话上下文中的其他内容错误关联到知识库返回的内容上
+
+### 6A.4 已完成的修复
+
+1. **知识服务模型配置简化**
+   - 移除复杂的 hub 模式，改为直接指定模型名称
+   - `.env` 配置：`PROVIDER_BASE_URL`、`PROVIDER_API_KEY`、`CHAT_MODEL`、`EMBEDDING_MODEL`、`RERANKER_MODEL`
+   - 模型服务从 `/v1/models` 自动发现可用模型作为备选
+
+2. **流式回答支持**
+   - 知识服务：新增 `answer_stream()` 方法和 `/v1/query/stream` SSE 接口
+   - 前端：新增 `queryStream()` 方法，支持流式显示答案
+   - 知识空间页面现在支持流式显示检索结果
+
+3. **引用证据简化**
+   - 知识空间页面的证据列表只显示文件名和页码，不再显示大段原文
+   - 减少上下文占用
+
+4. **系统提示词优化**
+   - 在 `prompt_contributors.py` 中明确工具返回格式说明
+   - 告诉大模型：`answer` 是知识服务模型生成的，`检索证据` 是实际源文档
+   - 强调应使用检索证据回答问题，不要混淆知识库内容与对话上下文
+
+### 6A.5 待解决的架构问题（已解决）
+
+**已完成的重构：**
+
+1. **知识服务接口重构**
+   - 新增 `/v1/search` 纯检索接口，只返回检索结果，不生成 answer
+   - 新增 `/v1/documents/chunks` 接口，支持按需获取文档详情
+   - 保留原有 `/v1/query` 接口（向后兼容）
+
+2. **query_knowledge 工具重构**
+   - 使用新的 `/v1/search` 接口
+   - 返回文档列表和摘要，而非完整内容
+   - 返回格式：文档ID、文件名、相关片段数量、涉及页码
+
+3. **新增 get_document_detail 工具**
+   - 支持按需获取特定文档的详细内容
+   - 支持按页码范围过滤
+   - 支持限制返回的片段数量
+
+4. **系统提示词优化**
+   - 明确告诉大模型工具的使用流程
+   - 强调必须先调用 query_knowledge，再调用 get_document_detail
+   - 避免大模型混淆知识库内容与对话上下文
+
+**新的工作流程：**
+
+```
+用户提问 → 智能体推理：需要检索知识库
+    ↓
+调用 query_knowledge(query="...")
+    ↓
+知识服务返回：文档列表和摘要（不包含完整内容）
+    ↓
+智能体分析：哪些文档相关？需要查看哪些？
+    ↓
+调用 get_document_detail(document_id="...")
+    ↓
+知识服务返回：指定文档的详细片段
+    ↓
+智能体综合所有信息 + 对话上下文 → 生成最终回答
+```
+
+**优势：**
+
+1. **上下文可控**：智能体可以分批获取信息，避免一次性加载过多内容
+2. **决策自主**：智能体根据对话上下文和检索结果自主决定下一步行动
+3. **职责清晰**：知识服务负责存储和检索，智能体负责推理和生成
+4. **可扩展性**：可以添加更多检索工具（如按文档类型、按时间范围、按关系检索等）
+
+### 6A.6 后续开发计划（部分已完成）
+
+**已完成：**
+
+1. **重构 query_knowledge 工具** ✅
+   - 使用新的 `/v1/search` 接口
+   - 返回文档列表和摘要，而非完整内容
+   - 智能体需要主动调用其他工具获取详细内容
+
+2. **新增检索工具** ✅
+   - `get_document_detail(document_id, page_start?, page_end?, max_chunks?)`：获取指定文档的详细内容
+   - 支持按页码范围过滤
+   - 支持限制返回的片段数量
+
+**待完成：**
+
+3. **优化检索策略**
+   - 支持多轮检索：智能体可以根据初步结果调整查询
+   - 支持过滤条件：按文档类型、时间范围、相关度阈值等过滤
+   - 支持检索结果缓存：避免重复检索相同内容
+
+4. **前端适配**
+   - 知识空间页面的检索功能需要与新的检索接口适配
+   - 支持显示检索过程和中间结果
+
+5. **新增更多检索工具**
+   - `search_by_relation(entity_name)`：基于知识图谱的关系检索
+   - `get_similar_documents(doc_id)`：查找相似文档
+   - `list_documents(space_id)`：列出知识空间中的所有文档
+
+## 7. 推荐验收流程
+
+1. 使用管理员登录，确认模型设置中只显示当前配置的内网供应商。
+2. 添加一个普通用户，为其授权一个模型、部分技能、工具和菜单。
+3. 使用普通用户登录，确认模型选择器只显示授权模型。
+4. 移除该用户的模型授权，确认聊天选择器显示“暂无可用模型”。
+5. 创建普通用户自己的技能或工具，确认其他普通用户不可见。
+6. 分享技能或工具，使用接收方在收件箱审批，确认审批后资源出现在接收方所有智能体中。
+7. 创建并切换多个会话，修改会话名称，确认名称不会被自动覆盖。
+8. 上传和生成文件，确认页面显示下载链接，并在宿主机挂载目录中可以找到文件。
+9. 重启容器，确认用户、模型、会话、技能、工具和文件仍然存在。
+10. 在长会话和长定时任务场景下验证滚动、加载和浏览器资源占用。
+
+## 8. 开发和验证
+
+前端修改后：
 
 ```bash
-pip install qwenpaw
-qwenpaw init --defaults
-qwenpaw app
+cd console
+npm run build
+npm exec vitest run src/pages/Chat/ModelSelector/ModelSelector.test.tsx
 ```
 
-Then open the Console in your browser at **http://127.0.0.1:8088/** to configure your model. To chat in DingTalk, Lark, WeChat, etc., see the [Channel setup](https://qwenpaw.agentscope.io/docs/channels) documentation.
-
-![Console](https://img.alicdn.com/imgextra/i2/O1CN01EP1ra01iOAcBvF0TC_!!6000000004402-2-tps-3822-2070.png)
-
----
-
-### Option 2: Script Install
-
-No Python setup required, one command installs everything. The script will automatically download uv (Python package manager), create a virtual environment, and install QwenPaw with all dependencies (including Node.js and frontend assets). Note: May not work in restricted network environments or corporate firewalls.
-
-**macOS / Linux:**
+后端修改后：
 
 ```bash
-curl -fsSL https://qwenpaw.agentscope.io/install.sh | bash
+python -m compileall -q src/qwenpaw
 ```
 
-**Windows (CMD):**
+代码挂载容器重启后检查：
 
-```CMD
-curl -fsSL https://qwenpaw.agentscope.io/install.bat -o install.bat && install.bat
+```text
+http://127.0.0.1:18088/
 ```
 
-**Windows (PowerShell):**
+版本接口：
 
-```powershell
-irm https://qwenpaw.agentscope.io/install.ps1 | iex
+```text
+http://127.0.0.1:18088/api/version
 ```
 
-> **Note**: The installer will automatically check the status of uv. If it is not installed, it will attempt to download and configure it automatically. If the automatic installation fails, please follow the on-screen prompts or execute `python -m pip install -U uv`, then rerun the installer.
+## 9. 近期开发记录（接手以来）
 
-> **⚠️ Special Notice for Windows Enterprise LTSC Users**
->
-> If you are using Windows LTSC or an enterprise environment governed by strict security policies, PowerShell may run in **Constrained Language Mode**, potentially causing the following issue:
-> 1. **If using CMD (.bat): Script executes successfully but fails to write to `Path`**
->
->    The script completes file installation. Due to **Constrained Language Mode**, it cannot automatically update environment variables. Manually configure as follows:
->    - **Locate the installation directory**:
->      - Check if `uv` is available: Enter `uv --version` in CMD. If a version number appears, **only configure the QwenPaw path**. If you receive the prompt `'uv' is not recognized as an internal or external command, operable program or batch file,` configure both paths.
->      - uv path (choose one based on installation location; use if `uv` fails): Typically `%USERPROFILE%\.local\bin`, `%USERPROFILE%\AppData\Local\uv`, or the `Scripts` folder within your Python installation directory
->      - QwenPaw path: Typically located at `%USERPROFILE%\.qwenpaw\bin`.
->    - **Manually add to the system's Path environment variable**:
->      - Press `Win + R`, type `sysdm.cpl` and press Enter to open System Properties.
->      - Click “Advanced” -> “Environment Variables”.
->      - Under “System variables”, locate and select `Path`, then click “Edit”.
->      - Click “New”, enter both directory paths sequentially, then click OK to save.
-> 2. **If using PowerShell (.ps1): Script execution interrupted**
->
->   Due to **Constrained Language Mode**, the script may fail to automatically download `uv`.
->   - **Manually install uv**: Refer to the [GitHub Release](https://github.com/astral-sh/uv/releases) to download `uv.exe` and place it in `%USERPROFILE%\.local\bin` or `%USERPROFILE%\AppData\Local\uv`; or ensure Python is installed and run `python -m pip install -U uv`.
->   - **Configure `uv` environment variables**: Add the `uv` directory and `%USERPROFILE%\.qwenpaw\bin` to your system's `Path` variable.
->   - **Re-run the installation**: Open a new terminal and execute the installation script again to complete the `QwenPaw` installation.
->   - **Configure the `QwenPaw` environment variable**: Add `%USERPROFILE%\.qwenpaw\bin` to your system's `Path` variable.
+### 9.1 知识服务架构重构
 
-Once installed, open a new terminal and run:
+#### 问题背景
+初始设计中，知识服务返回完整 answer + 证据片段，导致：
+- 上下文污染：一次性返回大量内容可能撑爆上下文窗口
+- answer 不可靠：知识服务模型没有对话上下文，生成的答案可能偏离用户意图
+- 缺乏 agentic 特性：智能体被动接收所有信息，无法自主决定检索策略
+
+#### 已完成的重构
+
+**1. 纯检索接口**
+- 新增 `/v1/search` 接口，只返回检索结果，不生成 answer
+- 新增 `/v1/documents/chunks` 接口，支持按需获取文档详情
+- 保留原有 `/v1/query` 接口（向后兼容）
+
+**2. 智能体工具重构**
+- `query_knowledge` 工具：使用新的 `/v1/search` 接口，返回文档列表和摘要
+- 新增 `get_document_detail` 工具：支持按需获取特定文档的详细内容
+- 支持按页码范围过滤和限制返回片段数量
+
+**3. 新的工作流程**
+```
+用户提问 → 智能体调用 query_knowledge
+    ↓
+知识服务返回：文档列表和摘要
+    ↓
+智能体分析：哪些文档相关？
+    ↓
+调用 get_document_detail
+    ↓
+知识服务返回：指定文档的详细片段
+    ↓
+智能体综合生成最终回答
+```
+
+**4. 流式回答支持**
+- 知识服务：`answer_stream()` 方法和 `/v1/query/stream` SSE 接口
+- 前端：`queryStream()` 方法，支持流式显示答案
+
+### 9.2 知识空间前端重构
+
+**页面布局**
+- 左侧面板：知识空间选择 + 搜索框
+- 右侧面板：文档列表，支持分页（每页10个）
+
+**文档预览功能**
+- 支持 PDF 预览：使用 `pdfjs-dist` 库，代码分割加载
+- 支持 DOCX 预览：使用 `mammoth` 库，转换为 HTML 显示
+- 支持 TXT 预览：直接显示纯文本内容
+- 预览方式：使用 Ant Design Drawer 组件（720px 宽度）
+
+**API 新增**
+- `/v1/documents/{id}/file`：获取原始文件（知识服务）
+- `/api/knowledge/file-proxy`：文件代理（主应用）
+
+### 9.3 模型配置修复
+
+**问题**
+- `llm_routing.local.provider_id` 错误配置为 `"openai"`，实际应为 `"llm"`
+- API key 加密解密失败（master key 变更导致密文无法解密）
+
+**修复**
+- 将 provider_id 改为 `"llm"`
+- 将加密的 API key 替换为明文 `"thinker"`
+- 路径：`/app/working.secret/providers/custom/llm.json`
+
+### 9.4 系统提示词优化
+
+**创建的文件**
+- `AGENTS.md`：Agent 行为规范，明确工具使用规则
+- `SOUL.md`：助手性格特征定义
+- `PROFILE.md`：基本信息
+
+**关键指令**
+- 必须使用工具返回的结果回答，禁止编造
+- 明确引用知识空间名称和文档来源
+- 如果知识库中没有相关信息，如实告知
+
+### 9.5 收件箱推送设置
+
+已禁用以下自动推送功能：
+- `auto_memory_inbox_push_enabled`: false
+- `auto_dream_inbox_push_enabled`: false
+- `daily_paper_inbox_push_enabled`: false
+
+配置路径：`/app/working/config.json`
+
+## 10. 当前状态摘要
+
+| 项目 | 状态 |
+| --- | --- |
+| 官方基线 | `v2.1.0` |
+| 本地化品牌 | 已完成 |
+| 多用户和工作区隔离 | 已完成 |
+| 管理员用户管理 | 已完成 |
+| 普通用户菜单权限 | 已完成 |
+| 管理员模型授权 | 已完成 |
+| 普通用户模型选择限制 | 已完成 |
+| 技能和工具账号级权限 | 已完成 |
+| 技能、工具分享审批 | 已完成 |
+| 会话分享审批 | 已完成 |
+| 代码挂载部署 | 已完成，ARM64 已验证 |
+| 容器数据持久化 | 已完成，必须正确挂载 |
+| 第三方 API/iframe | 已撤回 |
+| 知识服务部署 | 已完成，独立容器运行 |
+| 知识服务纯检索接口 | 已完成 `/v1/search` |
+| 按需获取文档详情 | 已完成 `get_document_detail` |
+| 知识空间流式查询 | 已完成前端流式显示 |
+| 知识库智能体集成 | 已完成重构，支持多轮检索 |
+| 文档预览（PDF/DOCX/TXT） | 已完成，使用 Drawer 组件 |
+| 模型配置自动发现 | 已完成，从 provider 获取模型列表 |
+| 系统提示词 | 已创建 AGENTS.md/SOUL.md/PROFILE.md |
+| 长会话性能 | 以官方 Scroll Context 为基础，需继续验证 |
+
+## 11. 维护原则
+
+- 后续功能必须基于 `v2.1.0` 主线继续开发，不要回退到 `1.1.12`。
+- 不要修改或覆盖旧版生产数据，升级前先备份 `/app/working`、`/app/working.secret` 和 `/app/working.backups`。
+- 不要把 `.env`、API Key、认证文件和用户数据打进代码包。
+- ARM64 和 AMD64 镜像、Oracle 客户端、浏览器运行时及 Hadoop/Hive 客户端必须分别验证。
+- 代码变更优先采用挂载代码模式测试；只有依赖或底座变化时才重新构建镜像。
+- 每次前端改动后都要重新构建 `console/dist` 并重启容器，否则浏览器仍可能加载旧的静态资源。
+
+## 12. 知识服务部署
+
+### 11.1 容器信息
+
+- 容器名称：`huizhi-knowledge-api`
+- 端口映射：`18100:18100`
+- 数据目录：`/data`
+- 代码目录：`/opt/huizhi-knowledge/app/`
+
+### 11.2 模型配置
+
+知识服务使用 OpenAI 兼容接口，模型不打进镜像：
+
+```text
+对话模型：gemma-4-26B-A4B-it-MLX-4bit
+Embedding：Qwen3-Embedding-0.6B-8bit
+Reranker：Qwen3-Reranker-0.6B-4bit
+接口地址：http://host.docker.internal:9988/v1
+API Key：thinker
+```
+
+### 11.3 常用命令
 
 ```bash
-qwenpaw init --defaults   # or: qwenpaw init (interactive)
-qwenpaw app
+# 重启知识服务
+docker restart huizhi-knowledge-api
+
+# 查看日志
+docker logs -f huizhi-knowledge-api
+
+# 进入容器
+docker exec -it huizhi-knowledge-api bash
+
+# 热更新代码（无需重建镜像）
+docker cp knowledge-service/app/main.py huizhi-knowledge-api:/opt/huizhi-knowledge/app/
+docker exec huizhi-knowledge-api rm -rf /opt/huizhi-knowledge/app/__pycache__
+docker restart huizhi-knowledge-api
+
+# 重建镜像（需要时）
+cd knowledge-service
+docker compose build --no-cache
+docker compose up -d
 ```
 
-<details>
-<summary><b>Install options</b></summary>
+### 11.4 API 接口
 
-**macOS / Linux:**
-
-```bash
-# Install a specific version
-curl -fsSL ... | bash -s -- --version 1.1.0
-
-# Install from source (dev/testing)
-curl -fsSL ... | bash -s -- --from-source
-
-# Upgrade — just re-run the installer
-curl -fsSL ... | bash
-
-# Uninstall
-qwenpaw uninstall          # keeps config and data
-qwenpaw uninstall --purge  # removes everything
+```text
+GET  /health                          健康检查
+POST /v1/search                       纯检索（推荐）
+POST /v1/query                        RAG 查询（含 answer）
+POST /v1/query/stream                 流式 RAG 查询
+GET  /v1/documents/{id}/chunks        获取文档分块
+GET  /v1/documents/{id}/file          获取原始文件
+POST /v1/documents/upload             上传文档
+GET  /v1/spaces                       列出知识空间
+GET  /v1/spaces/{id}/documents        列出空间文档
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-# Install a specific version
-irm ... | iex; .\install.ps1 -Version 1.1.12
-
-# Install from source (dev/testing)
-.\install.ps1 -FromSource
-
-# Upgrade — just re-run the installer
-irm ... | iex
-
-# Uninstall
-qwenpaw uninstall          # keeps config and data
-qwenpaw uninstall --purge  # removes everything
-```
-
-</details>
-
-
----
-
-### Option 3: Docker
-
-Images are on **Docker Hub** (`agentscope/qwenpaw`). Image tags: `latest` (stable); `pre` (PyPI pre-release).
-
-```bash
-docker pull agentscope/qwenpaw:latest
-docker run -p 127.0.0.1:8088:8088 \
-  -v qwenpaw-data:/app/working \
-  -v qwenpaw-secrets:/app/working.secret \
-  -v qwenpaw-backups:/app/working.backups \
-  agentscope/qwenpaw:latest
-```
-
-Also available on Alibaba Cloud Container Registry (ACR) for users in China: `agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/qwenpaw` (same tags).
-
-Then open **http://127.0.0.1:8088/** for the Console. Config, memory, and skills are stored in the `qwenpaw-data` volume; model provider settings and API keys are in the `qwenpaw-secrets` volume; backup archives are stored in the `qwenpaw-backups` volume. To pass API keys (e.g. `DASHSCOPE_API_KEY`), add `-e VAR=value` or `--env-file .env` to `docker run`.
-
-> **Connecting to Ollama or other services on the host machine**
->
-> Inside a Docker container, `localhost` refers to the container itself, not your host machine. If you run Ollama (or other model services) on the host and want QwenPaw in Docker to reach them, use one of these approaches:
->
-> **Option A** — Explicit host binding (all platforms):
-> ```bash
-> docker run -p 127.0.0.1:8088:8088 \
->   --add-host=host.docker.internal:host-gateway \
->   -v qwenpaw-data:/app/working \
->   -v qwenpaw-secrets:/app/working.secret \
->   -v qwenpaw-backups:/app/working.backups \
->   agentscope/qwenpaw:latest
-> ```
-> Then in QwenPaw **Settings → Models**, change the Base URL to `http://host.docker.internal:<port>` — for example, `http://host.docker.internal:11434` for Ollama, or `http://host.docker.internal:1234/v1` for LM Studio.
->
-> **Option B** — Host networking (Linux only):
-> ```bash
-> docker run --network=host \
->   -v qwenpaw-data:/app/working \
->   -v qwenpaw-secrets:/app/working.secret \
->   -v qwenpaw-backups:/app/working.backups \
->   agentscope/qwenpaw:latest
-> ```
-> No port mapping (`-p`) is needed; the container shares the host network directly. Note that all container ports are exposed on the host, which may cause conflicts if the port is already in use.
->
-
-The image is built from scratch. To build the image yourself, please refer to the [Build Docker image](scripts/README.md#build-docker-image) section in `scripts/README.md`, and then push to your registry.
-
----
-
-### Option 4: Deploy on Alibaba Cloud ECS
-
-To run QwenPaw on Alibaba Cloud (ECS), use the one-click deployment: open the [QwenPaw on Alibaba Cloud (ECS) deployment link](https://computenest.console.aliyun.com/service/instance/create/cn-hangzhou?type=user&ServiceId=service-1ed84201799f40879884) and follow the prompts. For step-by-step instructions, see [Alibaba Cloud Developer: Deploy your AI assistant in 3 minutes](https://developer.aliyun.com/article/1713682).
-
----
-
-### Option 5: AgentScope Platform
-
-[AgentScope Platform](https://platform.agentscope.io/) provides one-click cloud QwenPaw deployment, plugin sharing, and a Skill marketplace. Free, 7/24 online.
-
----
-
-### Option 6: Using ModelScope
-
-[ModelScope Studio](https://modelscope.cn/studios/fork?target=AgentScope/QwenPaw) also supports cloud QwenPaw deployment. Note: set your Studio to **non-public** so others cannot control your QwenPaw.
-
----
-
-### Option 7: Desktop Application (Beta)
-
-> **Beta Notice**: The desktop application is currently in Beta testing phase with the following known limitations:
-> - **Incomplete compatibility testing**: Not fully tested across all system versions and hardware configurations
-> - **Potential performance issues**: Startup time, memory usage, and other performance aspects may need further optimization
-> - **Features under development**: Some features may be unstable or missing
-
-If you're not comfortable with command-line tools, you can download and use QwenPaw's desktop application without manually configuring Python environments or running commands.
-
-#### Download
-
-Download the desktop app (Tauri build) from [the official download page](https://qwenpaw.agentscope.io/downloads):
-- **Windows**: `QwenPaw-Tauri-<version>-Windows-setup.exe`
-- **macOS**: `QwenPaw-Tauri-<version>-macOS.zip` (Apple Silicon recommended)
-
-#### Features
-
-- ✅ **Zero configuration**: Download and double-click to run, no need to install Python or configure environment variables
-- ✅ **Cross-platform**: Supports Windows 10+ and macOS 14+
-- ✅ **Visual interface**: Automatically opens the app window, no need to manually enter addresses
-- ⚠️ **Beta stage**: Features are continuously being improved, feedback welcome
-
-#### First Launch
-
-**Important**: The first launch may take 10-60 seconds (depending on your system configuration). The application needs to initialize the Python environment and load dependencies. Please wait patiently for the window to open automatically.
-
-#### macOS: Bypass System Security Restrictions
-
-When you download the QwenPaw macOS app from Releases, macOS may show: *"Apple cannot verify that 'QwenPaw' contains no malicious software"*. This happens because the app is not notarized. You can still open it as follows:
-
-- **Right-click to open (recommended)**
-  Right-click (or Control+click) the QwenPaw app → **Open** → in the dialog click **Open** again. This tells Gatekeeper you trust the app; after that you can double-click to launch as usual.
-
-- **Allow in System Settings**
-  If it is still blocked, go to **System Settings → Privacy & Security**, scroll to the message like *"QwenPaw was blocked because it is from an unidentified developer"*, and click **Open Anyway** or **Allow**.
-
-- **Remove quarantine attribute (not recommended for most users)**
-  In Terminal run:
-  `xattr -cr "/Applications/QwenPaw Desktop.app"`
-  (or use the path to the `.app` after unzipping). This clears the "downloaded from the internet" quarantine flag so the warning usually does not appear, but is less safe and controllable than using **Right-click → Open**.
-
-For detailed usage instructions, troubleshooting, and common issues, see the [Desktop Application Guide](https://qwenpaw.agentscope.io/docs/desktop).
-
----
-
-### What's Next?
-
-After installation, configure your model in **Console → Settings → Models**, then explore:
-
-- [Add Skills](https://qwenpaw.agentscope.io/docs/skills) to extend capabilities (PDF, Office, browser, news, etc.)
-- [Set up Channels](https://qwenpaw.agentscope.io/docs/channels) for DingTalk, Lark, Discord, and more
-- [Configure Cron](https://qwenpaw.agentscope.io/docs/cron) for scheduled tasks and automation
-- See the full [Quick Start guide](https://qwenpaw.agentscope.io/docs/quickstart) for all options and verification steps
-
----
-
-## Terminal UI (TUI)
-
-Prefer to stay in the terminal? Run `qwenpaw` to open a full-screen chat **TUI** that drives the _same_ agent as the Console and the IM Channels — same memory, skills, MCP tools, and sessions — without leaving your keyboard.
-
-```bash
-qwenpaw                     # open a chat with the active agent
-qwenpaw tui --resume <id>   # resume a previous session
-qwenpaw .                   # start in the current repo (Coding Mode)
-```
-
-It supports streaming replies, slash commands (`/help`, `/resume`, `/theme`, plus the agent's own `/model`, `/clear`, …), pasting files/long text as attachments, and inline tool-permission prompts. See the [Terminal UI guide](https://qwenpaw.agentscope.io/docs/tui) for details.
-
-![QwenPaw TUI](https://img.alicdn.com/imgextra/i2/O1CN01IULzib1TRAzigIcqG_!!6000000002378-2-tps-2350-1312.png)
-
----
-
-## API Key
-
-If you use a **cloud LLM API** (e.g., DashScope / Qwen, OpenAI, Anthropic, Google Gemini, DeepSeek, Kimi, OpenRouter, and more), you must configure an API key before chatting. QwenPaw will not work until a valid key is set. See the [official docs](https://qwenpaw.agentscope.io/docs/models) for details.
-
-**How to configure:**
-
-1. **Console (recommended)** — After running `qwenpaw app`, open **http://127.0.0.1:8088/** → **Settings** → **Models**. Choose a provider, enter the **API Key**, and enable that provider and model.
-2. **`qwenpaw init`** — When you run `qwenpaw init`, it will guide you through configuring the LLM provider and API key. Follow the prompts to choose a provider and enter your key.
-3. **Environment variable** — For DashScope you can set `DASHSCOPE_API_KEY` in your shell or in a `.env` file in the working directory.
-
-Tools that need extra keys (e.g. `TAVILY_API_KEY` for web search) can be set in Console **Settings → Environment variables**, see [Config](https://qwenpaw.agentscope.io/docs/config) for details.
-
-> **Using local models only?** If you use [Local Models](#local-models) (QwenPaw Local / Ollama / LM Studio), you do **not** need any API key.
-
-## Local Models
-
-QwenPaw can run LLMs entirely on your machine — no API keys or cloud services required. See the [official docs](https://qwenpaw.agentscope.io/docs/models) for details.
-
-QwenPaw also provides the **QwenPaw-Flash** series — purpose-trained 2B / 4B / 9B models for agent scenarios, with Q4 and Q8 quantizations. Available on [ModelScope](https://www.modelscope.cn/organization/AgentScope?tab=model) and [Hugging Face](https://huggingface.co/agentscope-ai/models).
-
-| Backend              | Best for                                 | Install                                                              |
-| -------------------- | ---------------------------------------- | -------------------------------------------------------------------- |
-| **QwenPaw Local** (llama.cpp) | Cross-platform (macOS / Linux / Windows) | Built-in; click "Download" in the web UI. Supports QwenPaw-Flash with hardware-aware recommendations. |
-| **Ollama**           | Cross-platform (requires Ollama service) | Install and start Ollama; set context length ≥ 32k. |
-| **LM Studio**        | Cross-platform (requires LM Studio)      | Install and start LM Studio; enable Local Server. |
-
----
-
-## Security Features
-
-QwenPaw includes four core security layers:
-
-- **Sandbox** — Kernel-level execution isolation using Seatbelt (macOS), Bubblewrap / Landlock (Linux), and AppContainer (Windows). Shell commands run inside a restricted filesystem view.
-- **Tool Guard** — YAML rule engine with `ShellEvasionGuardian` inspects every tool call before execution, detecting command injection, path traversal, reverse shells, and obfuscated attacks. Configurable approval levels: STRICT / SMART / AUTO / OFF.
-- **File Guard** — Independent of Tool Guard; blocks agent access to sensitive files and directories (default-protects `~/.qwenpaw.secret/`, `~/.ssh`, etc.).
-- **Skill Scanner** — Pre-activation scanning with block / warn / off modes and whitelist support. Detects prompt injection, hardcoded secrets, data exfiltration, and more.
-
-See [Security](https://qwenpaw.agentscope.io/docs/security) for details.
-
----
-
-## Documentation
-
-| Topic                                                                 | Description                                      |
-| --------------------------------------------------------------------- | ------------------------------------------------ |
-| [Introduction](https://qwenpaw.agentscope.io/docs/intro)                | What QwenPaw is and how to use it                  |
-| [Quick start](https://qwenpaw.agentscope.io/docs/quickstart)            | Install and run (local or ModelScope Studio)    |
-| [Console](https://qwenpaw.agentscope.io/docs/console)                   | Web UI: chat and agent configuration            |
-| [Terminal UI (TUI)](https://qwenpaw.agentscope.io/docs/tui)             | Full-screen terminal chat, same agent as Console |
-| [Desktop App](https://qwenpaw.agentscope.io/docs/desktop)               | Desktop application installation and usage       |
-| [Models](https://qwenpaw.agentscope.io/docs/models)                     | Configure cloud, local, and custom providers    |
-| [Channels](https://qwenpaw.agentscope.io/docs/channels)                  | DingTalk, Lark, QQ, Discord, iMessage, and more |
-| [Skills](https://qwenpaw.agentscope.io/docs/skills)                      | Extend and customize capabilities               |
-| [Plugins](https://qwenpaw.agentscope.io/docs/plugins)                    | Plugin system and Plugin Market                  |
-| [MCP](https://qwenpaw.agentscope.io/docs/mcp)                            | Manage MCP clients                               |
-| [Persona](https://qwenpaw.agentscope.io/docs/persona)                   | Agent personality customization (SOUL / PROFILE)  |
-| [Memory](https://qwenpaw.agentscope.io/docs/memory)                     | Self-evolving personal knowledge base built on local, editable, searchable, and linked Markdown memory, powered by [ReMe](https://github.com/agentscope-ai/ReMe) |
-| [ReMe Documentation](https://docs.agentscope.io/reme/latest/en/overview) | Official ReMe overview and documentation          |
-| [Memory-Evolving & Proactive](https://qwenpaw.agentscope.io/docs/memory-evolving-and-proactive) | Agent memory evolution and proactive interaction |
-| [Context](https://qwenpaw.agentscope.io/docs/context)                   | Scroll-based context management                  |
-| [Magic commands](https://qwenpaw.agentscope.io/docs/commands)           | Control conversation state without waiting for the AI |
-| [Heartbeat](https://qwenpaw.agentscope.io/docs/heartbeat)                | Scheduled check-in and digest                    |
-| [Cron / Scheduled Tasks](https://qwenpaw.agentscope.io/docs/cron)       | Scheduled tasks and automation                   |
-| [Multi-Agent](https://qwenpaw.agentscope.io/docs/multi-agent)           | Create multiple agents and enable collaboration  |
-| [Security](https://qwenpaw.agentscope.io/docs/security)                 | Sandbox, tool guard, file guard, skill scanner, access policy |
-| [Backup & Restore](https://qwenpaw.agentscope.io/docs/backup)           | Data backup and recovery                         |
-| [Config & working dir](https://qwenpaw.agentscope.io/docs/config) | Working directory and config file                |
-| [REST API](https://qwenpaw.agentscope.io/docs/api-tutorial)             | HTTP API for integration and automation          |
-| [ACP Integration](https://qwenpaw.agentscope.io/docs/acp-integration)   | Agent Communication Protocol integration         |
-| [CLI](https://qwenpaw.agentscope.io/docs/cli)                            | Init, cron jobs, skills, clean                   |
-| [Agent Team Practice](https://qwenpaw.agentscope.io/docs/practice-agent-team) | Multi-agent team deployment guide           |
-| [FAQ](https://qwenpaw.agentscope.io/docs/faq)                           | Common questions and troubleshooting             |
-
-Full documentation: [qwenpaw.agentscope.io/docs](https://qwenpaw.agentscope.io/docs)
-
----
-
-## FAQ
-
-For common questions, troubleshooting tips, and known issues, please visit the **[FAQ page](https://qwenpaw.agentscope.io/docs/faq)**.
-
----
-
-## Roadmap
-
-| Area                            | Item                                                                   | Status               |
-| ------------------------------- | ---------------------------------------------------------------------- | -------------------- |
-| **Horizontal Expansion**        | More channels, models, skills, and MCPs                                | Seeking Contributors |
-| **Existing Feature Extension**  | Display, download, and Windows improvements                            | Seeking Contributors |
-| **Models**                      | Multi-model switching                                                  | In Progress          |
-| **Safety & Approval**           | Batch preview and approval                                              | In Progress          |
-| **Automation**                  | Automated tasks                                                         | In Progress          |
-| **Agent Interaction**           | Agent task handoff                                                      | In Progress          |
-|                                 | Running task steering                                                   | In Progress          |
-| **Workspaces**                  | Multiple workspaces                                                    | In Progress          |
-| **Context**                     | System prompt compression                                               | In Progress          |
-| **Tooling**                     | Multi-location file changes                                             | In Progress          |
-|                                 | Persistent terminals and background tasks                              | In Progress          |
-| **Computer-use**                | On-screen target detection and actions                                  | In Progress          |
-| **Voice Interaction**           | Real-time voice tasks                                                   | In Progress          |
-| **Context Management & Memory** | Hot-swappable vector models and storage                                 | In Progress          |
-|                                 | Personal knowledge base                                                 | In Progress          |
-| **QwenPaw Applications**        | QwenPaw Insight                                                        | In Progress          |
-|                                 | QwenPaw Mail                                                           | In Progress          |
-
-_Status:_ **In Progress** — actively being worked on; **Seeking Contributors** — we strongly encourage community contributions.
-
----
-
-## Contributing
-
-QwenPaw evolves through open collaboration, and we welcome all forms of contribution! Check the [Roadmap](#roadmap) above (especially items marked **Seeking Contributors**) to find areas that interest you, and read [CONTRIBUTING](https://github.com/agentscope-ai/QwenPaw/blob/main/CONTRIBUTING.md) to get started. We particularly welcome:
-
-- **Horizontal expansion** — new channels, model providers, skills, MCPs.
-- **Existing feature extension & refinement** — display and interaction improvements, download hints, Windows path compatibility, etc.
-
-Join [GitHub Discussions](https://github.com/agentscope-ai/QwenPaw/discussions) to discuss ideas or pick up tasks.
-
----
-
-## Install From Source
-
-```bash
-git clone https://github.com/agentscope-ai/QwenPaw.git
-cd QwenPaw
-
-# Build console frontend first (required for web UI)
-cd console && npm ci && npm run build
-cd ..
-
-# Copy console build output to package directory
-mkdir -p src/qwenpaw/console
-cp -R console/dist/. src/qwenpaw/console/
-
-# Install Python package
-pip install -e .
-```
-
-- **Dev** (tests, formatting): `pip install -e ".[dev,test,full]"`
-- **Then**: Run `qwenpaw init --defaults`, then `qwenpaw app`.
-
-> **Note for updates:** When updating to a new major version after `git pull`, please also rebuild the frontend, reinstall the package (`pip install -e .`), restart `qwenpaw app`, and clear your browser cache with `Ctrl+Shift+R` (or `Cmd+Shift+R` on macOS).
-
----
-
-## Why QwenPaw?
-
-QwenPaw stands for Qwen Personal Agent Workstation, and also embodies the wisdom of Qwen and the warmth of a Paw.
-We hope it is not a cold tool, but an intelligent and warm "little paw" always ready to help—a most intuitive partner in your digital life.
-
----
-
-## Built By
-
-[AgentScope team](https://github.com/agentscope-ai) · [AgentScope](https://github.com/agentscope-ai/agentscope) · [AgentScope Runtime](https://github.com/agentscope-ai/agentscope-runtime) · [ReMe](https://github.com/agentscope-ai/ReMe)
-
----
-
-## Contact Us
-
-| [Discord](https://discord.gg/eYMpfnkG8h)                     | [X (Twitter)](https://x.com/agentscope_ai)                   | [DingTalk](https://qr.dingtalk.com/action/joingroup?code=v1,k1,OmDlBXpjW+I2vWjKDsjvI9dhcXjGZi3bQiojOq3dlDw=&_dt_no_comment=1&origin=11) | [RedNote](https://www.xiaohongshu.com/user/profile/691c18db0000000037032be9) |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| [<img src="https://gw.alicdn.com/imgextra/i1/O1CN01hhD1mu1Dd3BWVUvxN_!!6000000000238-2-tps-400-400.png" width="80" height="80" alt="Discord">](https://discord.gg/eYMpfnkG8h) | [<img src="https://img.shields.io/badge/X-black.svg?logo=x&logoColor=white" width="80" height="80" alt="X">](https://x.com/agentscope_ai) | [<img src="https://img.alicdn.com/imgextra/i2/O1CN01vCWI8a1skHtLGXEMQ_!!6000000005804-2-tps-458-460.png" width="80" height="80" alt="DingTalk">](https://qr.dingtalk.com/action/joingroup?code=v1,k1,OmDlBXpjW+I2vWjKDsjvI9dhcXjGZi3bQiojOq3dlDw=&_dt_no_comment=1&origin=11) | [<img src="https://img.alicdn.com/imgextra/i3/O1CN016BoEPS1l33CE9mHb9_!!6000000004762-0-tps-160-160.jpg" width="80" height="80" alt="RedNote">](https://www.xiaohongshu.com/user/profile/691c18db0000000037032be9) |
-
----
-
-## Staying Ahead
-
-<a href="https://github.com/agentscope-ai/QwenPaw">
-  <img src="https://img.alicdn.com/imgextra/i1/O1CN01V8HYv61By0HYcIDaq_!!6000000000013-1-tps-1698-954.gif" width="600" alt="Star QwenPaw" />
-</a>
-
-Star QwenPaw on GitHub and be instantly notified of new releases.
-
----
-
-## Telemetry
-
-QwenPaw collects **anonymous** usage data during `qwenpaw init` to help us understand our user base and prioritize improvements. Data is sent **once per version** — when you upgrade QwenPaw, telemetry is re-collected so we can track version adoption.
-
-**What we collect:**
-
-- QwenPaw version (e.g., 1.1.12)
-- Install method (pip, Docker, or desktop app)
-- OS and version (e.g., macOS 14.0, Ubuntu 22.04)
-- Python version (e.g., 3.13)
-- CPU architecture (e.g., x86_64, arm64)
-- GPU availability (yes/no)
-
-**What we do NOT collect:** No personal data, no files, no credentials, no IP addresses, no identifiable information.
-
-When running `qwenpaw init` interactively, you will be asked whether to opt in. If you choose `--defaults`, telemetry is accepted automatically. The prompt appears once per version and never affects QwenPaw's functionality.
-
----
-
-## License
-
-QwenPaw is released under the [Apache License 2.0](LICENSE).
-
----
-
-## Contributors
-
-All thanks to our contributors:
-
-<a href="https://github.com/agentscope-ai/QwenPaw/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=agentscope-ai/QwenPaw" alt="Contributors" />
-</a>
+### 11.5 已知问题
+
+- gemma-4 模型在长上下文中可能被旧内容干扰，建议开启新会话测试
+- API key 加密解密失败时需手动替换为明文
+- 文档预览需要知识服务返回文件内容，确保文件路径可访问
