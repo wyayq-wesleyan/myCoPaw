@@ -37,6 +37,7 @@ def _find_model_by_pattern(models: list[dict], pattern: str) -> str:
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
+    database_url: str
     api_key: str
     worker_interval: float
     max_file_mb: int
@@ -110,6 +111,10 @@ class Settings:
 
         return cls(
             data_dir=Path(_env("KNOWLEDGE_DATA_DIR", "/data")).expanduser(),
+            database_url=_env(
+                "KNOWLEDGE_DATABASE_URL",
+                "postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge",
+            ),
             api_key=_env("KNOWLEDGE_API_KEY"),
             worker_interval=max(0.2, float(_env("KNOWLEDGE_WORKER_INTERVAL", "1"))),
             max_file_mb=max(1, int(_env("KNOWLEDGE_MAX_FILE_MB", "100"))),
@@ -130,10 +135,6 @@ class Settings:
             reranker_model=reranker_model,
             reranker_enabled=reranker_enabled_str.lower() in {"1", "true", "yes"},
         )
-
-    @property
-    def db_path(self) -> Path:
-        return self.data_dir / "metadata.sqlite3"
 
     @property
     def files_dir(self) -> Path:

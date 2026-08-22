@@ -1,6 +1,6 @@
 ARG BASE_IMAGE=py311-base:2.0.1-arm64
-ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 FROM ${BASE_IMAGE}
 
@@ -16,8 +16,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /opt/huizhi-knowledge
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY scripts ./scripts
 
-RUN python -m pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir --no-build-isolation \
       --index-url ${PIP_INDEX_URL} \
       --trusted-host ${PIP_TRUSTED_HOST} \
       . \

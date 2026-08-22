@@ -20,7 +20,7 @@ from .store import Store
 
 settings = Settings.from_env()
 settings.ensure_dirs()
-store = Store(settings.db_path)
+store = Store(settings.database_url)
 lightrag = LightRAGBridge(settings)
 
 
@@ -77,7 +77,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="汇智知识服务", version="0.1.3", lifespan=lifespan)
+app = FastAPI(title="汇智知识服务", version="0.1.4", lifespan=lifespan)
 
 
 @app.get("/health")

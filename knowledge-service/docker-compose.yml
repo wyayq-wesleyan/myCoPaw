@@ -1,18 +1,41 @@
 services:
+  knowledge-postgres:
+    image: "postgres:17-alpine"
+    container_name: huizhi-knowledge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${KNOWLEDGE_POSTGRES_DB:-huizhi_knowledge}"
+      POSTGRES_USER: "${KNOWLEDGE_POSTGRES_USER:-huizhi_knowledge}"
+      POSTGRES_PASSWORD: "${KNOWLEDGE_POSTGRES_PASSWORD:-huizhi_knowledge}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "127.0.0.1:${KNOWLEDGE_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   knowledge-api:
     build:
       context: .
       args:
         BASE_IMAGE: "${BASE_IMAGE:-py311-base:2.0.1-arm64}"
         INSTALL_KNOWLEDGE_EXTRAS: "${INSTALL_KNOWLEDGE_EXTRAS:-0}"
-    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.2-arm64}"
+    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-knowledge-api
     restart: unless-stopped
     env_file:
       - .env
     environment:
       KNOWLEDGE_ROLE: api
+      KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+    depends_on:
+      knowledge-postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${KNOWLEDGE_PORT:-18100}:18100"
     extra_hosts:
@@ -26,14 +49,18 @@ services:
       retries: 5
 
   knowledge-worker:
-    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.2-arm64}"
+    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-knowledge-worker
     restart: unless-stopped
     env_file:
       - .env
     environment:
       KNOWLEDGE_ROLE: worker
+      KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+    depends_on:
+      knowledge-postgres:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -41,7 +68,7 @@ services:
     command: ["python", "-m", "app.worker"]
 
   lightrag:
-    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.2-arm64}"
+    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-lightrag
     restart: unless-stopped
     env_file:

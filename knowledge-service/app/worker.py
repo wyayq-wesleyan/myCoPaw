@@ -14,7 +14,7 @@ logger = logging.getLogger("knowledge-worker")
 def run() -> None:
     settings = Settings.from_env()
     settings.ensure_dirs()
-    store = Store(settings.db_path)
+    store = Store(settings.database_url)
     logger.info("knowledge worker started; data_dir=%s", settings.data_dir)
     while True:
         job = store.claim_job()
