@@ -190,6 +190,17 @@ class TestBuiltinDescriptorGovernance:
             DEFAULT_REGISTRY.python_to_policy_name("web_search") == "WebSearch"
         )
 
+    def test_knowledge_tools_use_distinct_policy_names(self):
+        """Knowledge search and detail reads must not collide at startup."""
+        assert (
+            DEFAULT_REGISTRY.python_to_policy_name("query_knowledge")
+            == "QueryKnowledge"
+        )
+        assert (
+            DEFAULT_REGISTRY.python_to_policy_name("get_document_detail")
+            == "GetDocumentDetail"
+        )
+
     def test_set_user_timezone_target_not_joined_to_workspace(self):
         """Timezone names must not be treated as relative file paths."""
         assert (

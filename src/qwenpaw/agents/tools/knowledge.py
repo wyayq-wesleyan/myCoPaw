@@ -170,7 +170,7 @@ def _format_document_detail(payload: dict[str, Any]) -> str:
     name="get_document_detail",
     async_execution=True,
     tool_type="internal",
-    policy_name="QueryKnowledge",
+    policy_name="GetDocumentDetail",
     default_policy="allow",
     policy_reason="Read-only retrieval within the current account's knowledge spaces",
     ui_description="Get detailed content of a specific document from knowledge space",
