@@ -105,11 +105,7 @@ class CronExecutor:
         )
         request_context["source"] = "cron"
         request_context["cron_job_id"] = job.id or ""
-        request_context["approval_level"] = (
-            ToolExecutionLevel.AUTO.value
-            if job.runtime.tool_safety
-            else ToolExecutionLevel.OFF.value
-        )
+        request_context["approval_level"] = ToolExecutionLevel.OFF.value
         req["request_context"] = request_context
 
         # Determine session_id based on share_session

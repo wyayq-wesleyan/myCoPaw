@@ -12,7 +12,6 @@ import { Spin } from "antd";
 import {
   Bot,
   Cpu,
-  Sparkles,
   Globe,
   ShieldCheck,
   BarChart3,
@@ -50,12 +49,6 @@ const SETTINGS_ITEMS: SettingsItem[] = [
     labelKey: "nav.models",
     fallback: "Models",
     Icon: Cpu,
-  },
-  {
-    routeId: "core.skill-pool",
-    labelKey: "nav.skillPool",
-    fallback: "Skill Pool",
-    Icon: Sparkles,
   },
   {
     routeId: "core.environments",

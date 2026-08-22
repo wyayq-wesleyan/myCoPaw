@@ -145,9 +145,6 @@ function resolveBackendChatId(chatId?: string | null): string | undefined {
     : undefined;
 }
 
-import WhisperSpeechButton, {
-  WhisperSpeechButtonRef,
-} from "./components/WhisperSpeechButton";
 
 import {
   toDisplayUrl,
@@ -181,8 +178,6 @@ import {
   hydrateBackgroundTasksForSession,
   stopBackgroundWatchersNotInSession,
 } from "../../hooks/useBackgroundTaskWatcher";
-import ApprovalLevelToggle from "./components/ApprovalLevelToggle";
-import HarnessApprovalToggle from "./components/HarnessApprovalToggle";
 import HarnessModelSelector from "./components/HarnessModelSelector";
 import { useAgentRunningConfigApprovalLevel } from "../../hooks/useAgentRunningConfigApprovalLevel";
 import { type ToolExecutionLevel } from "../../utils/approval";
@@ -1871,7 +1866,6 @@ export default function ChatPage() {
   }, [fetchMultimodalCaps]);
 
   const pendingClearHistoryRef = useRef(false);
-  const whisperSpeechRef = useRef<WhisperSpeechButtonRef>(null);
   const [whisperEnabled, setWhisperEnabled] = useState(false);
   const [whisperChecked, setWhisperChecked] = useState(false);
 
@@ -1884,19 +1878,6 @@ export default function ChatPage() {
       })
       .catch(() => setWhisperEnabled(false))
       .finally(() => setWhisperChecked(true));
-  }, []);
-
-  const handleWhisperTranscription = useCallback((text: string) => {
-    const senderContainer = document.querySelector('[class*="sender"]');
-    const textarea = senderContainer?.querySelector(
-      "textarea",
-    ) as HTMLTextAreaElement | null;
-    if (textarea) {
-      const currentValue = textarea.value || "";
-      const newValue = currentValue ? `${currentValue} ${text}` : text;
-      setTextareaValue(textarea, newValue);
-      textarea.focus();
-    }
   }, []);
 
   useMessageHistoryNavigation(chatRef, isChatActive, isComposingRef);
@@ -2209,25 +2190,6 @@ export default function ChatPage() {
     [chatId, dispatchFilesDrawer],
   );
 
-  // Shortcut key for voice recording (Ctrl+Shift+M or Cmd+Shift+M on Mac)
-  useEffect(() => {
-    const handleShortcut = (e: KeyboardEvent) => {
-      if (!isChatActive()) return;
-      // Check for Ctrl+Shift+M (Windows/Linux) or Cmd+Shift+M (Mac)
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        e.shiftKey &&
-        e.key.toLowerCase() === "m"
-      ) {
-        e.preventDefault();
-        if (whisperEnabled) {
-          whisperSpeechRef.current?.toggleRecording();
-        }
-      }
-    };
-    document.addEventListener("keydown", handleShortcut);
-    return () => document.removeEventListener("keydown", handleShortcut);
-  }, [isChatActive, whisperEnabled]);
   chatIdRef.current = chatId;
   navigateRef.current = navigate;
 
@@ -3163,7 +3125,7 @@ export default function ChatPage() {
       sender: {
         ...(i18nConfig as any)?.sender,
         beforeSubmit: handleBeforeSubmit,
-        allowSpeech: whisperChecked && !whisperEnabled,
+        allowSpeech: false,
         beforeUI: showSenderBeforeUI ? (
           <>
             {isQueueOnlyTab && (
@@ -3190,12 +3152,6 @@ export default function ChatPage() {
         ) : undefined,
         prefix: (
           <>
-            {whisperEnabled ? (
-              <WhisperSpeechButton
-                ref={whisperSpeechRef}
-                onTranscription={handleWhisperTranscription}
-              />
-            ) : null}
             {usesQwenPawBackend && <LoopModeSelector />}
             {pluginSenderPrefix}
           </>
@@ -3218,25 +3174,6 @@ export default function ChatPage() {
                 compact={compactSender}
               />
             )}
-            {usesQwenPawBackend ? (
-              <ApprovalLevelToggle
-                sessionId={queueSessionId}
-                runningConfigApprovalLevel={runningConfigApprovalLevel}
-                compact={compactSender}
-                onChange={(sessionOverride) => {
-                  sessionApprovalLevelRef.current = sessionOverride;
-                }}
-              />
-            ) : approvalPresets.length > 0 ? (
-              <HarnessApprovalToggle
-                backend={selectedAgentBackend}
-                sessionId={queueSessionId}
-                presets={approvalPresets}
-                onChange={(settings) => {
-                  backendControlsRef.current = settings;
-                }}
-              />
-            ) : null}
           </span>
         ),
         ...(supportsAttachments
@@ -3491,7 +3428,6 @@ export default function ChatPage() {
     onFileCardClick,
     whisperChecked,
     whisperEnabled,
-    handleWhisperTranscription,
     isWideMode,
     toggleWideMode,
     hasQueueItems,

@@ -49,6 +49,9 @@ def _resolve_driver_execution_level(
     """Resolve runtime approval level for Driver invocation."""
     from ..security.tool_guard.execution_level import ToolExecutionLevel
 
+    # Driver calls cannot be approved interactively in the offline console.
+    return ToolExecutionLevel.OFF
+
     raw = request_context.get("approval_level")
     if raw:
         return ToolExecutionLevel.from_config(str(raw))

@@ -12,7 +12,6 @@ import { useTranslation } from "react-i18next";
 import AgentSelector from "../components/AgentSelector";
 import {
   SparkChatTabFill,
-  SparkExitFullscreenLine,
   SparkMenuExpandLine,
   SparkMenuFoldLine,
   SparkEmailLine,
@@ -20,7 +19,6 @@ import {
 } from "@agentscope-ai/icons";
 import SidebarSessionList from "./SidebarSessionList";
 import SidebarSettingsPanel from "./SidebarSettingsPanel";
-import { clearAuthToken } from "../api/config";
 import { authApi } from "../api/modules/auth";
 import api from "../api";
 import {
@@ -65,8 +63,10 @@ const INBOX_BADGE_POLLING_MS = 6000;
 
 const ADMIN_ONLY_MENU_IDS = new Set([
   "core.models",
+  "core.agent-config",
+  "core.user-management",
 ]);
-const ALWAYS_USER_MENU_IDS = new Set(["core.user-management"]);
+const ALWAYS_USER_MENU_IDS = new Set<string>();
 
 // This edition is a browser-console product for air-gapped networks. External
 // channel adapters are deliberately not loaded by the service, so leaving a
@@ -153,7 +153,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
   const { isDark } = useTheme();
   const currentSessionId = getSessionIdFromPath(location.pathname);
   const chatPath = buildChatPath(currentSessionId);
-  const [authEnabled, setAuthEnabled] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [menuPermissions, setMenuPermissions] = useState<string[] | null>(
     null,
@@ -228,7 +227,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
     authApi
       .getStatus()
       .then((res) => {
-        setAuthEnabled(res.enabled);
         if (!res.enabled) {
           setIsAdmin(true);
           setMenuPermissions(null);
@@ -665,25 +663,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           />
           <Slot name="sider.bottom" kind="fill" />
         </>
-      )}
-
-      {authEnabled && !collapsed && (
-        <div className={styles.authActions}>
-          <Button
-            type="text"
-            icon={<SparkExitFullscreenLine size={16} />}
-            onClick={() => {
-              clearAuthToken();
-              window.location.href = "/login";
-            }}
-            block
-            className={`${styles.authBtn} ${
-              collapsed ? styles.authBtnCollapsed : ""
-            }`}
-          >
-            {!collapsed && t("login.logout")}
-          </Button>
-        </div>
       )}
 
       <div className={styles.collapseToggleContainer}>

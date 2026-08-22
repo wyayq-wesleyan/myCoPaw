@@ -9,12 +9,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 from typing import Optional, TYPE_CHECKING
-from fastapi import Request
+from fastapi import HTTPException, Request
 from .multi_agent_manager import MultiAgentManager
 from ..config.utils import load_config
 from .user_space import (
     ensure_user_default_agent,
     get_request_username,
+    get_user_root,
+    is_admin_user,
     require_owned_agent_id,
 )
 
@@ -145,11 +147,19 @@ def get_agent_project_dir(workspace: "Workspace") -> Path:
         project_dir = config.project_dir
     except Exception:
         project_dir = None
-
-    return resolve_effective_project_dir(
+    resolved = resolve_effective_project_dir(
         workspace.workspace_dir,
         agent_project_dir=project_dir,
     )[0]
+    try:
+        profile = load_config().agents.profiles.get(workspace.agent_id)
+        owner = getattr(profile, "owner_username", None)
+        if owner and not is_admin_user(owner):
+            root = get_user_root(owner).resolve()
+            resolved.relative_to(root)
+    except ValueError:
+        return workspace.workspace_dir.resolve()
+    return resolved
 
 
 async def get_project_dir_for_request(
@@ -188,14 +198,30 @@ async def get_project_dir_for_request(
             if not pending_path.is_dir():
                 raise NotADirectoryError(str(pending_path))
             resolved_override = str(pending_path)
-        return resolve_effective_project_dir(
+        resolved, source = resolve_effective_project_dir(
             workspace.workspace_dir,
             agent_project_dir=agent_project_dir,
             session_override=resolved_override,
         )[0]
+        username = get_request_username(request)
+        if username and not is_admin_user(username):
+            try:
+                resolved.relative_to(get_user_root(username).resolve())
+            except ValueError as exc:
+                if source == "agent":
+                    # Legacy configurations may still contain an external
+                    # project path. Ignore it rather than exposing it.
+                    return workspace.workspace_dir.resolve()
+                raise HTTPException(
+                    status_code=403,
+                    detail="Project directory must stay inside your account workspace",
+                ) from exc
+        return resolved
 
     try:
         return await asyncio.to_thread(_resolve)
+    except HTTPException:
+        raise
     except NotADirectoryError as exc:
         from fastapi import HTTPException
 

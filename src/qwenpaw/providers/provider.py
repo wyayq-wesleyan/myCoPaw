@@ -20,6 +20,14 @@ if TYPE_CHECKING:
 class ModelInfo(BaseModel):
     id: str = Field(..., description="Model identifier used in API calls")
     name: str = Field(..., description="Human-readable model name")
+    model_type: Literal["chat", "embedding", "reranker"] = Field(
+        default="chat",
+        description="Primary endpoint use for this model.",
+    )
+    model_type_source: Literal["auto", "manual"] | None = Field(
+        default=None,
+        description="Whether the model type was inferred or explicitly set.",
+    )
     supports_multimodal: bool | None = Field(
         default=None,
         description="Whether this model supports multimodal input "
@@ -492,6 +500,21 @@ class Provider(ProviderInfo, ABC):
                     model.reasoning_effort = (
                         str(val) if val is not None else None
                     )
+                if "supports_image" in config and config["supports_image"] is not None:
+                    model.supports_image = bool(config["supports_image"])
+                if "supports_video" in config and config["supports_video"] is not None:
+                    model.supports_video = bool(config["supports_video"])
+                if "supports_multimodal" in config and config["supports_multimodal"] is not None:
+                    model.supports_multimodal = bool(config["supports_multimodal"])
+                if config.get("model_type") in {"chat", "embedding", "reranker"}:
+                    model.model_type = config["model_type"]
+                    model.model_type_source = "manual"
+                if (
+                    "supports_image" in config
+                    or "supports_video" in config
+                    or "supports_multimodal" in config
+                ):
+                    model.probe_source = "manual"
                 return True
         return False
 

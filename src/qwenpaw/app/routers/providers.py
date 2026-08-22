@@ -21,11 +21,17 @@ from qwenpaw.exceptions import (
 )
 
 from ..agent_context import get_agent_for_request
-from ..auth import is_auth_enabled, require_admin_access
+from ..auth import (
+    get_user_info,
+    has_registered_users,
+    is_auth_enabled,
+    require_admin_access,
+)
 from ..user_space import get_request_username, is_model_allowed
 from ..utils import schedule_agent_reload
 from ...config.config import load_agent_config, save_agent_config
 from ...providers.provider import ProviderInfo, ModelInfo
+from ...providers.model_type import infer_model_type
 from ...config.config import ActiveModelsInfo
 from ...providers.provider_manager import ProviderManager
 from ...providers.openrouter_provider import OpenRouterProvider
@@ -72,6 +78,8 @@ def _visible_provider_info(
     """Return a provider view containing only models authorized to a user."""
     if not username:
         return provider
+    user = get_user_info(username)
+    is_admin = bool(user and user.get("role") == "admin")
     models = [
         model
         for model in provider.models
@@ -83,7 +91,13 @@ def _visible_provider_info(
         if is_model_allowed(username, provider.id, model.id)
     ]
     if not models and not extra_models:
-        return None
+        # An administrator must be able to see a newly-created provider
+        # before its first model is added. Regular users only see providers
+        # for which they have at least one authorized model.
+        if not is_admin:
+            return None
+    if is_admin:
+        return provider
     # Users need model metadata for Chat, but never provider credentials.
     return provider.model_copy(
         update={"models": models, "extra_models": extra_models, "api_key": "", "custom_headers": {}},
@@ -172,6 +186,7 @@ class CreateCustomProviderRequest(BaseModel):
     id: str = Field(...)
     name: str = Field(...)
     default_base_url: str = Field(default="")
+    api_key: Optional[str] = Field(default=None)
     api_key_prefix: str = Field(default="")
     chat_model: ChatModelName = Field(default="OpenAIChatModel")
     models: List[ModelInfo] = Field(default_factory=list)
@@ -180,6 +195,10 @@ class CreateCustomProviderRequest(BaseModel):
 class AddModelRequest(BaseModel):
     id: str = Field(...)
     name: str = Field(...)
+    model_type: Optional[Literal["chat", "embedding", "reranker"]] = Field(
+        default=None,
+        description="Model purpose. Omitted values are inferred from the ID.",
+    )
     is_free: bool = Field(
         default=False,
         description="Whether this model is free to use",
@@ -203,6 +222,10 @@ class AddModelRequest(BaseModel):
 
 
 class ModelConfigRequest(BaseModel):
+    model_type: Optional[Literal["chat", "embedding", "reranker"]] = Field(
+        default=None,
+        description="Model purpose override.",
+    )
     max_tokens: Optional[int] = Field(
         default=None,
         description="Maximum output tokens per response.",
@@ -234,6 +257,14 @@ class ModelConfigRequest(BaseModel):
         default=None,
         description="Reasoning effort level (low/medium/high).",
     )
+    supports_image: Optional[bool] = Field(
+        default=None,
+        description="Whether this model accepts image input.",
+    )
+    supports_video: Optional[bool] = Field(
+        default=None,
+        description="Whether this model accepts video input.",
+    )
 
 
 def _validate_model_slot(
@@ -253,6 +284,15 @@ def _validate_model_slot(
             status_code=400,
             detail=(
                 f"Model '{model_id}' not found in provider '{provider_id}'."
+            ),
+        )
+    model = provider.get_model_info(model_id)
+    if model is not None and model.model_type != "chat":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{model_id}' is configured as {model.model_type}; "
+                "only chat models can be selected for conversations."
             ),
         )
 
@@ -277,8 +317,27 @@ async def list_all_providers(
     manager: ProviderManager = Depends(get_provider_manager),
 ) -> List[ProviderInfo]:
     username = get_request_username(request)
+    if is_auth_enabled() and has_registered_users() and not username:
+        return []
     providers = await manager.list_provider_info()
     visible = [_visible_provider_info(provider, username) for provider in providers]
+    user = get_user_info(username) if username else None
+    if user and user.get("role") == "admin":
+        # ``Provider.get_info`` masks secrets by design. The offline admin
+        # needs the actual saved value to view and edit an internal endpoint;
+        # regular users never reach this branch.
+        visible = [
+            provider.model_copy(
+                update={
+                    "api_key": runtime.api_key,
+                    "custom_headers": runtime.custom_headers,
+                },
+            )
+            if provider is not None
+            and (runtime := manager.get_provider(provider.id)) is not None
+            else provider
+            for provider in visible
+        ]
     return [provider for provider in visible if provider is not None]
 
 
@@ -343,6 +402,7 @@ async def create_custom_provider_endpoint(
                 id=body.id,
                 name=body.name,
                 base_url=body.default_base_url,
+                api_key=body.api_key or "",
                 api_key_prefix=body.api_key_prefix,
                 chat_model=body.chat_model,
                 extra_models=body.models,
@@ -502,7 +562,7 @@ async def discover_models(
                 provider_id,
                 save=save,
             )
-            success = True
+            success = bool(result)
         except Exception:
             result = []
             success = False
@@ -516,6 +576,11 @@ async def discover_models(
         return DiscoverModelsResponse(
             success=success,
             models=result,
+            message=(
+                ""
+                if success
+                else "No models found. Check the internal service address and API Key."
+            ),
             added_count=added_count,
         )
     except (ValueError, AppBaseException) as exc:
@@ -596,6 +661,8 @@ async def add_model_endpoint(
                 supports_video=body.supports_video,
                 probe_source=body.probe_source,
                 is_free=body.is_free,
+                model_type=body.model_type or infer_model_type(body.id, body.name),
+                model_type_source="manual" if body.model_type else "auto",
             ),
         )  # Validate provider exists and add model
     except (ValueError, AppBaseException) as exc:
@@ -694,6 +761,15 @@ async def configure_model(
                 "thinking_enabled": body.thinking_enabled,
                 "thinking_budget": body.thinking_budget,
                 "reasoning_effort": body.reasoning_effort,
+                "supports_image": body.supports_image,
+                "supports_video": body.supports_video,
+                "supports_multimodal": (
+                    body.supports_image or body.supports_video
+                    if body.supports_image is not None
+                    or body.supports_video is not None
+                    else None
+                ),
+                "model_type": body.model_type,
             },
         )
     except (ValueError, AppBaseException) as exc:
@@ -1036,12 +1112,116 @@ async def discover_openrouter_extended(
             total_count=len(models_dict),
         )
     except Exception:
-        return DiscoverExtendedResponse(
+        return FilterModelsResponse(
             success=False,
             models=[],
             providers=[],
             total_count=0,
         )
+
+
+class DefaultModelsResponse(BaseModel):
+    """Response containing default chat, embedding and reranker model configurations."""
+    chat_base_url: str = Field(default="", description="Base URL for chat model")
+    chat_api_key: str = Field(default="", description="API key for chat model")
+    chat_model: str = Field(default="", description="Default chat model name")
+    embedding_base_url: str = Field(default="", description="Base URL for embedding model")
+    embedding_api_key: str = Field(default="", description="API key for embedding model")
+    embedding_model: str = Field(default="", description="Default embedding model name")
+    embedding_dimensions: int | None = Field(default=None, description="Embedding dimensions")
+    reranker_base_url: str = Field(default="", description="Base URL for reranker model")
+    reranker_api_key: str = Field(default="", description="API key for reranker model")
+    reranker_model: str = Field(default="", description="Default reranker model name")
+    reranker_enabled: bool = Field(default=False, description="Whether reranker is enabled")
+
+
+@router.get(
+    "/default-models",
+    response_model=DefaultModelsResponse,
+    summary="Get default embedding and reranker model configurations",
+)
+async def get_default_models(
+    request: Request,
+    manager: ProviderManager = Depends(get_provider_manager),
+) -> DefaultModelsResponse:
+    """Get default chat, embedding and reranker model configurations from providers.
+
+    This endpoint is used by the knowledge service to automatically configure
+    models based on the administrator's provider settings.
+    """
+    chat_config = {"base_url": "", "api_key": "", "model": ""}
+    embedding_config = {"base_url": "", "api_key": "", "model": "", "dimensions": None}
+    reranker_config = {"base_url": "", "api_key": "", "model": "", "enabled": False}
+
+    # Search through all providers for chat, embedding and reranker models
+    for provider in manager.builtin_providers.values():
+        provider_info = await provider.get_info()
+        for model in provider_info.models + provider_info.extra_models:
+            if model.model_type == "chat" and not chat_config["model"]:
+                runtime = manager.get_provider(provider.id)
+                chat_config = {
+                    "base_url": provider_info.default_base_url or "",
+                    "api_key": runtime.api_key if runtime else "",
+                    "model": model.id,
+                }
+            elif model.model_type == "embedding" and not embedding_config["model"]:
+                runtime = manager.get_provider(provider.id)
+                embedding_config = {
+                    "base_url": provider_info.default_base_url or "",
+                    "api_key": runtime.api_key if runtime else "",
+                    "model": model.id,
+                    "dimensions": None,
+                }
+            elif model.model_type == "reranker" and not reranker_config["model"]:
+                runtime = manager.get_provider(provider.id)
+                reranker_config = {
+                    "base_url": provider_info.default_base_url or "",
+                    "api_key": runtime.api_key if runtime else "",
+                    "model": model.id,
+                    "enabled": True,
+                }
+
+    # Also check custom providers
+    for provider in manager.custom_providers.values():
+        provider_info = await provider.get_info()
+        for model in provider_info.models + provider_info.extra_models:
+            if model.model_type == "chat" and not chat_config["model"]:
+                runtime = manager.get_provider(provider.id)
+                chat_config = {
+                    "base_url": provider_info.default_base_url or "",
+                    "api_key": runtime.api_key if runtime else "",
+                    "model": model.id,
+                }
+            elif model.model_type == "embedding" and not embedding_config["model"]:
+                runtime = manager.get_provider(provider.id)
+                embedding_config = {
+                    "base_url": provider_info.default_base_url or "",
+                    "api_key": runtime.api_key if runtime else "",
+                    "model": model.id,
+                    "dimensions": None,
+                }
+            elif model.model_type == "reranker" and not reranker_config["model"]:
+                runtime = manager.get_provider(provider.id)
+                reranker_config = {
+                    "base_url": provider_info.default_base_url or "",
+                    "api_key": runtime.api_key if runtime else "",
+                    "model": model.id,
+                    "enabled": True,
+                }
+
+    return DefaultModelsResponse(
+        chat_base_url=chat_config["base_url"],
+        chat_api_key=chat_config["api_key"],
+        chat_model=chat_config["model"],
+        embedding_base_url=embedding_config["base_url"],
+        embedding_api_key=embedding_config["api_key"],
+        embedding_model=embedding_config["model"],
+        embedding_dimensions=embedding_config["dimensions"],
+        reranker_base_url=reranker_config["base_url"],
+        reranker_api_key=reranker_config["api_key"],
+        reranker_model=reranker_config["model"],
+        reranker_enabled=reranker_config["enabled"],
+    )
 
 
 @router.post(

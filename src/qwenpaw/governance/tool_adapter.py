@@ -74,10 +74,10 @@ def _resolve_effective_approval_level(
 
     Returns the :class:`ToolExecutionLevel` enum, or ``None``.
     """
-    if not request_context:
-        return None
-
     from ..security.tool_guard.execution_level import ToolExecutionLevel
+
+    # The offline console has no interactive approval surface.
+    return ToolExecutionLevel.OFF
 
     # Session-level override (injected by frontend per request)
     session_raw = request_context.get("approval_level")

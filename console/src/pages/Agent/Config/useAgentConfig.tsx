@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Form, Modal } from "@agentscope-ai/design";
 import { useTranslation } from "react-i18next";
 import api from "../../../api";
@@ -11,6 +12,7 @@ import {
   MEMORY_MANAGER_BACKEND_OPTIONS,
 } from "../../../constants/backendMappings";
 import type { ToolExecutionLevel } from "./components/ToolExecutionLevelCard";
+import { authApi } from "../../../api/modules/auth";
 
 export function useAgentConfig(
   onConfigLoaded?: (config: AgentsRunningConfig) => void,
@@ -18,6 +20,8 @@ export function useAgentConfig(
   const { t } = useTranslation();
   const { message } = useAppMessage();
   const { selectedAgent } = useAgentStore();
+  const [searchParams] = useSearchParams();
+  const targetUser = searchParams.get("user") || "";
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -28,6 +32,7 @@ export function useAgentConfig(
   const [savingTimezone, setSavingTimezone] = useState(false);
   const [approvalLevel, setApprovalLevel] =
     useState<ToolExecutionLevel>("AUTO");
+  const [isOverride, setIsOverride] = useState(false);
   const originalConfigRef = useRef<AgentsRunningConfig | null>(null);
 
   const fetchConfig = useCallback(async () => {
@@ -35,7 +40,12 @@ export function useAgentConfig(
     setError(null);
     try {
       const [config, langResp, tzResp] = await Promise.all([
-        api.getAgentRunningConfig(),
+        targetUser
+          ? authApi.getUserRunningConfig(targetUser).then((result) => {
+              setIsOverride(result.is_override);
+              return result.config;
+            })
+          : api.getAgentRunningConfig(),
         api.getAgentLanguage(),
         api.getUserTimezone(),
       ]);
@@ -99,7 +109,7 @@ export function useAgentConfig(
     } finally {
       setLoading(false);
     }
-  }, [form, t, selectedAgent, onConfigLoaded]);
+  }, [form, t, selectedAgent, targetUser, onConfigLoaded]);
 
   useEffect(() => {
     fetchConfig();
@@ -176,7 +186,11 @@ export function useAgentConfig(
           formValues.loop?.iteration?.max_iterations ?? original.max_iters,
       };
 
-      const savedConfig = await api.updateAgentRunningConfig(configToSave);
+      const savedConfig = targetUser
+        ? (
+            await authApi.setUserRunningConfig(targetUser, configToSave)
+          ).config
+        : await api.updateAgentRunningConfig(configToSave);
 
       // Update original config after successful save
       originalConfigRef.current = savedConfig;
@@ -190,7 +204,14 @@ export function useAgentConfig(
     } finally {
       setSaving(false);
     }
-  }, [form, t, selectedAgent, approvalLevel, onConfigLoaded]);
+  }, [form, t, selectedAgent, targetUser, approvalLevel, onConfigLoaded]);
+
+  const resetUserOverride = useCallback(async () => {
+    if (!targetUser) return;
+    await authApi.resetUserRunningConfig(targetUser);
+    setIsOverride(false);
+    await fetchConfig();
+  }, [targetUser, fetchConfig]);
 
   const handleLanguageChange = useCallback(
     (value: string): void => {
@@ -265,6 +286,9 @@ export function useAgentConfig(
     savingTimezone,
     approvalLevel,
     setApprovalLevel,
+    targetUser,
+    isOverride,
+    resetUserOverride,
     fetchConfig,
     handleSave,
     handleLanguageChange,

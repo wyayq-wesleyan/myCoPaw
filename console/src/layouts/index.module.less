@@ -385,6 +385,34 @@
   white-space: nowrap;
 }
 
+.headerRight {
+  min-width: 0;
+  margin-left: auto;
+}
+
+.userMenuButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  padding: 4px 8px 4px 5px;
+  border-radius: 18px;
+  background: transparent;
+  color: #203548;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(42, 99, 173, 0.08);
+  }
+}
+
+.userMenuName {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .logoDivider {
   width: 16px;
   height: 0px;

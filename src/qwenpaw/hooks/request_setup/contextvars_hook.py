@@ -56,9 +56,18 @@ class ContextVarsSetupHook(LifecycleHook):
         from ...app.computer_use import set_current_computer_use_turn_id
 
         set_current_computer_use_turn_id(uuid.uuid4().hex)
-        set_current_user_id(ctx.request.user_id)
         set_current_channel(getattr(ctx.request, "channel", None))
         request_context = getattr(ctx.request, "request_context", None)
+        account_username = (
+            request_context.get("account_username")
+            if isinstance(request_context, dict)
+            else None
+        )
+        # Console's legacy request.user_id is not the login name. Prefer the
+        # server-injected account identity for account-scoped local tools.
+        set_current_user_id(
+            account_username if isinstance(account_username, str) and account_username else ctx.request.user_id,
+        )
         if isinstance(request_context, dict) and request_context.get(
             "_spawn_subagent",
         ):

@@ -338,6 +338,12 @@ async def post_console_chat(
         )
         request_context["project_dir"] = str(project_dir)
         request_context["project_dir_source"] = project_source
+        # The console payload has a historical user_id field that is normally
+        # "default". Keep the authenticated account identity separately so
+        # account-scoped tools cannot be confused by a browser-supplied id.
+        from ..user_space import get_request_username
+
+        request_context["account_username"] = get_request_username(request) or "admin"
         native_payload["meta"]["request_context"] = request_context
 
         # Title generation is only needed when starting a new run.
@@ -789,6 +795,9 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
     )
     request_context["project_dir"] = str(project_dir)
     request_context["project_dir_source"] = project_source
+    from ..user_space import get_request_username
+
+    request_context["account_username"] = get_request_username(request) or "admin"
     native_payload["meta"]["request_context"] = request_context
 
     bg = _BackgroundTask(

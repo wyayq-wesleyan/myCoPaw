@@ -1801,6 +1801,7 @@
   "modelSelector": {
     "selectModel": "Select model",
     "noConfiguredModels": "No configured models",
+    "noAuthorizedModels": "No available models. Contact an administrator for access.",
     "noFreeModels": "No free models available",
     "switchFailed": "Failed to switch model",
     "searchModels": "Search models...",

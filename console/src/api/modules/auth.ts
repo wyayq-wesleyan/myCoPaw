@@ -1,5 +1,6 @@
 import { getApiUrl } from "../config";
 import { request } from "../request";
+import type { AgentsRunningConfig } from "../types/agent";
 
 export interface LoginResponse {
   token: string;
@@ -119,6 +120,20 @@ export const authApi = {
       method: "PUT",
       body: JSON.stringify({ permissions }),
     }),
+  getUserRunningConfig: (username: string) =>
+    request<{ username: string; is_override: boolean; config: AgentsRunningConfig }>(
+      `/auth/users/${encodeURIComponent(username)}/running-config`,
+    ),
+  setUserRunningConfig: (username: string, config: AgentsRunningConfig) =>
+    request<{ username: string; is_override: boolean; config: AgentsRunningConfig }>(
+      `/auth/users/${encodeURIComponent(username)}/running-config`,
+      { method: "PUT", body: JSON.stringify(config), timeout: 10 * 60 * 1000 },
+    ),
+  resetUserRunningConfig: (username: string) =>
+    request<{ username: string; is_override: boolean; config: AgentsRunningConfig }>(
+      `/auth/users/${encodeURIComponent(username)}/running-config`,
+      { method: "DELETE" },
+    ),
 
   updateProfile: async (
     currentPassword: string,

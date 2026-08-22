@@ -9,7 +9,11 @@ from pathlib import Path
 
 from fastapi import HTTPException, Request
 
-from ..agents.skill_system import SkillPoolService, SkillService
+from ..agents.skill_system import (
+    SkillService,
+    install_initial_skill,
+    list_initial_skill_names,
+)
 from ..agents.templates import DEFAULT_AGENT_TEMPLATE, build_agent_template
 from ..agents.utils import copy_workspace_md_files, normalize_agent_language
 from ..config.config import (
@@ -22,13 +26,15 @@ from ..config.utils import load_config, save_config
 from ..constant import WORKING_DIR
 
 logger = logging.getLogger(__name__)
-USER_ROOT = WORKING_DIR / "users"
+USER_STATE_ROOT = WORKING_DIR / "users"
+USER_WORKSPACE_ROOT = WORKING_DIR / "workspaces"
 MODEL_PERMISSIONS = "model_permissions"
 DISABLED_SKILLS = "disabled_skills"
 DISABLED_TOOLS = "disabled_tools"
 MENU_PERMISSIONS = "menu_permissions"
 ACCOUNT_SKILLS = "account_skills"
 ACCOUNT_TOOLS = "account_tools"
+RUNNING_CONFIG_OVERRIDE = "running_config_override"
 
 # Regular accounts start with the focused, day-to-day console.  The chat
 # entry and agent selector are rendered outside the registry menu, therefore
@@ -38,6 +44,7 @@ DEFAULT_USER_MENU_IDS = frozenset(
         "core.user-management",
         "core.agents",
         "core.files",
+        "core.knowledge",
         "core.sessions",
         "core.cron-jobs",
         "core.token-usage",
@@ -54,19 +61,64 @@ def _slug(username: str) -> str:
 
 
 def get_request_username(request: Request | None) -> str | None:
-    return getattr(request.state, "user", None) if request else None
+    if request is None:
+        return None
+    username = getattr(request.state, "user", None)
+    if username:
+        return username
+    # Requests from an explicitly allow-listed local host can bypass the auth
+    # middleware. Still recover the identity from the bearer token so account
+    # scoped permissions do not silently fall back to the unrestricted view.
+    authorization = request.headers.get("Authorization", "")
+    if authorization.startswith("Bearer "):
+        try:
+            from .auth import verify_token
+
+            return verify_token(authorization[7:])
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not resolve the request bearer token", exc_info=True)
+    return None
 
 
 def get_user_root(username: str) -> Path:
-    return USER_ROOT / _slug(username)
+    """Return the filesystem root owned by one account.
+
+    The administrator keeps the historical default workspace path. Regular
+    accounts get one top-level directory named after the normalized username.
+    """
+    return USER_WORKSPACE_ROOT / ("default" if _slug(username) == "admin" else _slug(username))
+
+
+def get_user_state_root(username: str) -> Path:
+    """Return the private metadata directory, outside the visible workspace."""
+    return USER_STATE_ROOT / _slug(username)
+
+
+def is_admin_user(username: str | None) -> bool:
+    if not username:
+        return False
+    try:
+        from .auth import get_user_info
+
+        user = get_user_info(username)
+        return bool(user and user.get("role") == "admin")
+    except Exception:  # noqa: BLE001
+        return _slug(username) == "admin"
 
 
 def _state_path(username: str) -> Path:
-    return get_user_root(username) / "state.json"
+    return get_user_state_root(username) / "state.json"
+
+
+def _legacy_state_path(username: str) -> Path:
+    return USER_STATE_ROOT / _slug(username) / "workspaces" / "default" / "state.json"
 
 
 def load_user_state(username: str) -> dict:
     path = _state_path(username)
+    if not path.is_file():
+        # Read the old location during the one-time workspace migration.
+        path = _legacy_state_path(username)
     if not path.is_file():
         return {}
     try:
@@ -82,15 +134,70 @@ def save_user_state(username: str, state: dict) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
 
 
+def _account_agent_workspace(username: str, agent_id: str) -> Path:
+    """Return the canonical workspace path for an account-owned agent."""
+    state = load_user_state(username)
+    default_id = state.get("default_agent_id")
+    if agent_id == default_id or agent_id.endswith("_default"):
+        return get_user_root(username)
+    return get_user_root(username) / "agents" / agent_id
+
+
+def _ensure_account_directories(username: str) -> None:
+    """Create the account-level file categories inside its isolated root."""
+    root = get_user_root(username)
+    for name in ("archives", "diary", "knowledge"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+
+
+def _migrate_user_workspace_paths(username: str) -> None:
+    """Move legacy account workspaces into the account-isolated layout."""
+    if is_admin_user(username):
+        return
+    config = load_config()
+    state = load_user_state(username)
+    default_id = state.get("default_agent_id")
+    changed = False
+    legacy_root = USER_STATE_ROOT / _slug(username)
+    account_root = get_user_root(username).resolve()
+    for agent_id, profile in config.agents.profiles.items():
+        if getattr(profile, "owner_username", None) != username:
+            continue
+        current = Path(profile.workspace_dir).expanduser().resolve()
+        if current == account_root or account_root in current.parents:
+            continue
+        target = _account_agent_workspace(username, agent_id).resolve()
+        if default_id == agent_id:
+            target = account_root
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if current.exists():
+            if target.exists():
+                shutil.copytree(current, target, dirs_exist_ok=True)
+                shutil.rmtree(current, ignore_errors=True)
+            else:
+                shutil.move(str(current), str(target))
+        profile.workspace_dir = str(target)
+        changed = True
+    if changed:
+        save_config(config)
+    # Keep account metadata outside the file tree exposed to the user.
+    if legacy_root.exists() and legacy_root.resolve() != account_root:
+        legacy_state = legacy_root / "state.json"
+        if legacy_state.is_file() and not _state_path(username).is_file():
+            _state_path(username).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_state, _state_path(username))
+
+
 def _names(values: list[str] | None) -> list[str]:
     return list(dict.fromkeys(str(value).strip() for value in values or [] if str(value).strip()))
 
 
 def _skill_pool_names() -> list[str]:
+    """Compatibility name for the offline initial skill catalog."""
     try:
-        return _names([skill.name for skill in SkillPoolService().list_all_skills()])
+        return _names(list_initial_skill_names())
     except Exception:  # noqa: BLE001
-        logger.warning("Unable to read the local skill pool", exc_info=True)
+        logger.warning("Unable to read offline initial skills", exc_info=True)
         return []
 
 
@@ -133,12 +240,11 @@ def set_account_skills(username: str, skill_names: list[str] | None) -> None:
     state.pop(DISABLED_SKILLS, None)
     save_user_state(username, state)
 
-    service = SkillPoolService()
     for _agent_id, profile in _owned_agent_profiles(username):
         workspace = Path(profile.workspace_dir)
         for name in pool:
             if name in selected:
-                result = service.download_to_workspace(name, workspace, overwrite=False)
+                result = install_initial_skill(name=name, workspace_dir=workspace)
                 if not result.get("success") and result.get("reason") not in {
                     "already_exists",
                     "conflict",
@@ -150,6 +256,44 @@ def set_account_skills(username: str, skill_names: list[str] | None) -> None:
                     logger.warning("Could not enable skill %s in %s", name, workspace, exc_info=True)
             else:
                 SkillService(workspace).disable_skill(name)
+
+
+def sync_admin_initial_skills() -> int:
+    """Migrate the legacy local skill pool into admin workspaces once.
+
+    The pool UI is gone, but existing deployments still keep its prepared
+    skill files under ``WORKING_DIR/skill_pool``. Copy them into every admin
+    workspace so the admin account starts with the same default skills. A
+    marker prevents later restarts from undoing intentional admin changes.
+    """
+    marker = Path(WORKING_DIR) / ".offline_initial_skills_migrated"
+    if marker.exists():
+        return 0
+
+    names = list_initial_skill_names()
+    migrated = 0
+    for _agent_id, profile in _owned_agent_profiles("admin"):
+        workspace = Path(profile.workspace_dir)
+        for name in names:
+            result = install_initial_skill(
+                skill_name=name,
+                workspace_dir=workspace,
+                overwrite=False,
+            )
+            if result.get("success"):
+                migrated += 1
+            else:
+                logger.warning(
+                    "Could not migrate initial skill %s to admin workspace %s: %s",
+                    name,
+                    workspace,
+                    result,
+                )
+
+    if migrated or not names:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("offline initial skills migrated\n", encoding="utf-8")
+    return migrated
 
 
 def set_account_tools(username: str, tool_names: list[str] | None) -> None:
@@ -325,6 +469,21 @@ def set_menu_permissions(username: str, permissions: list[str] | None) -> None:
     save_user_state(username, state)
 
 
+def has_running_config_override(username: str) -> bool:
+    """Return whether an administrator saved a dedicated runtime policy."""
+    return bool(load_user_state(username).get(RUNNING_CONFIG_OVERRIDE, False))
+
+
+def set_running_config_override(username: str, enabled: bool) -> None:
+    """Toggle a user's dedicated runtime policy marker."""
+    state = load_user_state(username)
+    if enabled:
+        state[RUNNING_CONFIG_OVERRIDE] = True
+    else:
+        state.pop(RUNNING_CONFIG_OVERRIDE, None)
+    save_user_state(username, state)
+
+
 def is_model_allowed(username: str | None, provider_id: str, model_id: str) -> bool:
     if not username:
         return True
@@ -349,8 +508,10 @@ def is_model_allowed(username: str | None, provider_id: str, model_id: str) -> b
 
 
 def user_agent_ids(config, username: str | None) -> list[str]:
-    if not username:
+    if not username or is_admin_user(username):
         return list(config.agents.profiles)
+    _migrate_user_workspace_paths(username)
+    config = load_config()
     owned = [
         agent_id
         for agent_id, profile in config.agents.profiles.items()
@@ -375,6 +536,8 @@ def set_user_agent_order(username: str, agent_ids: list[str]) -> None:
 def is_agent_owned(config, username: str | None, agent_id: str) -> bool:
     if not username:
         return agent_id in config.agents.profiles
+    if is_admin_user(username):
+        return agent_id in config.agents.profiles
     profile = config.agents.profiles.get(agent_id)
     return bool(profile and getattr(profile, "owner_username", None) == username)
 
@@ -398,9 +561,11 @@ def default_agent_id(config, username: str | None) -> str | None:
 def ensure_user_default_agent(username: str | None) -> str | None:
     if not username:
         return None
+    _migrate_user_workspace_paths(username)
     config = load_config()
     existing = default_agent_id(config, username)
     if existing:
+        _ensure_account_directories(username)
         return existing
 
     agent_id = f"user_{_slug(username)}_default"
@@ -409,8 +574,9 @@ def ensure_user_default_agent(username: str | None) -> str | None:
         suffix += 1
         agent_id = f"user_{_slug(username)}_default_{suffix}"
 
-    workspace = (get_user_root(username) / "workspaces" / "default").resolve()
+    workspace = get_user_root(username).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
+    _ensure_account_directories(username)
     language = normalize_agent_language(config.agents.language or "zh")
     template = build_agent_template(
         DEFAULT_AGENT_TEMPLATE,
@@ -446,7 +612,7 @@ def ensure_user_default_agent(username: str | None) -> str | None:
             template.agent_config.running = admin_config.running.model_copy(
                 deep=True,
             )
-            template.agent_config.approval_level = admin_config.approval_level
+            template.agent_config.approval_level = "OFF"
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not inherit admin running config: %s", exc)
     copy_workspace_md_files(
@@ -477,9 +643,28 @@ def ensure_user_default_agent(username: str | None) -> str | None:
     config.agents.agent_order.append(agent_id)
     save_config(config)
     save_agent_config(agent_id, template.agent_config)
-    save_user_state(username, {"default_agent_id": agent_id, "agent_order": [agent_id]})
+    state = load_user_state(username)
+    state["default_agent_id"] = agent_id
+    state["agent_order"] = [agent_id]
+    save_user_state(username, state)
     logger.info("Created isolated default agent %s for %s", agent_id, username)
     return agent_id
+
+
+def migrate_all_user_workspaces() -> None:
+    """Apply the account workspace layout to every registered account."""
+    try:
+        from .auth import list_users
+
+        usernames = [str(item["username"]) for item in list_users()]
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not enumerate users for workspace migration", exc_info=True)
+        return
+    for username in usernames:
+        try:
+            ensure_user_default_agent(username)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not migrate workspace for %s", username, exc_info=True)
 
 
 def require_owned_agent_id(config, username: str | None, requested: str | None) -> str:
@@ -514,3 +699,4 @@ def assign_unowned_agents_to_admin(username: str) -> None:
 def delete_user_data(username: str) -> None:
     """Remove only the user's isolated state after its agents are deleted."""
     shutil.rmtree(get_user_root(username), ignore_errors=True)
+    shutil.rmtree(USER_STATE_ROOT / _slug(username), ignore_errors=True)

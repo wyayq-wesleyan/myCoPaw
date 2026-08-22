@@ -32,7 +32,11 @@ from ...config.config import (
 )
 from ...config.utils import load_config, save_config
 from ...agents.utils import copy_workspace_md_files, normalize_agent_language
-from ...agents.skill_system import SkillPoolService, get_workspace_skills_dir
+from ...agents.skill_system import (
+    get_workspace_skills_dir,
+    install_initial_skill,
+    list_initial_skill_names,
+)
 from ...harnesses.registry import ProviderCatalogItem, get_provider
 from ..agent_startup import AgentStartupStatus
 from ..multi_agent_manager import MultiAgentManager
@@ -631,7 +635,7 @@ async def create_agent(
         new_id = _generate_unique_id(existing_ids)
 
     if username:
-        workspace_dir = get_user_root(username) / "workspaces" / new_id
+        workspace_dir = get_user_root(username) / "agents" / new_id
     else:
         workspace_dir = Path(
             request.workspace_dir or f"{WORKING_DIR}/workspaces/{new_id}",
@@ -694,7 +698,7 @@ async def create_agent(
 
     _initialize_agent_workspace(
         workspace_dir,
-        skill_names=[] if username else (request.skill_names or []),
+        skill_names=request.skill_names,
         language=language,
     )
 
@@ -841,7 +845,7 @@ async def copy_agent(
     new_id = _generate_unique_id(existing_ids)
     new_name = (request.name or "").strip() or f"{source_config.name} Copy"
     workspace_dir = (
-        get_user_root(username) / "workspaces" / new_id
+        get_user_root(username) / "agents" / new_id
         if username
         else Path(f"{WORKING_DIR}/workspaces/{new_id}").expanduser()
     )
@@ -860,7 +864,7 @@ async def copy_agent(
 
     _initialize_agent_workspace(
         workspace_dir,
-        skill_names=[],
+        skill_names=None,
         language=language,
         apply_md_templates=request.copy_md_files,
         create_skills_dir=request.copy_skills,
@@ -1349,14 +1353,11 @@ def _install_initial_skills(
     workspace_dir: Path,
     skill_names: list[str] | None,
 ) -> None:
-    """Install requested initial skills from the skill pool."""
-    if not skill_names:
-        return
-
-    pool_service = SkillPoolService()
-    for skill_name in skill_names:
+    """Install initial offline skills into a new workspace."""
+    names = list_initial_skill_names() if skill_names is None else skill_names
+    for skill_name in names:
         try:
-            result = pool_service.download_to_workspace(
+            result = install_initial_skill(
                 skill_name=skill_name,
                 workspace_dir=workspace_dir,
                 overwrite=False,

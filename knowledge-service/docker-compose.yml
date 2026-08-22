@@ -1,0 +1,67 @@
+services:
+  knowledge-api:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: "${BASE_IMAGE:-py311-base:2.0.1-arm64}"
+        INSTALL_KNOWLEDGE_EXTRAS: "${INSTALL_KNOWLEDGE_EXTRAS:-0}"
+    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.2-arm64}"
+    container_name: huizhi-knowledge-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      KNOWLEDGE_ROLE: api
+      LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+    ports:
+      - "127.0.0.1:${KNOWLEDGE_PORT:-18100}:18100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18100/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  knowledge-worker:
+    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.2-arm64}"
+    container_name: huizhi-knowledge-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      KNOWLEDGE_ROLE: worker
+      LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/data
+    command: ["python", "-m", "app.worker"]
+
+  lightrag:
+    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.2-arm64}"
+    container_name: huizhi-lightrag
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LLM_BINDING: openai
+      LLM_BINDING_HOST: "${PROVIDER_BASE_URL:-http://host.docker.internal:9988/v1}"
+      LLM_BINDING_API_KEY: "${PROVIDER_API_KEY:-}"
+      LLM_MODEL: "${CHAT_MODEL:-llm}"
+      EMBEDDING_BINDING: openai
+      EMBEDDING_BINDING_HOST: "${EMBEDDING_BASE_URL:-http://host.docker.internal:9988/v1}"
+      EMBEDDING_BINDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-qwen3-4b-embedding}"
+      EMBEDDING_DIM: "${EMBEDDING_DIMENSIONS:-1024}"
+      SUMMARY_LANGUAGE: Chinese
+      LIGHTRAG_API_KEY: "${LIGHTRAG_API_KEY:-}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/lightrag:/data/lightrag
+      - ./data/lightrag-input:/data/lightrag-input
+    profiles:
+      - lightrag

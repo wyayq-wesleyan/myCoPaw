@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..agent_context import get_agent_for_request, get_agent_project_dir
+from ..user_space import get_request_username, get_user_root, is_admin_user
 from ..utils import safe_project_dest
 from ...constant import CODING_PROJECT_SUBDIR
 from ...utils.command_runner import run_command_async, start_command_async
@@ -149,6 +150,14 @@ async def set_project(body: SetProjectRequest, request: Request) -> dict:
             raise FileNotFoundError(str(target))
         if not target.is_dir():
             raise NotADirectoryError(str(target))
+        username = get_request_username(request)
+        if username and not is_admin_user(username):
+            try:
+                target.relative_to(get_user_root(username).resolve())
+            except ValueError as exc:
+                raise PermissionError(
+                    "Project directory must stay inside your account workspace",
+                ) from exc
         return str(target)
 
     try:
@@ -163,6 +172,8 @@ async def set_project(body: SetProjectRequest, request: Request) -> dict:
             status_code=400,
             detail=f"Path is not a directory: {exc}",
         ) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     await asyncio.to_thread(_save_project_dir, workspace.agent_id, project_dir)
 
@@ -702,6 +713,19 @@ async def browse_dirs(
     On Windows, ``"/"`` is treated as a virtual root that
     lists all available drive letters (C:, D:, ...).
     """
+    username = get_request_username(request)
+    if username and not is_admin_user(username):
+        account_root = get_user_root(username).resolve()
+        requested = account_root if path in ("", "~") else Path(path).expanduser().resolve()
+        try:
+            requested.relative_to(account_root)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="Directory browsing is limited to your account workspace",
+            ) from exc
+        path = str(requested)
+
     # Windows virtual root: list all drive letters
     if sys.platform == "win32" and path in ("/", "\\"):
         return await asyncio.to_thread(

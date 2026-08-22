@@ -34,12 +34,8 @@ export function CustomProviderModal({
         id: values.id.trim(),
         name: values.name.trim(),
         default_base_url: values.default_base_url?.trim() || "",
-        api_key_prefix: "",
-        chat_model: "OpenAIChatModel",
-      });
-      await api.configureProvider(values.id.trim(), {
         api_key: values.api_key?.trim() || "",
-        base_url: values.default_base_url?.trim() || "",
+        api_key_prefix: "",
         chat_model: "OpenAIChatModel",
       });
       message.success(

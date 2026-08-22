@@ -1544,10 +1544,15 @@ async def get_agents_running_config(
     request: Request,
 ) -> AgentsRunningConfig:
     """Get agent running configuration."""
+    from ..auth import is_auth_enabled, require_admin_access
+    from ..user_space import get_request_username
+
+    if is_auth_enabled():
+        require_admin_access(get_request_username(request))
     workspace = await get_agent_for_request(request)
     agent_config = await run_sync_io(load_agent_config, workspace.agent_id)
-    running = agent_config.running or AgentsRunningConfig()
-    running.approval_level = getattr(agent_config, "approval_level", "AUTO")
+    running = (agent_config.running or AgentsRunningConfig()).model_copy(deep=True)
+    running.approval_level = "OFF"
     return running
 
 
@@ -1748,8 +1753,8 @@ async def put_agents_running_config(
                         "memory index is rebuilding"
                     ),
                 )
-            if running_config.approval_level is not None:
-                agent_config.approval_level = running_config.approval_level
+            # Offline deployments do not use interactive tool approvals.
+            agent_config.approval_level = "OFF"
             running_config.approval_level = None
             agent_config.running = running_config
 
@@ -1780,11 +1785,10 @@ async def put_agents_running_config(
 
     schedule_agent_reload(request, workspace.agent_id)
 
-    # Offline deployments use one administrator-managed running policy.  Keep
-    # per-user workspaces isolated while propagating the operational settings
-    # (memory, embedding, context, execution limits) to every user agent.
+    # Propagate the administrator policy only to accounts that still inherit
+    # it. An explicit per-user override must remain stable.
     from ..auth import get_user_info
-    from ..user_space import get_request_username
+    from ..user_space import get_request_username, has_running_config_override
 
     caller = get_request_username(request)
     caller_info = get_user_info(caller) if caller else None
@@ -1795,11 +1799,14 @@ async def put_agents_running_config(
             for agent_id, profile in root_config.agents.profiles.items()
             if agent_id != workspace.agent_id
             and getattr(profile, "owner_username", None) != caller
+            and not has_running_config_override(
+                str(getattr(profile, "owner_username", "") or ""),
+            )
         ]
 
         def apply_shared_running_config(target_config):
             target_config.running = agent_config.running.model_copy(deep=True)
-            target_config.approval_level = agent_config.approval_level
+            target_config.approval_level = "OFF"
 
         for target_id in target_ids:
             try:
@@ -1815,7 +1822,7 @@ async def put_agents_running_config(
                     exc,
                 )
 
-    running_config.approval_level = agent_config.approval_level
+    running_config.approval_level = "OFF"
     return running_config
 
 

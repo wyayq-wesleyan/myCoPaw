@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { Button, Form, Tabs } from "@agentscope-ai/design";
+import { Alert, Button, Form, Tabs } from "@agentscope-ai/design";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import { useAgentConfig } from "./useAgentConfig.tsx";
@@ -7,7 +7,6 @@ import {
   ReactAgentCard,
   LlmRetryCard,
   LlmRateLimiterCard,
-  ToolExecutionLevelCard,
   AgentLoopCard,
   EmbeddingModelCard,
 } from "./components";
@@ -47,8 +46,10 @@ function AgentConfigPage() {
     savingLang,
     timezone,
     savingTimezone,
-    approvalLevel,
-    setApprovalLevel,
+
+    targetUser,
+    isOverride,
+    resetUserOverride,
     fetchConfig,
     handleSave,
     handleLanguageChange,
@@ -120,26 +121,6 @@ function AgentConfigPage() {
   const dynamicTabs = useMemo(() => {
     const baseTabs = [
       {
-        key: "reactAgent",
-        label: (
-          <span className={styles.tabLabel}>
-            {t("agentConfig.reactAgentTitle")}
-          </span>
-        ),
-        children: (
-          <div className={styles.tabContent}>
-            <ReactAgentCard
-              language={language}
-              savingLang={savingLang}
-              onLanguageChange={handleLanguageChange}
-              timezone={timezone}
-              savingTimezone={savingTimezone}
-              onTimezoneChange={handleTimezoneChange}
-            />
-          </div>
-        ),
-      },
-      {
         key: "agentLoop",
         label: (
           <span className={styles.tabLabel}>
@@ -179,6 +160,29 @@ function AgentConfigPage() {
         ),
       },
     ];
+
+    if (!targetUser) {
+      baseTabs.unshift({
+        key: "reactAgent",
+        label: (
+          <span className={styles.tabLabel}>
+            {t("agentConfig.reactAgentTitle")}
+          </span>
+        ),
+        children: (
+          <div className={styles.tabContent}>
+            <ReactAgentCard
+              language={language}
+              savingLang={savingLang}
+              onLanguageChange={handleLanguageChange}
+              timezone={timezone}
+              savingTimezone={savingTimezone}
+              onTimezoneChange={handleTimezoneChange}
+            />
+          </div>
+        ),
+      });
+    }
 
     const contextMapping = CONTEXT_MANAGER_BACKEND_MAPPINGS[contextBackend];
     if (contextMapping) {
@@ -232,25 +236,6 @@ function AgentConfigPage() {
       });
     }
 
-    // Add Tool Execution Level tab
-    baseTabs.push({
-      key: "toolExecutionLevel",
-      label: (
-        <span className={styles.tabLabel}>
-          {t("agentConfig.toolExecutionLevelTitle")}
-        </span>
-      ),
-      children: (
-        <div className={styles.tabContent}>
-          <ToolExecutionLevelCard
-            value={approvalLevel}
-            onChange={setApprovalLevel}
-            disabled={saving}
-          />
-        </div>
-      ),
-    });
-
     return baseTabs;
   }, [
     t,
@@ -264,15 +249,14 @@ function AgentConfigPage() {
     maxInputLength,
     contextBackend,
     memoryBackend,
-    approvalLevel,
-    setApprovalLevel,
     saving,
+    targetUser,
   ]);
 
   useEffect(() => {
     const tabKeys = dynamicTabs.map((t) => t.key);
     if (!tabKeys.includes(activeTab)) {
-      setActiveTab(tabKeys[0] ?? "reactAgent");
+      setActiveTab(tabKeys[0] ?? "agentLoop");
     }
   }, [dynamicTabs, activeTab]);
 
@@ -301,7 +285,21 @@ function AgentConfigPage() {
 
   return (
     <div className={styles.configPage}>
-      <PageHeader parent={t("nav.agent")} current={t("agentConfig.title")} />
+      <PageHeader
+        parent={t("nav.agent")}
+        current={targetUser ? `运行配置：${targetUser}` : t("agentConfig.title")}
+      />
+
+      {targetUser && (
+        <div style={{ padding: "0 24px", marginTop: 12 }}>
+          <Alert
+            type={isOverride ? "warning" : "info"}
+            showIcon
+            message={isOverride ? "该用户正在使用独立运行配置" : "该用户当前继承管理员运行配置"}
+            action={isOverride ? <Button size="small" onClick={() => void resetUserOverride()}>恢复继承管理员配置</Button> : undefined}
+          />
+        </div>
+      )}
 
       <div className={styles.content}>
         <MemoryMaintenanceContext.Provider

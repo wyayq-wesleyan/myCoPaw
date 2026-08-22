@@ -6,7 +6,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ...constant import EnvVarLoader
-from ...agents.skill_system import SkillPoolService
+from ...agents.skill_system import list_initial_skill_names
+from ...config import AgentsRunningConfig, load_config
+from ...config.config import load_agent_config, update_agent_config_async
 from ..auth import (
     authenticate,
     create_user_account,
@@ -36,12 +38,21 @@ from ..user_space import (
     get_account_tools,
     set_account_skills,
     set_account_tools,
+    default_agent_id,
+    ensure_user_default_agent,
+    has_running_config_override,
+    set_running_config_override,
     _tool_pool,
     _skill_pool_names,
 )
 from ..user_resources import list_resources_for_user_sync
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _initial_skill_names() -> list[str]:
+    """Return the offline initial skill catalog for account permissions."""
+    return list_initial_skill_names()
 
 
 def _schedule_user_agent_reloads(request: Request, username: str) -> None:
@@ -147,16 +158,42 @@ class UpdateUserResourcesRequest(BaseModel):
     tools: list[str] = []
 
 
+def _user_agent_ids(username: str) -> list[str]:
+    """Return all agent profiles owned by an account, creating its default."""
+    ensure_user_default_agent(username)
+    config = load_config()
+    return [
+        agent_id
+        for agent_id, profile in config.agents.profiles.items()
+        if getattr(profile, "owner_username", None) == username
+    ]
+
+
+async def _save_user_running_config(
+    request: Request,
+    username: str,
+    running_config: AgentsRunningConfig,
+) -> None:
+    """Persist one admin-managed runtime policy across a user's agents."""
+    for agent_id in _user_agent_ids(username):
+        def persist(agent_config) -> None:
+            agent_config.running = running_config.model_copy(deep=True)
+            agent_config.approval_level = "OFF"
+
+        await update_agent_config_async(agent_id, persist)
+        schedule_agent_reload(request, agent_id)
+
+
 def _resource_response(username: str) -> UserResourcesResponse:
     available_skills = [
         AccountResourceItem(
-            name=skill.name,
-            description=str(getattr(skill, "description", "") or ""),
-            icon=str(getattr(skill, "emoji", "") or ""),
+            name=name,
+            description="系统内置离线技能",
+            icon="",
             source_label="系统初始资源",
             is_builtin=True,
         )
-        for skill in SkillPoolService().list_all_skills()
+        for name in _initial_skill_names()
     ]
     available_tools = [
         AccountResourceItem(
@@ -387,6 +424,68 @@ async def get_users(request: Request) -> list[CurrentUserResponse]:
     return [_user_response(user) for user in list_users()]
 
 
+@router.get("/users/{username}/running-config")
+async def get_user_running_config(username: str, request: Request) -> dict:
+    """Return an account's effective runtime policy for administrator editing."""
+    require_admin_access(_request_username(request))
+    if get_user_info(username) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    config = load_config()
+    agent_id = default_agent_id(config, username) or ensure_user_default_agent(username)
+    if not agent_id:
+        raise HTTPException(status_code=404, detail="User agent not found")
+    agent_config = load_agent_config(agent_id)
+    running = (agent_config.running or AgentsRunningConfig()).model_copy(deep=True)
+    running.approval_level = "OFF"
+    return {
+        "username": username,
+        "is_override": has_running_config_override(username),
+        "config": running,
+    }
+
+
+@router.put("/users/{username}/running-config")
+async def update_user_running_config(
+    username: str,
+    running_config: AgentsRunningConfig,
+    request: Request,
+) -> dict:
+    """Save an explicit runtime policy for one ordinary account."""
+    require_admin_access(_request_username(request))
+    user = get_user_info(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.get("role") == "admin":
+        raise HTTPException(
+            status_code=400,
+            detail="Administrator runtime configuration is managed directly",
+        )
+    running_config.approval_level = "OFF"
+    await _save_user_running_config(request, username, running_config)
+    set_running_config_override(username, True)
+    return await get_user_running_config(username, request)
+
+
+@router.delete("/users/{username}/running-config")
+async def reset_user_running_config(username: str, request: Request) -> dict:
+    """Remove an override and restore the current administrator policy."""
+    acting_username = _request_username(request)
+    require_admin_access(acting_username)
+    user = get_user_info(username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    config = load_config()
+    admin_agent_id = default_agent_id(config, acting_username)
+    if not admin_agent_id:
+        raise HTTPException(status_code=404, detail="Administrator agent not found")
+    admin_config = load_agent_config(admin_agent_id)
+    running = (admin_config.running or AgentsRunningConfig()).model_copy(deep=True)
+    running.approval_level = "OFF"
+    await _save_user_running_config(request, username, running)
+    set_running_config_override(username, False)
+    return await get_user_running_config(username, request)
+
+
 @router.get("/users/{username}/resources", response_model=UserResourcesResponse)
 async def get_user_resources(username: str, request: Request) -> UserResourcesResponse:
     require_admin_access(_request_username(request))
@@ -534,9 +633,9 @@ async def user_skill_permissions(username: str, request: Request) -> dict:
     return {
         "username": username,
         "disabled": [
-            skill.name
-            for skill in SkillPoolService().list_all_skills()
-            if skill.name not in selected
+            name
+            for name in _initial_skill_names()
+            if name not in selected
         ],
     }
 
@@ -552,9 +651,9 @@ async def update_skill_permissions(
     set_account_skills(
         username,
         [
-            skill.name
-            for skill in SkillPoolService().list_all_skills()
-            if skill.name not in blocked
+            name
+            for name in _initial_skill_names()
+            if name not in blocked
         ],
     )
     _schedule_user_agent_reloads(request, username)

@@ -26,7 +26,6 @@ export interface RouteLike {
 export const SETTINGS_ROUTE_IDS = new Set<string>([
   "core.agents",
   "core.models",
-  "core.skill-pool",
   "core.environments",
   "core.security",
   "core.token-usage",

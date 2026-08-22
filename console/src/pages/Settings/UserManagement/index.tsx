@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -57,6 +58,7 @@ const DEFAULT_MENUS = [
   "core.user-management",
   "core.agents",
   "core.files",
+  "core.knowledge",
   "core.sessions",
   "core.cron-jobs",
   "core.token-usage",
@@ -71,6 +73,7 @@ const MENU_OPTIONS = [
   ["core.cron-jobs", "定时任务"],
   ["core.heartbeat", "心跳"],
   ["core.files", "文件"],
+  ["core.knowledge", "知识空间"],
   ["core.skills", "技能"],
   ["core.tools", "工具"],
   ["core.mcp", "MCP"],
@@ -78,7 +81,6 @@ const MENU_OPTIONS = [
   ["core.agent-config", "运行配置"],
   ["core.agent-stats", "智能体统计"],
   ["core.agents", "智能体管理"],
-  ["core.skill-pool", "技能池"],
   ["core.environments", "环境变量"],
   ["core.offload-policy", "工具卸载策略"],
   ["core.security", "安全设置"],
@@ -97,6 +99,7 @@ function selectionToModels(values: string[]): ModelPermission[] {
 }
 
 export default function UserManagementPage() {
+  const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<ManagedUser | null>(null);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -548,6 +551,12 @@ export default function UserManagementPage() {
                       onClick={() => void openEdit(user)}
                     >
                       编辑授权
+                    </Button>
+                    <Button
+                      size="small"
+                      onClick={() => navigate(`/agent-config?user=${encodeURIComponent(user.username)}`)}
+                    >
+                      运行配置
                     </Button>
                     <Button
                       size="small"

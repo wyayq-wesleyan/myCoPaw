@@ -1,6 +1,8 @@
 export interface ModelInfo {
   id: string;
   name: string;
+  model_type?: "chat" | "embedding" | "reranker";
+  model_type_source?: "auto" | "manual" | null;
   supports_multimodal: boolean | null;
   supports_image: boolean | null;
   supports_video: boolean | null;
@@ -119,6 +121,7 @@ export interface CreateCustomProviderRequest {
   id: string;
   name: string;
   default_base_url?: string;
+  api_key?: string;
   api_key_prefix?: string;
   chat_model?: string;
   models?: ModelInfo[];
@@ -127,6 +130,7 @@ export interface CreateCustomProviderRequest {
 export interface AddModelRequest {
   id: string;
   name: string;
+  model_type?: "chat" | "embedding" | "reranker";
   is_free?: boolean;
   supports_multimodal?: boolean | null;
   supports_image?: boolean | null;
@@ -135,6 +139,7 @@ export interface AddModelRequest {
 }
 
 export interface ModelConfigRequest {
+  model_type?: "chat" | "embedding" | "reranker";
   max_tokens?: number;
   max_input_length?: number;
   generate_kwargs?: Record<string, unknown>;
@@ -142,6 +147,8 @@ export interface ModelConfigRequest {
   thinking_enabled?: boolean | null;
   thinking_budget?: number | null;
   reasoning_effort?: string | null;
+  supports_image?: boolean;
+  supports_video?: boolean;
 }
 
 export interface LocalModelConfig {
@@ -248,6 +255,8 @@ export interface ProbeMultimodalResponse {
 export interface ExtendedModelInfo {
   id: string;
   name: string;
+  model_type?: "chat" | "embedding" | "reranker";
+  model_type_source?: "auto" | "manual" | null;
   supports_multimodal?: boolean | null;
   supports_image?: boolean | null;
   supports_video?: boolean | null;

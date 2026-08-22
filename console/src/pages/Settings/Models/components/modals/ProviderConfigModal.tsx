@@ -460,7 +460,7 @@ export function ProviderConfigModal({
   useEffect(() => {
     if (open) {
       form.setFieldsValue({
-        api_key: undefined,
+        api_key: provider.api_key || undefined,
         name: provider.name,
         base_url: provider.base_url || undefined,
         chat_model: provider.chat_model || "OpenAIChatModel",
@@ -811,7 +811,10 @@ export function ProviderConfigModal({
             },
           ]}
         >
-          <Input.Password placeholder={apiKeyPlaceholder} />
+          <Input.Password
+            placeholder={apiKeyPlaceholder}
+            autoComplete="off"
+          />
         </Form.Item>
 
         <div className={styles.advancedConfigSection}>

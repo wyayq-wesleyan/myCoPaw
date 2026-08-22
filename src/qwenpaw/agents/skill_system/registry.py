@@ -42,6 +42,8 @@ from .store import (
     read_skill_manifest,
     read_skill_pool_manifest,
     safe_skill_dir,
+    scan_skill_dir_or_raise,
+    staged_skill_dir,
     write_json_atomic,
 )
 
@@ -253,6 +255,87 @@ def resolve_builtin_skill_dir(
         preferred_language=preferred_language,
     )
     return str(variant.skill_dir) if variant is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Offline initial skill installation
+# ---------------------------------------------------------------------------
+
+
+def list_initial_skill_names() -> list[str]:
+    """Return the skills installed by default in offline workspaces.
+
+    Existing deployments may already have local skills under ``skill_pool``.
+    Treat those on-disk skills as the initial offline set so the transition
+    away from the pool UI neither loses nor replaces locally prepared skills.
+    A fresh deployment falls back to the packaged builtins.
+    """
+    names: set[str] = set()
+    for root in get_skill_pool_dirs():
+        if not root.is_dir():
+            continue
+        for skill_dir in root.iterdir():
+            if (
+                not is_ignored_skill_entry(skill_dir.name)
+                and skill_dir.is_dir()
+                and (skill_dir / "SKILL.md").exists()
+            ):
+                names.add(skill_dir.name)
+
+    names.update(get_packaged_builtin_versions())
+    return sorted(names)
+
+
+def resolve_initial_skill_dir(skill_name: str) -> Path | None:
+    """Resolve a local initial skill, preferring deployment-provided files."""
+    from .store import resolve_pool_skill_dir
+
+    pool_dir = resolve_pool_skill_dir(skill_name)
+    if pool_dir is not None:
+        return pool_dir
+    builtin_dir = resolve_builtin_skill_dir(skill_name)
+    return Path(builtin_dir) if builtin_dir else None
+
+
+def install_initial_skill(
+    workspace_dir: Path,
+    skill_name: str,
+    *,
+    overwrite: bool = False,
+) -> dict[str, str | bool]:
+    """Copy and enable one local initial skill in a workspace.
+
+    The source is always local: the legacy shared directory is accepted only
+    for compatibility with existing offline deployments, never as a network
+    marketplace or runtime dependency.
+    """
+    source_dir = resolve_initial_skill_dir(skill_name)
+    if source_dir is None:
+        return {"success": False, "reason": "not_found"}
+
+    workspace_dir = Path(workspace_dir)
+    target_dir = safe_skill_dir(
+        get_workspace_skills_dir(workspace_dir),
+        skill_name,
+    )
+    if target_dir.exists() and not overwrite:
+        reconcile_workspace_manifest(workspace_dir)
+        from .workspace_service import SkillService
+
+        SkillService(workspace_dir).enable_skill(skill_name)
+        return {"success": True, "reason": "already_exists"}
+
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    with staged_skill_dir(skill_name) as staged_dir:
+        copy_skill_dir(source_dir, staged_dir)
+        scan_skill_dir_or_raise(staged_dir, skill_name)
+        copy_skill_dir(staged_dir, target_dir)
+
+    reconcile_workspace_manifest(workspace_dir)
+    from .workspace_service import SkillService
+
+    SkillService(workspace_dir).enable_skill(skill_name)
+    return {"success": True, "reason": "installed"}
 
 
 # ---------------------------------------------------------------------------
@@ -1069,7 +1152,8 @@ def reconcile_workspace_manifest(workspace_dir: Path) -> dict[str, Any]:
     workspace_skills_dir = get_workspace_skills_dir(workspace_dir)
     workspace_skills_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = get_workspace_skill_manifest_path(workspace_dir)
-    builtin_versions = get_packaged_builtin_versions()
+    # Local pool contents are now part of the offline initial skill set.
+    builtin_versions = {name: "" for name in list_initial_skill_names()}
 
     if not manifest_path.exists():
         write_json_atomic(manifest_path, default_workspace_manifest())

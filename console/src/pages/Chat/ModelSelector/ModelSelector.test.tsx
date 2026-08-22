@@ -115,7 +115,9 @@ describe("ModelSelector", () => {
 
   it("displays current active model name on trigger button after loading", async () => {
     renderWithProviders(<ModelSelector />);
-    expect((await screen.findAllByText("GPT-4"))[0]).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("OpenAI - GPT-4"))[0],
+    ).toBeInTheDocument();
   });
 
   it("displays i18n key when there is no active model", async () => {
@@ -128,18 +130,20 @@ describe("ModelSelector", () => {
     ).toBeInTheDocument();
   });
 
-  it("displays bare model id when active model is outside the eligible list", async () => {
-    // provider has no api_key configured, so it is excluded from eligible list
+  it("does not display a model that is outside the authorized list", async () => {
+    // The API response is the already-filtered authorization view.
     vi.mocked(providerApi.listProviders).mockResolvedValue([
       { ...mockProvider, api_key: "" },
     ]);
     renderWithProviders(<ModelSelector />);
-    expect((await screen.findAllByText("gpt-4"))[0]).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("modelSelector.selectModel"))[0],
+    ).toBeInTheDocument();
   });
 
   it("calls listProviders and getActiveModels on mount", async () => {
     renderWithProviders(<ModelSelector />);
-    await screen.findAllByText("GPT-4");
+    await screen.findAllByText("OpenAI - GPT-4");
     expect(providerApi.listProviders).toHaveBeenCalledOnce();
     expect(providerApi.getActiveModels).toHaveBeenCalledWith({
       scope: "effective",
@@ -150,9 +154,9 @@ describe("ModelSelector", () => {
   it("clicking trigger button opens dropdown and shows provider list", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ModelSelector />);
-    await screen.findAllByText("GPT-4");
+    await screen.findAllByText("OpenAI - GPT-4");
 
-    await user.click(screen.getAllByText("GPT-4")[0]);
+    await user.click(screen.getAllByText("OpenAI - GPT-4")[0]);
 
     expect(await screen.findByText("OpenAI")).toBeInTheDocument();
   });
@@ -160,9 +164,9 @@ describe("ModelSelector", () => {
   it("clicking a model calls setActiveLlm with correct parameters", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ModelSelector />);
-    await screen.findAllByText("GPT-4");
+    await screen.findAllByText("OpenAI - GPT-4");
 
-    await user.click(screen.getAllByText("GPT-4")[0]);
+    await user.click(screen.getAllByText("OpenAI - GPT-4")[0]);
     const gpt35 = await screen.findByText("GPT-3.5 Turbo");
     await user.click(gpt35);
 
@@ -186,9 +190,9 @@ describe("ModelSelector", () => {
     window.addEventListener("model-switched", switched);
     const user = userEvent.setup();
     renderWithProviders(<ModelSelector />);
-    await screen.findAllByText("GPT-4");
+    await screen.findAllByText("OpenAI - GPT-4");
 
-    await user.click(screen.getAllByText("GPT-4")[0]);
+    await user.click(screen.getAllByText("OpenAI - GPT-4")[0]);
     await user.click(await screen.findByText("GPT-3.5 Turbo"));
 
     await waitFor(() => expect(switched).toHaveBeenCalledOnce());
@@ -207,7 +211,7 @@ describe("ModelSelector", () => {
     const switched = vi.fn();
     window.addEventListener("model-switched", switched);
     renderWithProviders(<ModelSelector />);
-    await screen.findAllByText("GPT-4");
+    await screen.findAllByText("OpenAI - GPT-4");
 
     await waitFor(() => expect(switched).toHaveBeenCalledOnce());
     const event = switched.mock.calls[0][0] as CustomEvent;
@@ -220,9 +224,9 @@ describe("ModelSelector", () => {
   it("clicking the already active model does not call setActiveLlm", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ModelSelector />);
-    await screen.findAllByText("GPT-4");
+    await screen.findAllByText("OpenAI - GPT-4");
 
-    await user.click(screen.getAllByText("GPT-4")[0]);
+    await user.click(screen.getAllByText("OpenAI - GPT-4")[0]);
     const gpt4Items = await screen.findAllByText("GPT-4");
     await user.click(gpt4Items[gpt4Items.length - 1]);
 
@@ -241,7 +245,7 @@ describe("ModelSelector", () => {
     await user.click(screen.getAllByText("modelSelector.selectModel")[0]);
 
     expect(
-      await screen.findByText("modelSelector.noConfiguredModels"),
+      await screen.findByText("modelSelector.noAuthorizedModels"),
     ).toBeInTheDocument();
   });
 
@@ -251,15 +255,15 @@ describe("ModelSelector", () => {
     );
     const user = userEvent.setup();
     renderWithProviders(<ModelSelector />);
-    await screen.findAllByText("GPT-4");
+    await screen.findAllByText("OpenAI - GPT-4");
 
-    await user.click(screen.getAllByText("GPT-4")[0]);
+    await user.click(screen.getAllByText("OpenAI - GPT-4")[0]);
     const gpt35 = await screen.findByText("GPT-3.5 Turbo");
     await user.click(gpt35);
 
-    // GPT-4 may appear in two places when dropdown is still open (trigger + dropdown item)
+    // The trigger keeps the supplier/model label after a failed switch.
     await waitFor(() => {
-      expect(screen.getAllByText("GPT-4").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("OpenAI - GPT-4").length).toBeGreaterThanOrEqual(1);
     });
   });
 });

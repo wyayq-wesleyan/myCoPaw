@@ -38,6 +38,7 @@ from .openai_provider import (
 from .openai_response_provider import OpenAIResponseProvider
 from .openrouter_provider import OpenRouterProvider
 from .provider import ModelInfo, Provider, ProviderInfo
+from .model_type import infer_model_type
 
 logger = logging.getLogger(__name__)
 
@@ -1422,6 +1423,27 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
         self.builtin_providers[provider.id] = provider
 
     async def list_provider_info(self) -> List[ProviderInfo]:
+        # Backfill the type for providers saved before model-purpose metadata
+        # existed. This makes already-discovered local embedding/reranker
+        # models usable immediately after an upgrade, without requiring the
+        # administrator to fetch the provider list again.
+        for provider in [
+            *self.builtin_providers.values(),
+            *self.custom_providers.values(),
+        ]:
+            changed = False
+            for model in provider.models + provider.extra_models:
+                if model.model_type_source is None:
+                    inferred = infer_model_type(model.id, model.name)
+                    if inferred != "chat":
+                        model.model_type = inferred
+                    model.model_type_source = "auto"
+                    changed = True
+            if changed:
+                self._save_provider(
+                    provider,
+                    is_builtin=provider.id in self.builtin_providers,
+                )
         tasks = [
             provider.get_info() for provider in self.builtin_providers.values()
         ]
@@ -1553,6 +1575,18 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
             return []
         try:
             models = await provider.fetch_models()
+            existing_by_id = {
+                model.id: model
+                for model in provider.models + provider.extra_models
+            }
+            for model in models:
+                previous = existing_by_id.get(model.id)
+                if previous and previous.model_type_source == "manual":
+                    model.model_type = previous.model_type
+                    model.model_type_source = "manual"
+                else:
+                    model.model_type = infer_model_type(model.id, model.name)
+                    model.model_type_source = "auto"
             if save:
                 provider.extra_models = models
                 # Save provider config to appropriate location
@@ -1615,8 +1649,10 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
         provider = self._provider_from_data(
             provider_payload,
         )  # Validate provider data
-        # For custom providers, we assume they don't support connection check
-        # without model config, to avoid false negatives in the UI.
+        # A custom provider represents an OpenAI-compatible internal service.
+        # Its /models endpoint is the reliable way to populate the initial
+        # model list, while connection checks still need a concrete model.
+        provider.support_model_discovery = True
         provider.support_connection_check = False
         self.custom_providers[provider.id] = provider
         self._save_provider(provider, is_builtin=False)

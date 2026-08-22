@@ -99,6 +99,15 @@ function ModelConfigEditor({
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(
     model.reasoning_effort ?? null,
   );
+  const [supportsImage, setSupportsImage] = useState<boolean | null>(
+    model.supports_image ?? null,
+  );
+  const [supportsVideo, setSupportsVideo] = useState<boolean | null>(
+    model.supports_video ?? null,
+  );
+  const [modelType, setModelType] = useState<
+    "chat" | "embedding" | "reranker"
+  >(model.model_type ?? "chat");
 
   const initialText = useMemo(
     () =>
@@ -120,6 +129,9 @@ function ModelConfigEditor({
     setThinkingEnabled(model.thinking_enabled ?? null);
     setThinkingBudget(model.thinking_budget ?? null);
     setReasoningEffort(model.reasoning_effort ?? null);
+    setSupportsImage(model.supports_image ?? null);
+    setSupportsVideo(model.supports_video ?? null);
+    setModelType(model.model_type ?? "chat");
     setDirty(false);
   }, [
     initialText,
@@ -129,6 +141,9 @@ function ModelConfigEditor({
     model.thinking_enabled,
     model.thinking_budget,
     model.reasoning_effort,
+    model.supports_image,
+    model.supports_video,
+    model.model_type,
   ]);
 
   const effectiveMaxTokens = maxTokens ?? 8192;
@@ -179,6 +194,9 @@ function ModelConfigEditor({
         thinking_enabled: thinkingEnabled,
         thinking_budget: thinkingBudget,
         reasoning_effort: reasoningEffort,
+        model_type: modelType,
+        ...(supportsImage !== null ? { supports_image: supportsImage } : {}),
+        ...(supportsVideo !== null ? { supports_video: supportsVideo } : {}),
       });
       message.success(t("models.modelConfigSaved", { name: model.name }));
       setDirty(false);
@@ -443,6 +461,97 @@ function ModelConfigEditor({
 
       <div
         style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 8,
+          padding: "6px 0",
+        }}
+      >
+        <div>
+          <span
+            style={{
+              fontSize: 13,
+              color: isDark ? "rgba(255,255,255,0.85)" : "#333",
+            }}
+          >
+            支持图片输入
+          </span>
+          <div
+            style={{
+              fontSize: 11,
+              color: isDark ? "rgba(255,255,255,0.35)" : "#999",
+              marginTop: 2,
+            }}
+          >
+            仅在已确认内网模型服务可正确识别图片时开启。
+          </div>
+        </div>
+        <Switch
+          checked={supportsImage === true}
+          onChange={(checked) => {
+            setSupportsImage(checked);
+            setDirty(true);
+          }}
+        />
+      </div>
+
+      <div style={{ marginBottom: 8 }}>
+        <div style={labelStyle}>模型用途</div>
+        <Segmented
+          block
+          value={modelType}
+          onChange={(value) => {
+            setModelType(value as "chat" | "embedding" | "reranker");
+            setDirty(true);
+          }}
+          options={[
+            { label: "对话模型", value: "chat" },
+            { label: "Embedding", value: "embedding" },
+            { label: "Reranker", value: "reranker" },
+          ]}
+        />
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 8,
+          padding: "6px 0",
+        }}
+      >
+        <div>
+          <span
+            style={{
+              fontSize: 13,
+              color: isDark ? "rgba(255,255,255,0.85)" : "#333",
+            }}
+          >
+            支持视频输入
+          </span>
+          <div
+            style={{
+              fontSize: 11,
+              color: isDark ? "rgba(255,255,255,0.35)" : "#999",
+              marginTop: 2,
+            }}
+          >
+            仅在模型服务端已启用视频理解能力时开启。
+          </div>
+        </div>
+        <Switch
+          checked={supportsVideo === true}
+          onChange={(checked) => {
+            setSupportsVideo(checked);
+            setDirty(true);
+          }}
+        />
+      </div>
+
+      <div
+        style={{
           fontSize: 12,
           color: isDark ? "rgba(255,255,255,0.45)" : "#888",
           marginBottom: 4,
@@ -537,6 +646,12 @@ function CapabilityTags({
 }) {
   const { t } = useTranslation();
   const c = tagColors(isDark);
+  if (model.model_type === "embedding") {
+    return <Tag color="blue" style={{ fontSize: 11 }}>Embedding</Tag>;
+  }
+  if (model.model_type === "reranker") {
+    return <Tag color="purple" style={{ fontSize: 11 }}>Reranker</Tag>;
+  }
   if (model.supports_image && model.supports_video) {
     return (
       <Tag style={{ fontSize: 11, marginRight: 4, ...c.multimodal }}>
@@ -588,7 +703,11 @@ export function RemoteModelManageModal({
   const { isDark } = useTheme();
   const darkBtnStyle = isDark ? { color: "rgba(255,255,255,0.65)" } : undefined;
   const { message } = useAppMessage();
-  const supportsAutoDiscover = provider.support_model_discovery;
+  // All custom providers are internal OpenAI-compatible services, so their
+  // /models endpoint is available even when they were created before this
+  // flag was persisted.
+  const supportsAutoDiscover =
+    provider.is_custom || provider.support_model_discovery;
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [discoveringModels, setDiscoveringModels] = useState(false);
@@ -621,8 +740,12 @@ export function RemoteModelManageModal({
   // For built-in providers only extra_models are deletable.
   const extraModelIds = new Set((provider.extra_models || []).map((m) => m.id));
 
-  const doAddModel = async (id: string, name: string) => {
-    await api.addModel(provider.id, { id, name });
+  const doAddModel = async (
+    id: string,
+    name: string,
+    modelType: "chat" | "embedding" | "reranker",
+  ) => {
+    await api.addModel(provider.id, { id, name, model_type: modelType });
     message.success(t("models.modelAdded", { name }));
     form.resetFields();
     setAdding(false);
@@ -634,6 +757,7 @@ export function RemoteModelManageModal({
       const values = await form.validateFields();
       const id = values.id.trim();
       const name = values.name?.trim() || id;
+      const modelType = values.model_type || "chat";
       const modelAlreadyExists = [
         ...(provider.models ?? []),
         ...(provider.extra_models ?? []),
@@ -666,7 +790,7 @@ export function RemoteModelManageModal({
           onOk: async () => {
             setSaving(true);
             try {
-              await doAddModel(id, name);
+              await doAddModel(id, name, modelType);
             } catch (error) {
               const errMsg =
                 error instanceof Error
@@ -682,7 +806,7 @@ export function RemoteModelManageModal({
       }
 
       // Step 2: If test passed, add the model
-      await doAddModel(id, name);
+      await doAddModel(id, name, modelType);
     } catch (error) {
       if (error && typeof error === "object" && "errorFields" in error) return;
       const errMsg =
@@ -847,6 +971,7 @@ export function RemoteModelManageModal({
         supports_image: model.supports_image,
         supports_video: model.supports_video,
         probe_source: model.probe_source,
+        model_type: model.model_type,
       });
       message.success(t("models.modelAdded", { name: model.name }));
       await onSaved();
@@ -1020,18 +1145,20 @@ export function RemoteModelManageModal({
                           flexShrink: 0,
                         }}
                       />
-                      <Tooltip
-                        title={t("models.probeMultimodal", "测试多模态")}
-                      >
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<ExperimentOutlined />}
-                          onClick={() => handleProbeMultimodal(m.id)}
-                          loading={probingModelId === m.id}
-                          style={darkBtnStyle}
-                        />
-                      </Tooltip>
+                      {(!m.model_type || m.model_type === "chat") && (
+                        <Tooltip
+                          title={t("models.probeMultimodal", "测试多模态")}
+                        >
+                          <Button
+                            type="text"
+                            size="small"
+                            icon={<ExperimentOutlined />}
+                            onClick={() => handleProbeMultimodal(m.id)}
+                            loading={probingModelId === m.id}
+                            style={darkBtnStyle}
+                          />
+                        </Tooltip>
+                      )}
                       <Tooltip title={t("models.testConnection")}>
                         <Button
                           type="text"
@@ -1194,6 +1321,21 @@ export function RemoteModelManageModal({
                 style={{ marginBottom: 12 }}
               >
                 <Input placeholder={t("models.modelNamePlaceholder")} />
+              </Form.Item>
+              <Form.Item
+                name="model_type"
+                label="模型用途"
+                initialValue="chat"
+                style={{ marginBottom: 12 }}
+              >
+                <Segmented
+                  block
+                  options={[
+                    { label: "对话模型", value: "chat" },
+                    { label: "Embedding", value: "embedding" },
+                    { label: "Reranker", value: "reranker" },
+                  ]}
+                />
               </Form.Item>
               <div
                 style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}

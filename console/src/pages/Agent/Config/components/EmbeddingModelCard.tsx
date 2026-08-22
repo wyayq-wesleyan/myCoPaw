@@ -8,10 +8,12 @@ import {
   Select,
   Switch,
 } from "@agentscope-ai/design";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { api } from "@/api";
 import type { EmbeddingModelConfig } from "@/api/types/agent";
+import type { ProviderInfo } from "@/api/types/provider";
 import { useAppMessage } from "@/hooks/useAppMessage";
 import { isEmbeddingEnabled } from "./embeddingUtils";
 import styles from "../index.module.less";
@@ -32,6 +34,11 @@ export function EmbeddingModelCard() {
   const form = Form.useFormInstance();
   const { needsReindex, reindexing, openMemorySettings, configRevision } =
     useMemoryMaintenance();
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+
+  useEffect(() => {
+    api.listProviders().then(setProviders).catch(() => setProviders([]));
+  }, []);
 
   const embeddingConfig = Form.useWatch(
     ["reme_light_memory_config", "embedding_model_config"],
@@ -62,6 +69,63 @@ export function EmbeddingModelCard() {
     configRevision,
   );
   const embeddingCacheEnabled = embeddingConfig?.enable_cache ?? true;
+  const localProviders = useMemo(
+    () => providers.filter((provider) => provider.is_custom || provider.is_local),
+    [providers],
+  );
+  const embeddingModels = useMemo(
+    () =>
+      localProviders.flatMap((provider) =>
+        [...(provider.models ?? []), ...(provider.extra_models ?? [])]
+          .filter((model) => (model.model_type ?? "chat") === "embedding")
+          .map((model) => ({ provider, model })),
+      ),
+    [localProviders],
+  );
+  const rerankerModels = useMemo(
+    () =>
+      localProviders.flatMap((provider) =>
+        [...(provider.models ?? []), ...(provider.extra_models ?? [])]
+          .filter((model) => model.model_type === "reranker")
+          .map((model) => ({ provider, model })),
+      ),
+    [localProviders],
+  );
+
+  const selectEmbeddingModel = (value: string) => {
+    const selected = embeddingModels.find(
+      ({ provider, model }) => `${provider.id}:${model.id}` === value,
+    );
+    if (!selected) return;
+    form.setFieldsValue({
+      reme_light_memory_config: {
+        embedding_model_config: {
+          ...(form.getFieldValue(["reme_light_memory_config", "embedding_model_config"]) || {}),
+          model_name: selected.model.id,
+          base_url: selected.provider.base_url,
+          api_key: selected.provider.api_key,
+          backend: "openai",
+        },
+      },
+    });
+  };
+
+  const selectRerankerModel = (value: string) => {
+    const selected = rerankerModels.find(
+      ({ provider, model }) => `${provider.id}:${model.id}` === value,
+    );
+    if (!selected) return;
+    form.setFieldsValue({
+      reme_light_memory_config: {
+        reranker_config: {
+          ...(form.getFieldValue(["reme_light_memory_config", "reranker_config"]) || {}),
+          model_name: selected.model.id,
+          base_url: selected.provider.base_url,
+          api_key: selected.provider.api_key,
+        },
+      },
+    });
+  };
 
   const testEmbedding = async () => {
     const config = form.getFieldValue([
@@ -271,6 +335,23 @@ export function EmbeddingModelCard() {
           )}
 
           <Form.Item
+            label="选择本地 Embedding 模型"
+            tooltip="选择后会自动填充同一供应商的服务地址和 API Key。"
+          >
+            <Select
+              allowClear
+              showSearch
+              disabled={reindexing}
+              placeholder="选择已配置的本地模型"
+              options={embeddingModels.map(({ provider, model }) => ({
+                value: `${provider.id}:${model.id}`,
+                label: `${provider.name} - ${model.name || model.id}`,
+              }))}
+              onChange={selectEmbeddingModel}
+              notFoundContent="暂无标记为 Embedding 的模型"
+            />
+          </Form.Item>
+          <Form.Item
             label={t("agentConfig.embeddingModelName")}
             name={[
               "reme_light_memory_config",
@@ -478,6 +559,23 @@ export function EmbeddingModelCard() {
             <Input
               disabled={reindexing}
               placeholder="http://rerank-server:8000/v1"
+            />
+          </Form.Item>
+          <Form.Item
+            label="选择本地 Reranker 模型"
+            tooltip="选择后会自动填充同一供应商的服务地址和 API Key。"
+          >
+            <Select
+              allowClear
+              showSearch
+              disabled={reindexing}
+              placeholder="从已配置的本地供应商选择，或手工输入模型名"
+              options={rerankerModels.map(({ provider, model }) => ({
+                value: `${provider.id}:${model.id}`,
+                label: `${provider.name} - ${model.name || model.id}`,
+              }))}
+              onChange={selectRerankerModel}
+              notFoundContent="暂无标记为 Reranker 的模型"
             />
           </Form.Item>
           <Form.Item

@@ -19,6 +19,7 @@ Contributors read configuration from ``ctx.extras``:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -333,6 +334,58 @@ class ScrollContextContributor(SyncPromptContributor):
         return build_scroll_system_prompt(language)
 
 
+class KnowledgeRetrievalContributor(SyncPromptContributor):
+    """Tell agents when the local knowledge tool is appropriate."""
+
+    name = "knowledge_retrieval"
+    priority = 87
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        del ctx
+        if not os.environ.get("QWENPAW_KNOWLEDGE_URL", "").strip():
+            return None
+        return (
+            "# Local Knowledge\n\n"
+            "When the user asks about uploaded business materials, historical "
+            "documents, people, events, relationships, or reference writing, "
+            "use the knowledge retrieval tools before answering.\n\n"
+            "## Available Tools\n\n"
+            "### query_knowledge\n\n"
+            "Search for relevant documents in knowledge spaces. Returns a list "
+            "of documents and snippet counts, but NOT the actual content.\n\n"
+            "**Parameters:**\n"
+            "- `query`: Search query (required)\n"
+            "- `space_name`: Filter by space name (optional)\n\n"
+            "**Returns:**\n"
+            "```\n"
+            "知识空间：{space_name}\n"
+            "找到 N 个相关文档，共 M 个相关片段：\n"
+            "[1] filename.pdf（X 个相关片段）\n"
+            "    文档ID: {doc_id}\n"
+            "...\n"
+            "```\n\n"
+            "### get_document_detail\n\n"
+            "Get detailed content of a specific document. Use this after "
+            "query_knowledge to retrieve actual content.\n\n"
+            "**Parameters:**\n"
+            "- `document_id`: Document ID from query_knowledge results (required)\n"
+            "- `page_start`: Start page number, 0 means no filter (optional)\n"
+            "- `page_end`: End page number, 0 means no filter (optional)\n"
+            "- `max_chunks`: Maximum chunks to return, default 20 (optional)\n\n"
+            "## Workflow\n\n"
+            "1. Call `query_knowledge` to find relevant documents\n"
+            "2. Analyze the results to identify which documents are relevant\n"
+            "3. Call `get_document_detail` for specific documents you need\n"
+            "4. Use the retrieved content to answer the user's question\n"
+            "5. Cite filenames and page numbers naturally\n\n"
+            "**IMPORTANT:**\n"
+            "- Do not claim no relevant materials exist unless query_knowledge returns no documents\n"
+            "- You MUST call get_document_detail to get actual content before answering\n"
+            "- Use the evidence to answer the user's question based on your own reasoning\n"
+            "- If the evidence is insufficient, say so clearly; do not make up information"
+        )
+
+
 class EnvContextContributor(SyncPromptContributor):
     """Append the environment context block (time / session / OS)."""
 
@@ -367,6 +420,7 @@ _ALL_CONTRIBUTORS = (
     MultimodalHintContributor,
     CodingModeContributor,
     ScrollContextContributor,
+    KnowledgeRetrievalContributor,
     DriverPolicyHintContributor,
     EnvContextContributor,
 )
@@ -389,6 +443,7 @@ __all__ = [
     "MultimodalHintContributor",
     "CodingModeContributor",
     "ScrollContextContributor",
+    "KnowledgeRetrievalContributor",
     "DriverPolicyHintContributor",
     "EnvContextContributor",
     "build_default_prompt_manager",

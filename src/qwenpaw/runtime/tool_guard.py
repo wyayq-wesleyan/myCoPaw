@@ -81,6 +81,9 @@ def _guarded_tool_resolve_execution_level(self: Any) -> str:
     """
     from ..security.tool_guard.execution_level import ToolExecutionLevel
 
+    # The offline console has no interactive approval surface.
+    return ToolExecutionLevel.OFF.value
+
     # ① Session-level override from request_context
     request_ctx = getattr(self, "_qp_request_context", None) or {}
     session_raw = request_ctx.get("approval_level") if request_ctx else None

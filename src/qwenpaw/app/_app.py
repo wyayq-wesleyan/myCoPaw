@@ -58,6 +58,7 @@ from .routers.healthz import router as healthz_router
 from .routers.loops import router as loops_router
 from .routers.tool_calls import router as tool_calls_router
 from .routers.voice import voice_router
+from .user_space import migrate_all_user_workspaces, sync_admin_initial_skills
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
@@ -153,6 +154,7 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
 
     auto_register_from_env()
     check_proxy_config_sanity()
+    migrate_all_user_workspaces()
 
     try:
         from ..utils.telemetry import (
@@ -176,6 +178,7 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     ensure_default_agent_exists()
     migrate_legacy_skills_to_skill_pool()
     ensure_qa_agent_exists()
+    sync_admin_initial_skills()
 
     # Migrate old conversations from sessions/*.json into each scroll agent's
     # history.db, so chats from before scroll existed stay recallable. This is
