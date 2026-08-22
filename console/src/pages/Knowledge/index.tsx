@@ -23,6 +23,7 @@ import {
   FileSearchOutlined,
   FolderAddOutlined,
   ReloadOutlined,
+  RetweetOutlined,
   SearchOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
@@ -204,6 +205,7 @@ export default function KnowledgePage() {
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [reprocessingId, setReprocessingId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [newSpaceName, setNewSpaceName] = useState("");
@@ -323,6 +325,19 @@ export default function KnowledgePage() {
     }
     setPreviewDocument(doc);
     setPreviewOpen(true);
+  };
+
+  const reprocess = async (doc: KnowledgeDocument) => {
+    setReprocessingId(doc.id);
+    try {
+      await knowledgeApi.reprocessDocument(doc.id);
+      await loadDocuments(activeSpaceId);
+      message.success("已加入重新处理队列");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "重新处理失败");
+    } finally {
+      setReprocessingId(undefined);
+    }
   };
 
   const selectedSpace = spaces.find((item) => item.id === activeSpaceId);
@@ -466,6 +481,20 @@ export default function KnowledgePage() {
                         <Space size={8}>
                           {item.status === "processing" && <Spin size="small" />}
                           <Tag color={meta.color}>{meta.label}</Tag>
+                          <Tooltip title="按当前解析规则重新入库">
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<RetweetOutlined />}
+                              loading={reprocessingId === item.id}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void reprocess(item);
+                              }}
+                            >
+                              重新处理
+                            </Button>
+                          </Tooltip>
                         </Space>
                         {item.status === "failed" && item.error ? <div className={styles.error}>{item.error}</div> : null}
                       </List.Item>

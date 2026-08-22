@@ -146,7 +146,12 @@ class Store:
                 """SELECT d.*, j.id AS job_id, j.status AS job_status,
                           j.attempts AS job_attempts, j.error AS job_error
                    FROM documents d
-                   LEFT JOIN jobs j ON j.document_id = d.id
+                   LEFT JOIN jobs j ON j.id = (
+                       SELECT id FROM jobs
+                       WHERE document_id = d.id
+                       ORDER BY created_at DESC, rowid DESC
+                       LIMIT 1
+                   )
                    WHERE d.space_id = ? AND (d.owner_id = ? OR ?)
                    ORDER BY d.created_at DESC""",
                 (space_id, owner_id, int(is_admin)),
@@ -191,6 +196,32 @@ class Store:
         with self._lock, self._connect() as db:
             db.execute("UPDATE jobs SET status = 'failed', updated_at = ?, error = ? WHERE id = ?", (now_iso(), error[:4000], job_id))
             db.execute("UPDATE documents SET status = 'failed', updated_at = ?, error = ? WHERE id = ?", (now_iso(), error[:4000], document_id))
+
+    def requeue_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> dict[str, Any] | None:
+        """Queue an existing document again without duplicating its job record."""
+        timestamp = now_iso()
+        with self._lock, self._connect() as db:
+            document = db.execute(
+                "SELECT * FROM documents WHERE id = ? AND (owner_id = ? OR ?)",
+                (document_id, owner_id, int(is_admin)),
+            ).fetchone()
+            if document is None:
+                return None
+            job = db.execute(
+                "SELECT * FROM jobs WHERE document_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (document_id,),
+            ).fetchone()
+            if job is None:
+                return None
+            db.execute(
+                "UPDATE jobs SET status = 'queued', attempts = 0, error = NULL, updated_at = ? WHERE id = ?",
+                (timestamp, job["id"]),
+            )
+            db.execute(
+                "UPDATE documents SET status = 'queued', error = NULL, updated_at = ? WHERE id = ?",
+                (timestamp, document_id),
+            )
+        return {"id": document_id, "job_id": job["id"], "status": "queued", "filename": document["filename"]}
 
     def replace_document_content(self, document: dict[str, Any], chunks: list[dict[str, Any]], extracted: dict[str, Any], embeddings: list[list[float]] | None = None) -> None:
         with self._lock, self._connect() as db:
@@ -327,7 +358,7 @@ class Store:
                           d.filename
                    FROM chunks c JOIN documents d ON d.id = c.document_id
                    WHERE c.document_id = ?
-                   ORDER BY c.page, c.id""",
+                   ORDER BY CASE WHEN c.page IS NULL THEN 0 ELSE 1 END, c.page, c.rowid""",
                 (document_id,),
             ).fetchall()
         return [dict(row) for row in rows]

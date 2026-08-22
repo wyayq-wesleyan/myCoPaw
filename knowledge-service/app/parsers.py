@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,6 +15,9 @@ class ParseError(RuntimeError):
     pass
 
 
+_CHUNK_SIZE = 1400
+
+
 def _table_to_text(rows: list[list[Any]], title: str) -> str:
     lines = [title]
     for row in rows:
@@ -21,6 +25,59 @@ def _table_to_text(rows: list[list[Any]], title: str) -> str:
         if values:
             lines.append(" | ".join(values))
     return "\n".join(lines)
+
+
+def _split_long_text(text: str, max_chars: int = _CHUNK_SIZE) -> list[str]:
+    """Split long text on sentence boundaries without dropping any content."""
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    # Prefer natural-language boundaries. The fallback handles long unbroken
+    # strings such as table cells, URLs, or copied source code.
+    units = [unit.strip() for unit in re.split(r"(?<=[。！？；.!?;])\s*|\n+", text) if unit.strip()]
+    parts: list[str] = []
+    current = ""
+    for unit in units:
+        if len(unit) > max_chars:
+            if current:
+                parts.append(current)
+                current = ""
+            parts.extend(unit[index : index + max_chars] for index in range(0, len(unit), max_chars))
+            continue
+        candidate = f"{current}\n{unit}" if current else unit
+        if len(candidate) > max_chars:
+            if current:
+                parts.append(current)
+            current = unit
+        else:
+            current = candidate
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _content_chunks(
+    content: str,
+    *,
+    page: int | None,
+    location: str,
+    source_type: str,
+) -> list[dict[str, Any]]:
+    """Turn one extracted block into ordered, retrieval-sized evidence chunks."""
+    parts = _split_long_text(content)
+    total = len(parts)
+    return [
+        {
+            "page": page,
+            "location": location if total == 1 else f"{location}（片段 {index}/{total}）",
+            "content": part,
+            "source_type": source_type,
+        }
+        for index, part in enumerate(parts, start=1)
+    ]
 
 
 class LocalParser:
@@ -46,7 +103,10 @@ class LocalParser:
             with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
                 rows = list(csv.reader(handle))
             content = _table_to_text(rows, "CSV 表格")
-        return [{"page": 1, "location": "正文", "content": content, "source_type": "text"}]
+        chunks = _content_chunks(content, page=None, location="正文", source_type="text")
+        if not chunks:
+            raise ParseError("The text file does not contain extractable content")
+        return chunks
 
     def _parse_pdf(self, path: Path) -> list[dict[str, Any]]:
         try:
@@ -58,12 +118,19 @@ class LocalParser:
         for page_index, page in enumerate(document, start=1):
             text = page.get_text("text").strip()
             if text:
-                chunks.append({"page": page_index, "location": "正文", "content": text, "source_type": "text"})
+                chunks.extend(_content_chunks(text, page=page_index, location="正文", source_type="text"))
             for table_index, table in enumerate(page.find_tables().tables, start=1):
                 rows = table.extract()
                 table_text = _table_to_text(rows, f"第 {table_index} 个表格")
                 if table_text:
-                    chunks.append({"page": page_index, "location": f"表格 {table_index}", "content": table_text, "source_type": "table"})
+                    chunks.extend(
+                        _content_chunks(
+                            table_text,
+                            page=page_index,
+                            location=f"表格 {table_index}",
+                            source_type="table",
+                        )
+                    )
         document.close()
         if not chunks:
             raise ParseError("No extractable text found. Enable MinerU for OCR of scanned PDFs.")
@@ -78,12 +145,21 @@ class LocalParser:
         chunks: list[dict[str, Any]] = []
         text = "\n".join(paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip())
         if text:
-            chunks.append({"page": 1, "location": "正文", "content": text, "source_type": "text"})
+            # DOCX does not expose dependable physical page numbers. Keep
+            # page unset and expose ordered semantic fragments instead.
+            chunks.extend(_content_chunks(text, page=None, location="正文", source_type="text"))
         for table_index, table in enumerate(document.tables, start=1):
             rows = [[cell.text for cell in row.cells] for row in table.rows]
             table_text = _table_to_text(rows, f"第 {table_index} 个表格")
             if table_text:
-                chunks.append({"page": 1, "location": f"表格 {table_index}", "content": table_text, "source_type": "table"})
+                chunks.extend(
+                    _content_chunks(
+                        table_text,
+                        page=None,
+                        location=f"表格 {table_index}",
+                        source_type="table",
+                    )
+                )
         if not chunks:
             raise ParseError("The DOCX file does not contain extractable text or tables")
         return chunks
@@ -99,7 +175,14 @@ class LocalParser:
             rows = [list(row) for row in sheet.iter_rows(values_only=True)]
             content = _table_to_text(rows, f"工作表：{sheet.title}")
             if content:
-                chunks.append({"page": 1, "location": f"工作表：{sheet.title}", "content": content, "source_type": "table"})
+                chunks.extend(
+                    _content_chunks(
+                        content,
+                        page=None,
+                        location=f"工作表：{sheet.title}",
+                        source_type="table",
+                    )
+                )
         workbook.close()
         if not chunks:
             raise ParseError("The spreadsheet does not contain readable cells")

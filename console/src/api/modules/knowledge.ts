@@ -74,6 +74,10 @@ export const knowledgeApi = {
     request<KnowledgeDocument[]>(
       `/knowledge/spaces/${encodeURIComponent(spaceId)}/documents`,
     ),
+  reprocessDocument: (documentId: string) =>
+    request<KnowledgeDocument>(`/knowledge/documents/${encodeURIComponent(documentId)}/reprocess`, {
+      method: "POST",
+    }),
   search: (spaceId: string, query: string) =>
     request<KnowledgeSearchResult>("/knowledge/search", {
       method: "POST",

@@ -77,7 +77,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="汇智知识服务", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="汇智知识服务", version="0.1.3", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -149,6 +149,16 @@ async def get_document(document_id: str, scope: tuple[str, bool] = Depends(reque
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
+
+
+@app.post("/v1/documents/{document_id}/reprocess", dependencies=[Depends(require_api_key)])
+async def reprocess_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    """Requeue an existing document so improved parsers can rebuild its index."""
+    owner_id, is_admin = scope
+    queued = store.requeue_document(document_id, owner_id, is_admin)
+    if not queued:
+        raise HTTPException(status_code=404, detail="Document or processing job not found")
+    return queued
 
 
 @app.get("/v1/documents/{document_id}/file", dependencies=[Depends(require_api_key)])
@@ -329,6 +339,8 @@ async def get_document_chunks(body: DocumentDetailRequest, scope: tuple[str, boo
     if body.page_end is not None:
         chunks = [c for c in chunks if (c.get("page") or 0) <= body.page_end]
 
+    total_count = len(chunks)
+
     # 限制数量
     chunks = chunks[:body.max_chunks]
 
@@ -336,7 +348,7 @@ async def get_document_chunks(body: DocumentDetailRequest, scope: tuple[str, boo
         "document_id": body.document_id,
         "filename": document.get("filename"),
         "chunks": chunks,
-        "total_count": len(chunks),
+        "total_count": total_count,
     }
 
 

@@ -149,19 +149,26 @@ def _format_document_detail(payload: dict[str, Any]) -> str:
 
     lines = [f"文档：{filename}（共 {total_count} 个片段）\n"]
 
-    for i, chunk in enumerate(chunks[:10], 1):
+    remaining = 12_000
+    shown = 0
+    for i, chunk in enumerate(chunks[:20], 1):
         page = chunk.get("page")
         location = chunk.get("location", "")
         content = chunk.get("content", "")
+        if remaining <= 0:
+            break
         position = f"第 {page} 页" if page else ""
         if location:
             position = f"{position} - {location}" if position else location
         lines.append(f"[{i}] {position}")
-        lines.append(f"{content[:500]}{'...' if len(content) > 500 else ''}")
+        limit = min(1_200, remaining)
+        lines.append(f"{content[:limit]}{'...' if len(content) > limit else ''}")
         lines.append("")
+        remaining -= min(len(content), limit)
+        shown += 1
 
-    if total_count > 10:
-        lines.append(f"... 还有 {total_count - 10} 个片段未显示")
+    if total_count > shown:
+        lines.append(f"... 还有 {total_count - shown} 个片段未显示，可按 PDF 页码筛选；DOCX/TXT 等无可靠页码文档请按片段位置读取。")
 
     return "\n".join(lines)
 
@@ -184,8 +191,8 @@ async def get_document_detail(document_id: str, page_start: int = 0, page_end: i
 
     Args:
         document_id: The document ID returned by query_knowledge
-        page_start: Start page number (0 means no filter)
-        page_end: End page number (0 means no filter)
+        page_start: Start PDF page number (0 means no filter)
+        page_end: End PDF page number (0 means no filter)
         max_chunks: Maximum number of chunks to return (default 20)
     """
     url = _service_url()
