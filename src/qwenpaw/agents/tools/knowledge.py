@@ -127,10 +127,11 @@ async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
                     text = "\n\n".join(f"知识空间：{name}\n{_format_search_result(payload)}" for name, payload in target)
         except httpx.HTTPStatusError as exc:
             text = f"知识检索失败：服务返回 {exc.response.status_code}。"
-        except httpx.HTTPError as exc:
-            text = f"知识服务暂时不可用：{exc}"
-        except Exception as exc:  # Keep tool failures readable to the model.
-            text = f"知识检索发生错误：{exc}"
+        except httpx.HTTPError:
+            text = "知识服务暂时不可用，请稍后重试。"
+        except Exception:
+            # 不把原始异常带进模型上下文，避免内部地址/路径泄漏到回复
+            text = "知识检索发生内部错误，请稍后重试。"
     return ToolChunk(
         is_last=True,
         state=ToolResultState.SUCCESS,
@@ -224,10 +225,10 @@ async def get_document_detail(document_id: str, page_start: int = 0, page_end: i
                 text = _format_document_detail(response.json())
         except httpx.HTTPStatusError as exc:
             text = f"获取文档详情失败：服务返回 {exc.response.status_code}。"
-        except httpx.HTTPError as exc:
-            text = f"知识服务暂时不可用：{exc}"
-        except Exception as exc:
-            text = f"获取文档详情发生错误：{exc}"
+        except httpx.HTTPError:
+            text = "知识服务暂时不可用，请稍后重试。"
+        except Exception:
+            text = "获取文档详情发生内部错误，请稍后重试。"
 
     return ToolChunk(
         is_last=True,

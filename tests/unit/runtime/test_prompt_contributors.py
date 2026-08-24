@@ -133,6 +133,18 @@ def test_response_discipline_forbids_agent_trace_meta_text():
     assert "language of the user's current request" in fragment
 
 
+def test_response_discipline_forbids_internal_machinery_leak():
+    fragment = ResponseDisciplineContributor().contribute_sync(
+        SimpleNamespace(extras={}),
+    )
+
+    assert fragment is not None
+    assert "document IDs" in fragment
+    assert "internal tool names" in fragment
+    assert "raw exception messages" in fragment
+    assert "filename and page number" in fragment
+
+
 def test_response_discipline_registered_by_default():
     pm = build_default_prompt_manager()
 
