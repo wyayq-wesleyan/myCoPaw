@@ -244,7 +244,7 @@ def set_account_skills(username: str, skill_names: list[str] | None) -> None:
         workspace = Path(profile.workspace_dir)
         for name in pool:
             if name in selected:
-                result = install_initial_skill(name=name, workspace_dir=workspace)
+                result = install_initial_skill(workspace_dir=workspace, skill_name=name)
                 if not result.get("success") and result.get("reason") not in {
                     "already_exists",
                     "conflict",
