@@ -173,6 +173,7 @@ export interface LoopConfig {
 
 export interface AgentsRunningConfig {
   max_iters: number;
+  max_input_length?: number;
   loop: LoopConfig;
   shell_command_timeout: number;
   shell_command_executable: string;

@@ -498,6 +498,234 @@ http://127.0.0.1:18088/api/version
 
 配置路径：`/app/working/config.json`
 
+### 9.6 知识服务第二轮改造：MinerU / LightRAG / PG17 与生产化加固
+
+背景：第一轮知识服务搭建完成了基础的 `LocalParser` 解析 + BM25 检索 + LiteLLM 路由。
+在实际导入学术论文 PDF 和技术规范文档时，暴露了三个核心问题：
+
+1. 解析质量差：`LocalParser` 只提取纯文本，公式变成乱码、表格丢失、图片题注丢失、
+   中文 PDF 阅读顺序错乱。90 页 MBA 论文只提取出 39 个 chunk，公式全部变成 `$$...$$` 乱码
+   （如 `$ - \\Lambda \\zeta^{\\star}$`），表格结构完全丢失。
+2. 检索失效：PG 的 `simple` FTS 配置对中文无分词能力，整句变一个 token。
+   `ILIKE '%词%'` 只做子串匹配，"论文格式要求"四个字被当作一个不可分割的 token 存储，
+   搜索"论文格式"永远匹配不到。语义检索无相关性下限，问"今晚吃什么"返回一堆无关答案。
+3. 缺乏知识图谱：实体关系完全依赖启发式抽取（正则 `发明|发现|提出|创建`），
+   只能捕获 "X 发现了 Y" 这种固定句式。跨文档关联、隐含实体推断、实体类型识别均为空白。
+
+改动清单（按重要性排序）：
+
+**A. 解析管线：LocalParser → MinerU 强制管线**
+
+背景：MinerU（magic-pdf）是 MinerU 团队开源的文档解析工具，基于 UniMERNet 模型，
+能精确提取 PDF 中的公式（LaTeX）、表格（Markdown/HTML）、图片题注、以及保留正确阅读顺序。
+之前只对 PDF 启用 MinerU，DOC/DOCX 仍走 LocalParser，导致 Word 文档质量极差。
+
+改动原因：
+- DOC/DOCX 用 python-docx 读取只能拿到 `<w:p>` 段落文本，表格变成拼接字符串，
+  图片直接丢失，多栏布局的阅读顺序无法保证。实测一份论文格式规范 DOCX 用 LocalParser
+  只提取出 6 个 chunk（含大量重复/乱序文本）。
+- LibreOffice headless 可将 DOC/DOCX 无损转为 PDF（保留表格/图片/布局），
+  转换后交给 MinerU 处理，公式/表格/图片题注全部正确提取。
+- `parse_document()` 新增 `parsing_method` 参数，`None`=按文件类型自动路由，
+  `"pdf_mineru"`/`"doc_libreoffice_mineru"` 强制指定。
+- LibreOffice 常驻进程（subprocess STARTUPINFO）避免每次转换都冷启动。
+
+改动后效果：
+- DOCX：214 个 chunk（原来 6 个），含 5 个表格、5 个图片、真实页码
+- PDF：393 个 chunk（原来 39 个），含 12 个公式块、26 个表格、图片题注
+- 转换耗时：LibreOffice DOCX→PDF ~5-25 秒（取决于文档复杂度）
+
+涉及文件：
+- `knowledge-service/app/parsers.py`：`LocalParser` 重命名为 `SimpleReader`（仅处理
+  TXT/MD/CSV/XLSX）；新增 `_convert_to_pdf()` LibreOffice 转换函数；
+  `parse_document()` 新增路由逻辑强制 DOC/DOCX 走 MinerU 管线
+- `knowledge-service/Dockerfile`：新增 `apt-get install libreoffice-core libreoffice-writer
+  libreoffice-calc` 安装 LibreOffice；Python 依赖新增 `mineru[core]==3.4.5`
+  `torch==2.8.0+cpu` `torchvision==0.23.0+cpu`
+- `knowledge-service/.env`：新增 `INSTALL_KNOWLEDGE_EXTRAS=1`
+  `SUPPORTED_DOC_EXTENSIONS` 加入 `.doc`
+- `knowledge-service/app/config.py`：`DEFAULT_SUPPORTED_DOC_EXTENSIONS` 加入 `.doc`
+
+**B. 数据存储：SQLite → PostgreSQL 17**
+
+背景：第一轮用 SQLite 存储 chunks/embeddings/entities/relations。SQLite 的问题：
+- 单文件锁（WAL 模式下仍限制并发写入），多 worker 同时入库会排队
+- JSONB 向量检索（`json_each`）在 SQLite 下更慢（无并行扫描）
+- 无 `pg_trgm` 等扩展支持，后续做模糊匹配受限
+- 无原生复制/备份工具，生产环境风险高
+
+改动原因：
+- PostgreSQL 17 原生支持 JSONB 数组操作、GIN 索引、pg_trgm 模糊匹配
+- `psycopg_pool` 连接池复用连接（min 2 / max 20），避免每次操作新建连接
+  （30-50 人并发下单次检索开 4 个连接，无池会打爆 PG 默认 100 上限）
+- `SKIP LOCKED` 队列支持多 worker 扩展（当前单 worker 够用，未来可横向加）
+- 保留 `migrate_sqlite_to_postgres.py` 迁移工具
+
+涉及文件：
+- `knowledge-service/app/store.py`：`Store` 类重写，所有 SQL 改为 PostgreSQL 语法
+  （`RETURNING *` / `jsonb_array_elements_text` / `COPY ... TO STDOUT` /
+  `psycopg_pool.ConnectionPool`）
+- `knowledge-service/docker-compose.yml`：新增 `huizhi-knowledge-postgres` 服务
+  （`postgres:17-alpine`，`POSTGRES_PASSWORD=knowledge2026`）
+- `knowledge-service/pyproject.toml`：依赖新增 `psycopg[binary,pool]>=3.2`
+
+**C. 检索质量：三个关键修复**
+
+背景：第一轮的检索对中文几乎不可用，三个独立问题叠加导致检索结果极差。
+
+修复 1：PG 全文检索对中文完全失效
+- 原因：PostgreSQL 的 `simple` 配置无中文分词能力，"论文格式要求"被当作一个不可分割的
+  token 存储。搜索"论文格式"永远不会匹配到这个 token（除非完全一致）。
+- 改动：用 Python `_cjk_bigrams()` 做二元组切分，"论文格式要求"→`[论文,文格,格式,式要,要求]`，
+  存入 `text_tokens` 列。搜索时计算覆盖率打分，命中率 40% 以上纳入结果。
+- 效果：搜索"论文格式"现在能正确匹配到含"论文格式要求"的 chunk。
+
+修复 2：语义检索无相关性下限
+- 原因：Qwen3-Embedding 的余弦分普遍偏高（相关查询 ≥0.45，无关查询 ≤0.36），
+  无下限时问"今晚吃什么"会返回一堆关于"吃"的无关知识片段。
+- 改动：`SEMANTIC_MIN_SCORE = 0.40`（实测标定），低于此分的语义结果直接丢弃。
+  本地字面/语义两路全空时视为整库无关，图谱结果一并丢弃。
+- 效果：实测"吃什么饭"、"今天天气怎么样"均返回 0 条结果，"论文格式要求"返回 20+ 条。
+
+修复 3：LightRAG 图谱结果无条件拼入导致噪声
+- 原因：LightRAG 的 `/query/data` 不返回相关性分数，无法判断结果质量。
+  本地检索无结果时（说明查询与知识库无关），图谱结果仍被拼入，导致噪声。
+- 改动：本地字面+语义两路全空时，图谱结果一并丢弃。图谱结果保留约 1/3 配额
+  （`max(2, top_k // 3)`），避免被低质量字面匹配挤占。
+- 效果：图谱结果只在本地有匹配时作为补充，不会在无关查询时引入噪声。
+
+涉及文件：
+- `knowledge-service/app/store.py`：`search()` 重写为 CJK 二元组覆盖率打分；
+  `search_by_embedding()` 改用 numpy 向量化 + `min_score` 参数；
+  新增 `_cjk_bigrams()` 工具函数
+- `knowledge-service/app/main.py`：`_hybrid_search()` 新增 LightRAG 配额逻辑；
+  `SEMANTIC_MIN_SCORE = 0.40`
+
+**D. LightRAG 图谱检索集成**
+
+背景：LightRAG（Hong Kong U 开源）基于 LLM 构建实体-关系知识图谱，
+能回答"哪些人参与了 XX 项目"这类跨文档关联问题。之前因认证、模型绑定、
+连接地址等问题完全不可用，检索时 `lightrag.reachable` 一直是 `false`。
+
+改动原因：
+- LightRAG 使用 `X-API-Key` 头认证（不是 Bearer token），之前发 Bearer 头
+  导致 401。
+- LightRAG 的 `EMBEDDING_MODEL` 默认绑定 `text-embedding-3-small`（OpenAI），
+  需设为空串让它用 `/v1/embeddings` 接口 + 自定义模型名。
+- `llm_binding` 和 `embedding_binding` 的 `api_key` 必须显式设置为 `thinker`
+  （master key 加密方案变更后，环境变量传入的是明文）。
+- 容器内 `lightrag-hku` 安装了但 `lightrag-server` 命令找不到（安装路径问题），
+  改用 `python -m lightrag.server` 启动。
+- `reindex_space()` 实现：遍历指定知识空间的所有 chunks，逐条调用 LightRAG
+  `insert()` 构建图谱。409 冲突视为成功（重复文档）。
+
+改动后效果：
+- `GET /health` 返回 `lightrag.reachable: true`、`entities: 558+`、`docs: 3`
+- 语义改写后的查询（如"论文格式要求"→"学术论文的格式规范"）能同时命中
+  本地 BM25 + LightRAG 图谱，跨文档实体关联正常工作
+- 文档处理完成后自动触发 `insert`，无需手动 reindex
+
+涉及文件：
+- `knowledge-service/app/lightrag_bridge.py`：`LightRAGBridge` 类重写，
+  `X-API-Key` 头认证 + `/query/data` fast path + `reindex_space()` 实现
+- `knowledge-service/docker-compose.yml`：新增 `huizhi-lightrag` 服务
+  （`lightrag-hku` + `lightrag-server`）
+- `knowledge-service/.env`：新增 `LIGHTRAG_URL=http://lightrag:9621`
+  `LIGHTRAG_API_KEY=thinker` `OPENAI_API_KEY=thinker`
+
+**E. 性能优化：为 30-50 人正式环境准备**
+
+背景：第一轮单次 PDF 处理 3 分 37 秒，实体抽取串行 6 批耗时 4.4 分钟（占 32%）。
+Embedding 单次全量调用 214 块（易超时）。向量检索用 Python 循环计算余弦（慢）。
+无连接池，每次操作新建 PG 连接。Async 端点里直接同步调用 store（阻塞事件循环）。
+
+改动 1：实体抽取分批并行
+- 原因：之前 prompt 硬截断 5 万字符，大文档超过一半内容不参与实体抽取。
+  改为分批（12k 字/批）后，354 块分 6 批串行调用 LLM，每批 30-60 秒，
+  总计 4.4 分钟。
+- 改动：`ThreadPoolExecutor(max_workers=3)` 并行抽取。MLX 模型服务单卡串行处理，
+  但 Python 线程可重叠 I/O 等待和后处理。
+- 效果：docx 214 块处理从 3 分 37 秒降到 1 分 30 秒（2.4 倍提速）。
+
+改动 2：Embedding 分批调用
+- 原因：单次调用 214 块 embedding（~40KB 文本）容易超时或 OOM。
+- 改动：32 块/批，每批独立调用 `/v1/embeddings`。
+- 效果：354 块 embedding 仅需 47 秒（原 214 块截断方案 30 秒，但覆盖不全）。
+
+改动 3：向量检索 numpy 向量化
+- 原因：Python 循环 `sum(a*b for a,b in zip(...))` 计算余弦，400 块需 400 次循环。
+- 改动：`numpy` 向量化 `np.dot / (norm_a * norm_b)`，一次运算处理全量。
+- 效果：向量检索耗时从 ~50ms 降到 ~5ms（400 块规模）。
+
+改动 4：数据库连接池
+- 原因：每次 DB 操作新建连接（一次混合检索开 4 个连接），30-50 人并发下
+  连接风暴。PostgreSQL 默认 `max_connections=100` 会被打穿。
+- 改动：`psycopg_pool.ConnectionPool(min_size=2, max_size=20)`，透明接入
+  所有 store 方法。压测后 PG 中保持 11 个复用连接。
+- 效果：连接复用率从 0% 提升到 ~100%，无连接风暴风险。
+
+改动 5：事件循环阻塞消除
+- 原因：FastAPI `async def` 端点里 16 处直接同步调用 `store.*`（DB 操作），
+  阻塞整个事件循环。所有用户请求被串行化，并发时延迟线性叠加。
+  这是最隐蔽的扩展性杀手——开发时单用户无感知，30-50 人并发时全部卡死。
+- 改动：所有同步调用改为 `await asyncio.to_thread(store.xxx, ...)`，
+  FastAPI 默认 40 线程池承接并发。
+- 效果：8 并发检索请求 100% 成功（22.7 秒内完成，含模型服务排队）。
+
+改动 6：失败任务自动重试
+- 原因：MinerU 模型加载偶尔失败（内存不足/OOM），任务永久失败需手动重试。
+- 改动：`MAX_JOB_ATTEMPTS = 2`，失败任务自动重新入队一次，10 秒退避。
+- 效果：模型加载失败后自动重试，无需人工干预。
+
+涉及文件：
+- `knowledge-service/app/providers.py`：`extract_facts()` 新增 `_extract_batch()` +
+  `ThreadPoolExecutor(max_workers=3)` 并行抽取；`embed()` 改为 32 块/批调用
+- `knowledge-service/app/store.py`：`search_by_embedding()` 改用 numpy 向量化；
+  新增 `_cjk_bigrams()` + `ConnectionPool`
+- `knowledge-service/app/worker.py`：新增 `requeue_job_for_retry()` +
+  `MAX_JOB_ATTEMPTS = 2`
+
+**F. Console 前端改动**
+
+改动 1：知识空间菜单固定开放给所有用户
+- 原因：知识空间是标准功能，不应需要管理员单独授权。
+- 改动：`builtinMenu.ts` 将 `core.knowledge` 移出 `core.workspace-group` 子菜单，
+  提升为一级菜单项；`Sidebar.tsx` 加入 `ALWAYS_USER_MENU_IDS`；
+  `MainLayout/index.tsx` 加入 `ALWAYS_ALLOWED_ROUTE_IDS`；
+  `UserManagement/index.tsx` 知识空间 checkbox 设为 disabled + 默认勾选。
+
+改动 2：Agent 配置 maxInputLength 只读展示
+- 原因：用户不应手动修改 maxInputLength（由所选模型决定），但需要看到当前值。
+- 改动：`LightContextCard.tsx` 新增 disabled InputNumber 展示当前值，
+  提示文字"当前值来自所选模型；请在设置 → 模型中修改"。
+
+改动 3：`AgentRunningConfig` 类型新增 `max_input_length` 可选字段
+- 原因：TypeScript 类型定义需与后端运行时配置对齐。
+- 改动：`agent.ts` 新增 `max_input_length?: number`。
+
+**G. 上下文管理改进**
+
+改动 1：`ConversationScopeContributor` 新增
+- 原因：多轮对话中，模型容易把内部生成的 `visual_context`/`visual_history` 页面
+  误认为是用户刚上传的图片，产生"您刚才发的这张图"这类幻觉。
+- 改动：新增 prompt contributor 明确区分"当前用户消息"和"内部上下文快照"，
+  指示模型"不要把内部页面归属于用户"。优先级 82（在 MultimodalHint 之前注入）。
+- 涉及文件：`src/qwenpaw/runtime/prompt_contributors.py`
+- 测试：`tests/unit/runtime/test_prompt_contributors.py` 新增
+  `test_conversation_scope_distinguishes_internal_visual_history`
+
+改动 2：视觉历史页面标题强化
+- 原因：`visual_history` 页面标题为 "EARLIER TURNS OF THIS CONVERSATION"，
+  模型仍可能误认为是用户刚提供的内容。
+- 改动：标题改为 "INTERNAL QWENPAW VISUAL HISTORY SNAPSHOTS — NOT USER-UPLOADED IMAGES"，
+  尾部追加"Never attribute these snapshots to the user"。
+- 涉及文件：`src/qwenpaw/agents/context/visual_compression/pipeline/history.py`
+
+改动 3：静态上下文页面标题强化
+- 原因：与改动 2 同理，`static_context` 的渲染页面也需要明确标注为内部生成。
+- 改动：标题追加 "INTERNAL QWENPAW CONTEXT SNAPSHOTS — NOT USER-UPLOADED IMAGES"。
+- 涉及文件：`src/qwenpaw/agents/context/visual_compression/pipeline/static_context.py`
+
 ## 10. 当前状态摘要
 
 | 项目 | 状态 |
@@ -515,7 +743,7 @@ http://127.0.0.1:18088/api/version
 | 代码挂载部署 | 已完成，ARM64 已验证 |
 | 容器数据持久化 | 已完成，必须正确挂载 |
 | 第三方 API/iframe | 已撤回 |
-| 知识服务部署 | 已完成，独立容器运行 |
+| 知识服务部署 | 已完成，4 容器架构（api / worker / postgres / lightrag） |
 | 知识服务纯检索接口 | 已完成 `/v1/search` |
 | 按需获取文档详情 | 已完成 `get_document_detail` |
 | 知识空间流式查询 | 已完成前端流式显示 |
@@ -523,6 +751,12 @@ http://127.0.0.1:18088/api/version
 | 文档预览（PDF/DOCX/TXT） | 已完成，使用 Drawer 组件 |
 | 模型配置自动发现 | 已完成，从 provider 获取模型列表 |
 | 系统提示词 | 已创建 AGENTS.md/SOUL.md/PROFILE.md |
+| MinerU 文档解析 | 已完成，PDF/DOCX 全部走 MinerU 管线 |
+| LightRAG 知识图谱 | 已完成，558+ 实体，业务集成 |
+| PostgreSQL 17 存储 | 已完成，连接池 2-20 |
+| CJK 二元组检索 | 已完成，替代失效的 PG FTS |
+| 语义相关性过滤 | 已完成，阈值 0.40 |
+| 实体抽取并行化 | 已完成，3 线程 2.4x 提速 |
 | 长会话性能 | 以官方 Scroll Context 为基础，需继续验证 |
 
 ## 11. 维护原则

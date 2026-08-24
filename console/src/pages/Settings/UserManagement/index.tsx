@@ -219,7 +219,12 @@ export default function UserManagementPage() {
               ),
         skills: accountResources.skills,
         tools: accountResources.tools,
-        menus: menuResult.permissions ?? MENU_OPTIONS.map(([id]) => id),
+        menus: Array.from(
+          new Set([
+            ...(menuResult.permissions ?? MENU_OPTIONS.map(([id]) => id)),
+            "core.knowledge",
+          ]),
+        ),
       });
       setResourceSelection({
         skills: accountResources.skills,
@@ -672,12 +677,13 @@ export default function UserManagementPage() {
               <Divider orientation="left">可见菜单</Divider>
               <Form.Item
                 name="menus"
-                extra="对话和智能体选择器固定可见，不需要单独授权。"
+                extra="对话和智能体选择器固定可见；知识空间对所有用户固定开放。"
               >
                 <Checkbox.Group
                   options={MENU_OPTIONS.map(([value, label]) => ({
                     value,
                     label,
+                    disabled: value === "core.knowledge",
                   }))}
                 />
               </Form.Item>

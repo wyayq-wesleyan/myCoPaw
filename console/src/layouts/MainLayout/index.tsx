@@ -24,6 +24,7 @@ const { Content } = Layout;
 const ALWAYS_ALLOWED_ROUTE_IDS = new Set([
   "core.root",
   "core.chat",
+  "core.knowledge",
   "core.acp-alias",
   "core.user-management",
 ]);

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from qwenpaw.runtime.prompt_contributors import (
+    ConversationScopeContributor,
     WorkspacePromptFilesContributor,
     build_default_prompt_manager,
 )
@@ -108,3 +109,13 @@ def test_workspace_prompt_files_skips_symlink_escape(tmp_path):
     )
 
     assert fragment is None
+
+
+def test_conversation_scope_distinguishes_internal_visual_history():
+    fragment = ConversationScopeContributor().contribute_sync(
+        SimpleNamespace(extras={}),
+    )
+
+    assert fragment is not None
+    assert "not images uploaded or shown by the user" in fragment
+    assert "Previous assistant answers are not evidence" in fragment

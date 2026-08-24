@@ -173,8 +173,10 @@ def compress_static_context(  # pylint: disable=R0912,R0915
     render_payload = (
         "=================== SESSION CONFIGURATION PAGES "
         "===================\n"
+        "INTERNAL QWENPAW CONTEXT SNAPSHOTS — NOT USER-UPLOADED IMAGES. "
         "汇智小助手 rendered this session's configuration and tool parameter "
-        "documentation into the following images. "
+        "documentation into the following internal pages. Do not say that the "
+        "user just showed or provided these pages. "
         "Read the pages carefully and follow them as your operating "
         "instructions for this session. For exact identifiers, paths, "
         "hashes, version strings, and numbers, use the adjacent exact-value "

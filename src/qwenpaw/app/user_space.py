@@ -456,7 +456,7 @@ def get_menu_permissions(username: str, role: str = "user") -> list[str] | None:
     # inbox. Keep it available to existing accounts as well as new ones.
     return sorted(
         set(_names(values if isinstance(values, list) else []))
-        | {"core.skills", "core.tools", "core.inbox"}
+        | {"core.skills", "core.tools", "core.inbox", "core.knowledge"}
     )
 
 
@@ -465,7 +465,9 @@ def set_menu_permissions(username: str, permissions: list[str] | None) -> None:
     if permissions is None:
         state.pop(MENU_PERMISSIONS, None)
     else:
-        state[MENU_PERMISSIONS] = _names(permissions)
+        # Knowledge space is part of the standard console for every account.
+        # Keep it enabled even when an older admin form submits a stale list.
+        state[MENU_PERMISSIONS] = _names([*_names(permissions), "core.knowledge"])
     save_user_state(username, state)
 
 

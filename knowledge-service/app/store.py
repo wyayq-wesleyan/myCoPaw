@@ -22,14 +22,37 @@ def _json_value(value: Any) -> Any:
 class Store:
     """PostgreSQL-backed durable store for parsed knowledge and retrieval data."""
 
+    # 连接池容量按 30-50 并发用户评估：单次检索最多占用 2-3 个连接，
+    # 20 上限可覆盖峰值并留余量；PostgreSQL 默认 max_connections=100。
+    POOL_MIN_SIZE = 2
+    POOL_MAX_SIZE = 20
+
     def __init__(self, database_url: str) -> None:
         if not database_url:
             raise RuntimeError("KNOWLEDGE_DATABASE_URL must point to PostgreSQL 17")
         self.database_url = database_url
         self._init_lock = threading.Lock()
+        self._pool = None
+        try:
+            from psycopg_pool import ConnectionPool
+
+            self._pool = ConnectionPool(
+                database_url,
+                min_size=self.POOL_MIN_SIZE,
+                max_size=self.POOL_MAX_SIZE,
+                open=True,
+                kwargs={"row_factory": dict_row},
+                name="knowledge-store-pool",
+            )
+        except ImportError:
+            # psycopg_pool 未安装时退回直连模式（开发环境可用）
+            pass
         self._init_db()
 
-    def _connect(self) -> psycopg.Connection[dict[str, Any]]:
+    def _connect(self):
+        """Return a connection context manager; pooled when available."""
+        if self._pool is not None:
+            return self._pool.connection()
         return psycopg.connect(self.database_url, row_factory=dict_row)
 
     def _init_db(self) -> None:
@@ -282,6 +305,19 @@ class Store:
                 (timestamp, error[:4000], document_id),
             )
 
+    def requeue_job_for_retry(self, job_id: str, document_id: str) -> None:
+        """Requeue a failed attempt without resetting the attempts counter."""
+        timestamp = now_utc()
+        with self._connect() as db:
+            db.execute(
+                "UPDATE jobs SET status = 'queued', updated_at = %s WHERE id = %s",
+                (timestamp, job_id),
+            )
+            db.execute(
+                "UPDATE documents SET status = 'queued', updated_at = %s WHERE id = %s",
+                (timestamp, document_id),
+            )
+
     def requeue_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> dict[str, Any] | None:
         timestamp = now_utc()
         with self._connect() as db:
@@ -419,7 +455,36 @@ class Store:
                         ),
                     )
 
+    @staticmethod
+    def _cjk_bigrams(text: str) -> list[str]:
+        """Split a query into CJK bigrams plus non-CJK words for literal scoring.
+
+        PostgreSQL's default tokenizer cannot segment Chinese, so full-text
+        search is ineffective (the whole sentence becomes one token). Scoring
+        overlapping bigrams restores usable literal recall for CJK queries.
+        """
+        import re as _re
+
+        segments = _re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]+", text)
+        terms: list[str] = []
+        for segment in segments:
+            if not _re.fullmatch(r"[\u4e00-\u9fff]+", segment):
+                terms.append(segment)
+            elif len(segment) <= 2:
+                terms.append(segment)
+            else:
+                terms.extend(segment[i : i + 2] for i in range(len(segment) - 1))
+        # 去重保序
+        seen: set[str] = set()
+        return [t for t in terms if not (t in seen or seen.add(t))]
+
     def search(self, space_id: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Literal retrieval scored by CJK-bigram coverage.
+
+        The full-text index is tried first (works for latin-script content);
+        CJK queries are additionally scored by how many query bigrams each
+        chunk contains, which survives where tsvector tokenization fails.
+        """
         with self._connect() as db:
             full_text_rows = db.execute(
                 """
@@ -433,28 +498,55 @@ class Store:
                 """,
                 (query, space_id, query, limit),
             ).fetchall()
-            # PostgreSQL stock tokenization is weak for short CJK names.
-            # Literal matching keeps people named only in a table discoverable.
-            literal_rows = db.execute(
-                """
-                SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename, 0.0 AS score
-                FROM chunks c JOIN documents d ON d.id = c.document_id
-                WHERE c.space_id = %s AND c.content ILIKE %s
-                LIMIT %s
-                """,
-                (space_id, f"%{query}%", limit),
-            ).fetchall()
-        merged = {row["id"]: dict(row) for row in [*full_text_rows, *literal_rows]}
+
+            terms = self._cjk_bigrams(query)
+            if terms:
+                # 每个二元组一票，按覆盖率排序；命中率过半的才算字面相关
+                whens = " + ".join(
+                    f"(CASE WHEN c.content LIKE %s THEN 1 ELSE 0 END)" for _ in terms
+                )
+                like_params = [f"%{term}%" for term in terms]
+                # 占位符顺序：SELECT 打分 N 个 LIKE → 除数 → WHERE space_id → WHERE 打分 N 个 LIKE → LIMIT
+                rows = db.execute(
+                    f"""
+                    SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
+                           ({whens})::float / %s AS score
+                    FROM chunks c JOIN documents d ON d.id = c.document_id
+                    WHERE c.space_id = %s AND ({whens}) > 0
+                    ORDER BY score DESC
+                    LIMIT %s
+                    """,
+                    [*like_params, float(len(terms)), space_id, *like_params, limit * 3],
+                ).fetchall()
+            else:
+                rows = []
+
+        merged: dict[str, dict[str, Any]] = {}
+        for row in [*rows, *full_text_rows]:
+            item = dict(row)
+            if item["id"] not in merged or (item.get("score") or 0) > (merged[item["id"]].get("score") or 0):
+                merged[item["id"]] = item
         return list(merged.values())[:limit]
 
-    def search_by_embedding(self, space_id: str, vector: list[float], limit: int = 20) -> list[dict[str, Any]]:
-        def cosine(left: list[float], right: list[float]) -> float:
-            if not left or len(left) != len(right):
-                return -1.0
-            dot = sum(a * b for a, b in zip(left, right))
-            left_norm = sum(a * a for a in left) ** 0.5
-            right_norm = sum(a * a for a in right) ** 0.5
-            return dot / (left_norm * right_norm) if left_norm and right_norm else -1.0
+    def search_by_embedding(
+        self,
+        space_id: str,
+        vector: list[float],
+        limit: int = 20,
+        min_score: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Semantic retrieval with vectorized cosine scoring.
+
+        Scores below *min_score* are dropped so unrelated queries do not
+        return noise (embedding cosine for CJK runs high; 0.30 is a practical
+        relevance floor, enforced by the caller by default).
+        """
+        import math
+
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
 
         with self._connect() as db:
             rows = db.execute(
@@ -467,11 +559,60 @@ class Store:
                 """,
                 (space_id,),
             ).fetchall()
-        ranked: list[dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            item["score"] = cosine(vector, _json_value(item.pop("vector_json")))
-            ranked.append(item)
+        if not rows:
+            return []
+
+        if np is not None and rows:
+            query_vec = np.asarray(vector, dtype=np.float32)
+            qnorm = np.linalg.norm(query_vec)
+            if not qnorm:
+                return []
+            matrix = []
+            keep_rows = []
+            for row in rows:
+                vec = row.pop("vector_json")
+                if isinstance(vec, str):
+                    try:
+                        vec = json.loads(vec)
+                    except json.JSONDecodeError:
+                        continue
+                arr = np.asarray(vec, dtype=np.float32)
+                if arr.size != query_vec.size or not arr.any():
+                    continue
+                matrix.append(arr)
+                keep_rows.append(row)
+            if not matrix:
+                return []
+            scores = (np.stack(matrix) @ query_vec) / (
+                np.linalg.norm(np.stack(matrix), axis=1) * qnorm + 1e-12
+            )
+            ranked = [
+                {**row, "score": float(score)}
+                for row, score in zip(keep_rows, scores)
+                if score >= min_score
+            ]
+        else:
+            def cosine(left: list[float], right: list[float]) -> float:
+                if not left or len(left) != len(right):
+                    return -1.0
+                dot = sum(a * b for a, b in zip(left, right))
+                left_norm = math.sqrt(sum(a * a for a in left))
+                right_norm = math.sqrt(sum(b * b for b in right))
+                return dot / (left_norm * right_norm) if left_norm and right_norm else -1.0
+
+            ranked = []
+            for row in rows:
+                item = dict(row)
+                vec = item.pop("vector_json")
+                if isinstance(vec, str):
+                    try:
+                        vec = json.loads(vec)
+                    except json.JSONDecodeError:
+                        continue
+                score = cosine(vector, vec)
+                if score >= min_score:
+                    ranked.append({**item, "score": score})
+
         ranked.sort(key=lambda item: item["score"], reverse=True)
         return ranked[:limit]
 

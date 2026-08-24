@@ -11,6 +11,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s knowle
 logger = logging.getLogger("knowledge-worker")
 
 
+MAX_JOB_ATTEMPTS = 2
+
+
 def run() -> None:
     settings = Settings.from_env()
     settings.ensure_dirs()
@@ -27,8 +30,14 @@ def run() -> None:
             store.finish_job(job["id"], job["document_id"])
             logger.info("completed document=%s", job["document_id"])
         except Exception as exc:  # worker must continue with later documents
-            logger.exception("failed document=%s", job["document_id"])
-            store.fail_job(job["id"], job["document_id"], str(exc))
+            logger.exception("failed document=%s (attempt %s)", job["document_id"], job.get("attempts"))
+            # 瞬时故障（模型加载超时等）自动重试一次，超过上限才标记失败
+            if (job.get("attempts") or 1) < MAX_JOB_ATTEMPTS:
+                store.requeue_job_for_retry(job["id"], job["document_id"])
+                logger.warning("requeued document=%s for retry", job["document_id"])
+                time.sleep(10)  # 退避，避免瞬时故障导致立即重试再失败
+            else:
+                store.fail_job(job["id"], job["document_id"], str(exc))
 
 
 if __name__ == "__main__":

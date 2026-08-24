@@ -2425,6 +2425,7 @@
     "maxInputLengthPlaceholder": "请输入最大输入长度",
     "maxInputLengthRequired": "最大输入长度为必填项",
     "maxInputLengthMin": "最大输入长度必须大于等于 1000",
+    "maxInputLengthModelSettingsHint": "当前值来自所选模型；请在设置 → 模型中修改。",
     "contextCompactRatio": "上下文压缩阈值比例",
     "contextCompactRatioTooltip": "当上下文长度达到最大上下文长度的该比例时，触发自动压缩",
     "contextCompactRatioRequired": "上下文压缩比例为必填项",

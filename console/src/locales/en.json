@@ -2566,6 +2566,7 @@
     "maxInputLengthPlaceholder": "Enter max input length",
     "maxInputLengthRequired": "Max input length is required",
     "maxInputLengthMin": "Max input length must be at least 1000",
+    "maxInputLengthModelSettingsHint": "This value comes from the selected model. Change it in Settings → Models.",
     "contextCompactRatio": "Compaction Threshold Ratio",
     "contextCompactRatioTooltip": "Compaction is triggered when the context length reaches this fraction of the max context length",
     "contextCompactRatioRequired": "Context compact ratio is required",

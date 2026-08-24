@@ -57,6 +57,14 @@ const navLabel = (key: string, defaultValue?: string) => (): string =>
 export const BUILTIN_MENU: MenuItem[] = [
   // ── Agent-scoped (Sidebar Menu #1) ───────────────────────────────────────
   {
+    id: "core.knowledge",
+    location: "primary.agentScoped",
+    label: navLabel("nav.knowledge", "知识空间"),
+    icon: SparkDataLine,
+    route: "core.knowledge",
+    order: 5,
+  },
+  {
     id: "core.inbox",
     location: "primary.agentScoped",
     label: navLabel("nav.inbox"),
@@ -135,15 +143,6 @@ export const BUILTIN_MENU: MenuItem[] = [
     icon: Files,
     route: "core.files",
     order: 5,
-  },
-  {
-    id: "core.knowledge",
-    location: "primary.agentScoped",
-    parentId: "core.workspace-group",
-    label: navLabel("nav.knowledge", "知识空间"),
-    icon: SparkDataLine,
-    route: "core.knowledge",
-    order: 8,
   },
   {
     id: "core.skills",

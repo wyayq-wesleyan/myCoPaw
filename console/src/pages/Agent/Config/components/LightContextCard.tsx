@@ -82,6 +82,24 @@ export function LightContextCard({ maxInputLength }: LightContextCardProps) {
       title={t("agentConfig.lightContextTitle")}
     >
       <Form.Item
+        label={t("agentConfig.maxInputLength")}
+        tooltip={t("agentConfig.maxInputLengthTooltip")}
+        extra={t(
+          "agentConfig.maxInputLengthModelSettingsHint",
+          "当前值来自所选模型；请在设置 → 模型中修改。",
+        )}
+      >
+        <InputNumber
+          disabled
+          value={maxInputLength > 0 ? maxInputLength : undefined}
+          min={1000}
+          step={1024}
+          precision={0}
+          style={{ width: "100%" }}
+        />
+      </Form.Item>
+
+      <Form.Item
         label={t("agentConfig.dialogPath")}
         name={["light_context_config", "dialog_path"]}
         tooltip={t("agentConfig.dialogPathTooltip")}

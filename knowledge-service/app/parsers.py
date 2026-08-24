@@ -80,22 +80,21 @@ def _content_chunks(
     ]
 
 
-class LocalParser:
-    """Small, dependency-light parser used when MinerU is not installed yet."""
+class SimpleReader:
+    """Readers for formats without meaningful layout: plain text and spreadsheets.
+
+    PDF/DOC/DOCX are NOT handled here — they go through the MinerU pipeline
+    (optionally via LibreOffice conversion) so tables, images, reading order,
+    and page positions survive into the retrieval index.
+    """
 
     def parse(self, path: Path) -> list[dict[str, Any]]:
         suffix = path.suffix.lower()
         if suffix in {".txt", ".md", ".csv"}:
             return self._parse_text(path, suffix)
-        if suffix == ".pdf":
-            return self._parse_pdf(path)
-        if suffix == ".docx":
-            return self._parse_docx(path)
         if suffix in {".xlsx", ".xlsm"}:
             return self._parse_xlsx(path)
-        if suffix == ".doc":
-            raise ParseError("Legacy .doc requires MinerU or LibreOffice conversion; please enable MinerU in the knowledge image.")
-        raise ParseError(f"Unsupported file type: {suffix or 'unknown'}")
+        raise ParseError(f"File type {suffix or 'unknown'} must be parsed by the MinerU pipeline")
 
     def _parse_text(self, path: Path, suffix: str) -> list[dict[str, Any]]:
         content = path.read_text(encoding="utf-8", errors="replace").strip()
@@ -106,62 +105,6 @@ class LocalParser:
         chunks = _content_chunks(content, page=None, location="正文", source_type="text")
         if not chunks:
             raise ParseError("The text file does not contain extractable content")
-        return chunks
-
-    def _parse_pdf(self, path: Path) -> list[dict[str, Any]]:
-        try:
-            import fitz  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise ParseError("PyMuPDF is not installed in the knowledge service image") from exc
-        chunks: list[dict[str, Any]] = []
-        document = fitz.open(path)
-        for page_index, page in enumerate(document, start=1):
-            text = page.get_text("text").strip()
-            if text:
-                chunks.extend(_content_chunks(text, page=page_index, location="正文", source_type="text"))
-            for table_index, table in enumerate(page.find_tables().tables, start=1):
-                rows = table.extract()
-                table_text = _table_to_text(rows, f"第 {table_index} 个表格")
-                if table_text:
-                    chunks.extend(
-                        _content_chunks(
-                            table_text,
-                            page=page_index,
-                            location=f"表格 {table_index}",
-                            source_type="table",
-                        )
-                    )
-        document.close()
-        if not chunks:
-            raise ParseError("No extractable text found. Enable MinerU for OCR of scanned PDFs.")
-        return chunks
-
-    def _parse_docx(self, path: Path) -> list[dict[str, Any]]:
-        try:
-            from docx import Document  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise ParseError("python-docx is not installed in the knowledge service image") from exc
-        document = Document(path)
-        chunks: list[dict[str, Any]] = []
-        text = "\n".join(paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip())
-        if text:
-            # DOCX does not expose dependable physical page numbers. Keep
-            # page unset and expose ordered semantic fragments instead.
-            chunks.extend(_content_chunks(text, page=None, location="正文", source_type="text"))
-        for table_index, table in enumerate(document.tables, start=1):
-            rows = [[cell.text for cell in row.cells] for row in table.rows]
-            table_text = _table_to_text(rows, f"第 {table_index} 个表格")
-            if table_text:
-                chunks.extend(
-                    _content_chunks(
-                        table_text,
-                        page=None,
-                        location=f"表格 {table_index}",
-                        source_type="table",
-                    )
-                )
-        if not chunks:
-            raise ParseError("The DOCX file does not contain extractable text or tables")
         return chunks
 
     def _parse_xlsx(self, path: Path) -> list[dict[str, Any]]:
@@ -242,17 +185,85 @@ class MinerUParser:
                 text = str(block.get("text", block.get("content", ""))).strip()
                 if block_type == "table" and not text:
                     text = str(block.get("table_body", block.get("html", ""))).strip()
+                if block_type == "image" and not text:
+                    # 图片本体无法入索引，但保留题注让检索能定位到图
+                    captions = block.get("image_caption") or block.get("img_caption") or block.get("captions") or []
+                    if isinstance(captions, list):
+                        text = "; ".join(
+                            str(item.get("text", item) if isinstance(item, dict) else str(item)).strip()
+                            for item in captions
+                            if item
+                        ).strip("; ")
+                    elif captions:
+                        text = str(captions).strip()
+                    if text:
+                        text = f"[图片] {text}"
                 if text:
-                    chunks.append({"page": page_index, "location": f"MinerU {block_type} {block_index}", "content": text, "source_type": "table" if block_type == "table" else "text"})
+                    source_type = {"table": "table", "image": "image", "equation": "equation"}.get(block_type, "text")
+                    chunks.append({"page": page_index, "location": f"MinerU {block_type} {block_index}", "content": text, "source_type": source_type})
         if not chunks:
             raise ParseError("MinerU output did not contain normalized text blocks")
         return chunks
 
 
 def parse_document(path: Path, backend: str, mineru_command: str) -> tuple[str, list[dict[str, Any]]]:
+    """Route documents to the best available parser.
+
+    - PDF/DOC/DOCX → MinerU pipeline (layout, tables, OCR). DOC/DOCX are first
+      converted to PDF via LibreOffice so images and table structures survive.
+    - TXT/MD/CSV/XLSX/XLSM → lightweight readers (no layout to preserve).
+    MinerU is mandatory for document formats; there is no silent quality loss.
+    """
+    suffix = path.suffix.lower()
     mineru = MinerUParser(mineru_command)
-    if backend == "mineru" or (backend == "auto" and mineru.available):
-        return "mineru", mineru.parse(path)
-    if backend not in {"auto", "local"}:
-        raise ParseError(f"Unsupported parser backend: {backend}")
-    return "local", LocalParser().parse(path)
+
+    if suffix in {".pdf", ".doc", ".docx"}:
+        source = path
+        converted = False
+        if suffix in {".doc", ".docx"}:
+            if shutil.which("soffice") is None:
+                raise ParseError("LibreOffice (soffice) is not installed; cannot convert DOC/DOCX for the MinerU pipeline")
+            source = _convert_to_pdf(path)
+            converted = True
+        try:
+            return "mineru", mineru.parse(source)
+        finally:
+            if converted:
+                source.unlink(missing_ok=True)
+
+    if backend == "mineru":
+        # 显式要求全量 MinerU：纯文本类也走统一管线（当前不支持，明确报错）
+        raise ParseError(f"MinerU-only backend requested but {suffix or 'unknown'} is handled by the simple reader")
+
+    reader = SimpleReader()
+    return "simple", reader.parse(path)
+
+
+def _convert_to_pdf(path: Path) -> Path:
+    """Convert DOC/DOCX to PDF with headless LibreOffice; returns the new PDF path."""
+    with tempfile.TemporaryDirectory(prefix="huizhi-convert-") as output_dir:
+        result = subprocess.run(
+            [
+                "soffice",
+                "--headless",
+                "--norestore",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                output_dir,
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+        pdf_files = list(Path(output_dir).glob("*.pdf"))
+        if result.returncode != 0 or not pdf_files:
+            detail = (result.stderr or result.stdout or "")[-500:]
+            raise ParseError(f"LibreOffice conversion failed: {detail}")
+        # Move out of the temp dir so caller can manage the lifecycle.
+        # shutil.move handles cross-device transfers (/tmp vs /data volume).
+        target = path.parent / f"{path.stem}.pdf"
+        shutil.move(str(pdf_files[0]), str(target))
+        return target

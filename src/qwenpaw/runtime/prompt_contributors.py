@@ -264,6 +264,30 @@ class MultimodalHintContributor(SyncPromptContributor):
         return hint or None
 
 
+class ConversationScopeContributor(SyncPromptContributor):
+    """Keep prior context and current-turn inputs distinct."""
+
+    name = "conversation_scope"
+    priority = 82
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        del ctx
+        return (
+            "# Conversation Scope\n\n"
+            "Treat the latest real external user message as the current request. "
+            "Earlier user messages and assistant replies are background only; "
+            "do not carry their attachments, assumptions, or unfinished claims "
+            "into an unrelated request unless the user explicitly refers to them.\n\n"
+            "Visual pages named `visual_context` or `visual_history` are internal "
+            "QwenPaw context snapshots generated from earlier turns. They are "
+            "not images uploaded or shown by the user in the current turn. Never "
+            "say that the user just showed or provided such a page. Describe an "
+            "image only when the current user message actually contains native "
+            "image media or explicitly asks about an earlier image. Previous "
+            "assistant answers are not evidence and must not be treated as facts."
+        )
+
+
 class CodingModeContributor(SyncPromptContributor):
     """Inject Coding Mode persona block when coding mode is active."""
 
@@ -418,6 +442,7 @@ _ALL_CONTRIBUTORS = (
     AgentIdentityContributor,
     WorkspacePromptFilesContributor,
     MultimodalHintContributor,
+    ConversationScopeContributor,
     CodingModeContributor,
     ScrollContextContributor,
     KnowledgeRetrievalContributor,
@@ -441,6 +466,7 @@ __all__ = [
     "ProfileMdContributor",
     "WorkspacePromptFilesContributor",
     "MultimodalHintContributor",
+    "ConversationScopeContributor",
     "CodingModeContributor",
     "ScrollContextContributor",
     "KnowledgeRetrievalContributor",

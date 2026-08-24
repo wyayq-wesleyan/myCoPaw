@@ -66,7 +66,7 @@ const ADMIN_ONLY_MENU_IDS = new Set([
   "core.agent-config",
   "core.user-management",
 ]);
-const ALWAYS_USER_MENU_IDS = new Set<string>();
+const ALWAYS_USER_MENU_IDS = new Set(["core.knowledge"]);
 
 // This edition is a browser-console product for air-gapped networks. External
 // channel adapters are deliberately not loaded by the service, so leaving a
@@ -107,6 +107,7 @@ function filterMenuForRole(
 /** Menu item IDs that remain visible in simple sidebar mode (no groups). */
 const SIMPLE_MODE_WHITELIST = new Set([
   "core.files",
+  "core.knowledge",
   "core.inbox",
   "core.app-center",
   "core.cron-jobs",

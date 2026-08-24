@@ -26,7 +26,8 @@ RUN python -m pip install --no-cache-dir --no-build-isolation \
       python -m pip install --no-cache-dir \
         --index-url ${PIP_INDEX_URL} \
         --trusted-host ${PIP_TRUSTED_HOST} \
-        'lightrag-hku==1.5.6' 'mineru==3.4.5'; \
+        'torch' 'torchvision' \
+        'lightrag-hku==1.5.6' 'mineru[core]==3.4.5'; \
     fi
 
 EXPOSE 18100

@@ -23,6 +23,9 @@ settings.ensure_dirs()
 store = Store(settings.database_url)
 lightrag = LightRAGBridge(settings)
 
+# 语义检索相关性地板（余弦分数）：实测分布 相关查询 0.45+，无关查询 <=0.36
+SEMANTIC_MIN_SCORE = 0.40
+
 
 def _safe_filename(name: str) -> str:
     clean = Path(name or "unnamed").name
@@ -100,13 +103,13 @@ async def health() -> dict[str, Any]:
 @app.post("/v1/spaces", dependencies=[Depends(require_api_key)])
 async def create_space(body: SpaceRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     owner_id, _ = scope
-    return store.create_space(body.name, owner_id)
+    return await asyncio.to_thread(store.create_space, body.name, owner_id)
 
 
 @app.get("/v1/spaces", dependencies=[Depends(require_api_key)])
 async def list_spaces(scope: tuple[str, bool] = Depends(request_scope)) -> list[dict[str, Any]]:
     owner_id, is_admin = scope
-    return store.list_spaces(owner_id, is_admin)
+    return await asyncio.to_thread(store.list_spaces, owner_id, is_admin)
 
 
 @app.post("/v1/documents/upload", dependencies=[Depends(require_api_key)])
@@ -116,7 +119,7 @@ async def upload_document(
     scope: tuple[str, bool] = Depends(request_scope),
 ) -> dict[str, Any]:
     owner_id, is_admin = scope
-    if not store.space_exists(space_id, owner_id, is_admin):
+    if not await asyncio.to_thread(store.space_exists, space_id, owner_id, is_admin):
         raise HTTPException(status_code=404, detail="Knowledge space not found")
     filename = _safe_filename(file.filename or "unnamed")
     suffix = Path(filename).suffix.lower()
@@ -138,14 +141,14 @@ async def upload_document(
     except Exception:
         target_path.unlink(missing_ok=True)
         raise
-    created = store.create_document(space_id, owner_id, filename, str(target_path), file.content_type, document_id=document_id)
+    created = await asyncio.to_thread(store.create_document, space_id, owner_id, filename, str(target_path), file.content_type, document_id=document_id)
     return {**created, "size": size}
 
 
 @app.get("/v1/documents/{document_id}", dependencies=[Depends(require_api_key)])
 async def get_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     owner_id, is_admin = scope
-    document = store.get_document(document_id, owner_id, is_admin)
+    document = await asyncio.to_thread(store.get_document, document_id, owner_id, is_admin)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
@@ -155,7 +158,7 @@ async def get_document(document_id: str, scope: tuple[str, bool] = Depends(reque
 async def reprocess_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """Requeue an existing document so improved parsers can rebuild its index."""
     owner_id, is_admin = scope
-    queued = store.requeue_document(document_id, owner_id, is_admin)
+    queued = await asyncio.to_thread(store.requeue_document, document_id, owner_id, is_admin)
     if not queued:
         raise HTTPException(status_code=404, detail="Document or processing job not found")
     return queued
@@ -165,7 +168,7 @@ async def reprocess_document(document_id: str, scope: tuple[str, bool] = Depends
 async def get_document_file(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> FileResponse:
     """返回原始文件，支持PDF/DOCX/TXT等格式的带格式预览"""
     owner_id, is_admin = scope
-    document = store.get_document(document_id, owner_id, is_admin)
+    document = await asyncio.to_thread(store.get_document, document_id, owner_id, is_admin)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     file_path = Path(document["path"])
@@ -178,54 +181,90 @@ async def get_document_file(document_id: str, scope: tuple[str, bool] = Depends(
 @app.get("/v1/spaces/{space_id}/documents", dependencies=[Depends(require_api_key)])
 async def list_documents(space_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> list[dict[str, Any]]:
     owner_id, is_admin = scope
-    if not store.space_exists(space_id, owner_id, is_admin):
+    if not await asyncio.to_thread(store.space_exists, space_id, owner_id, is_admin):
         raise HTTPException(status_code=404, detail="Knowledge space not found")
-    return store.list_documents(space_id, owner_id, is_admin)
+    return await asyncio.to_thread(store.list_documents, space_id, owner_id, is_admin)
 
 
 @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 async def get_job(job_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     owner_id, is_admin = scope
-    job = store.get_job(job_id, owner_id, is_admin)
+    job = await asyncio.to_thread(store.get_job, job_id, owner_id, is_admin)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
-@app.post("/v1/query", dependencies=[Depends(require_api_key)])
-async def query(body: QueryRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
-    owner_id, is_admin = scope
-    if not store.space_exists(body.space_id, owner_id, is_admin):
-        raise HTTPException(status_code=404, detail="Knowledge space not found")
-    local_evidence = store.entity_context(body.space_id, body.query, body.top_k)
-    direct = store.search(body.space_id, body.query, body.top_k)
-    vector = await asyncio.to_thread(ModelClient(settings).embed, [body.query])
-    semantic = store.search_by_embedding(body.space_id, vector[0], body.top_k) if vector else []
+async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    """融合检索：PostgreSQL 全文/字面/向量 + 实体上下文 + LightRAG 图检索。
+
+    本地证据优先，LightRAG 结果作为补充信号（source=lightrag）。
+    返回 (evidence, relations, semantic_enabled)。
+    """
+    local_evidence = await asyncio.to_thread(store.entity_context, space_id, query, top_k)
+    direct = await asyncio.to_thread(store.search, space_id, query, top_k)
+    vector = await asyncio.to_thread(ModelClient(settings).embed, [query])
+    # 语义检索设置相关性地板：实测分布 相关查询 0.45+，无关查询 <=0.36
+    semantic = (
+        await asyncio.to_thread(
+            store.search_by_embedding, space_id, vector[0], top_k, SEMANTIC_MIN_SCORE
+        )
+        if vector
+        else []
+    )
     merged: dict[str, dict[str, Any]] = {}
     for item in [*local_evidence, *direct, *semantic]:
         key = item.get("id") or f"{item.get('document_id')}:{item.get('page')}:{item.get('location')}"
         merged[key] = item
-    evidence = list(merged.values())[: body.top_k]
-    relations = store.relation_context(body.space_id, body.query, body.top_k) if body.include_relations else []
+
+    # LightRAG 图检索：本地关键词匹配对语义改写和跨文档关联较弱，
+    # 为图谱证据保留约 1/3 配额，避免被低质量字面匹配挤占。
+    # 但字面与语义两路全空时视为整库无关，图谱结果一并丢弃——
+    # 图检索本身无相关性分数，宁可回答"未找到"也不返回噪声。
+    graph_results = []
+    if merged:
+        graph_results = await lightrag.search(query, top_k)
+    if graph_results:
+        reserved = min(len(graph_results), max(2, top_k // 3))
+        local_items = list(merged.values())
+        evidence = [*local_items[: max(0, top_k - reserved)], *graph_results[:reserved]]
+    else:
+        evidence = list(merged.values())[:top_k]
+    relations = await asyncio.to_thread(store.relation_context, space_id, query, top_k)
+    return evidence, relations, bool(vector)
+
+
+@app.post("/v1/query", dependencies=[Depends(require_api_key)])
+async def query(body: QueryRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    owner_id, is_admin = scope
+    if not await asyncio.to_thread(store.space_exists, body.space_id, owner_id, is_admin):
+        raise HTTPException(status_code=404, detail="Knowledge space not found")
+    evidence, relations, semantic_enabled = await _hybrid_search(
+        body.space_id, body.query, body.top_k
+    )
+    relations = relations if body.include_relations else []
     remote = await lightrag.query(body.query)
     remote_answer = remote.get("response") if isinstance(remote, dict) else None
-    model_answer = remote_answer or await asyncio.to_thread(ModelClient(settings).answer, body.query, evidence, relations)
+    # 本地模型生成答案时也纳入图检索片段，保证上下文完整
+    model_answer = remote_answer or await asyncio.to_thread(
+        ModelClient(settings).answer, body.query, evidence, relations
+    )
     return {
         "answer": model_answer,
         "evidence": evidence if body.include_evidence else [],
         "relations": relations,
-        "semantic_search_enabled": bool(vector),
+        "semantic_search_enabled": semantic_enabled,
         "lightrag": remote,
     }
 
 
 @app.get("/v1/evidence/{evidence_id}", dependencies=[Depends(require_api_key)])
 async def evidence(evidence_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
-    item = store.get_evidence(evidence_id)
+    item = await asyncio.to_thread(store.get_evidence, evidence_id)
     if not item:
         raise HTTPException(status_code=404, detail="Evidence not found")
     owner_id, is_admin = scope
-    document = store.get_document(item["document_id"], owner_id, is_admin)
+    document = await asyncio.to_thread(store.get_document, item["document_id"], owner_id, is_admin)
     if not document:
         raise HTTPException(status_code=404, detail="Evidence not found")
     return item
@@ -235,20 +274,12 @@ async def evidence(evidence_id: str, scope: tuple[str, bool] = Depends(request_s
 async def query_stream(body: QueryRequest, scope: tuple[str, bool] = Depends(request_scope)) -> StreamingResponse:
     """流式查询接口，返回SSE格式的流式响应"""
     owner_id, is_admin = scope
-    if not store.space_exists(body.space_id, owner_id, is_admin):
+    if not await asyncio.to_thread(store.space_exists, body.space_id, owner_id, is_admin):
         raise HTTPException(status_code=404, detail="Knowledge space not found")
 
-    # 检索证据
-    local_evidence = store.entity_context(body.space_id, body.query, body.top_k)
-    direct = store.search(body.space_id, body.query, body.top_k)
-    vector = await asyncio.to_thread(ModelClient(settings).embed, [body.query])
-    semantic = store.search_by_embedding(body.space_id, vector[0], body.top_k) if vector else []
-    merged: dict[str, dict[str, Any]] = {}
-    for item in [*local_evidence, *direct, *semantic]:
-        key = item.get("id") or f"{item.get('document_id')}:{item.get('page')}:{item.get('location')}"
-        merged[key] = item
-    evidence = list(merged.values())[: body.top_k]
-    relations = store.relation_context(body.space_id, body.query, body.top_k) if body.include_relations else []
+    # 融合检索（本地 + LightRAG 图检索）
+    evidence, relations, _ = await _hybrid_search(body.space_id, body.query, body.top_k)
+    relations = relations if body.include_relations else []
 
     def generate():
         # 先发送证据信息
@@ -270,39 +301,27 @@ async def query_stream(body: QueryRequest, scope: tuple[str, bool] = Depends(req
 async def search(body: SearchRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """纯检索接口，只返回检索结果，不生成answer"""
     owner_id, is_admin = scope
-    if not store.space_exists(body.space_id, owner_id, is_admin):
+    if not await asyncio.to_thread(store.space_exists, body.space_id, owner_id, is_admin):
         raise HTTPException(status_code=404, detail="Knowledge space not found")
 
-    # 执行多种检索
-    local_evidence = store.entity_context(body.space_id, body.query, body.top_k)
-    direct = store.search(body.space_id, body.query, body.top_k)
-    vector = await asyncio.to_thread(ModelClient(settings).embed, [body.query])
-    semantic = store.search_by_embedding(body.space_id, vector[0], body.top_k) if vector else []
+    # 融合检索（本地 + LightRAG 图检索）
+    evidence, relations, semantic_enabled = await _hybrid_search(
+        body.space_id, body.query, body.top_k
+    )
+    relations = relations if body.include_relations else []
 
-    # 合并去重
-    merged: dict[str, dict[str, Any]] = {}
-    for item in [*local_evidence, *direct, *semantic]:
-        key = item.get("id") or f"{item.get('document_id')}:{item.get('page')}:{item.get('location')}"
-        if key not in merged:
-            merged[key] = item
-
-    # 按分数过滤和排序
-    evidence = list(merged.values())
+    # 按分数过滤
     if body.min_score > 0:
         evidence = [item for item in evidence if (item.get("score") or 0) >= body.min_score]
-    evidence = evidence[:body.top_k]
 
-    # 获取关系
-    relations = store.relation_context(body.space_id, body.query, body.top_k) if body.include_relations else []
-
-    # 按文档分组统计
+    # 按文档分组统计（LightRAG 片段无 document_id，归入 graph 组）
     doc_groups: dict[str, dict[str, Any]] = {}
     for item in evidence:
-        doc_id = item.get("document_id")
+        doc_id = item.get("document_id") or "lightrag-graph"
         if doc_id not in doc_groups:
             doc_groups[doc_id] = {
                 "document_id": doc_id,
-                "filename": item.get("filename"),
+                "filename": item.get("filename") or ("LightRAG 图检索" if doc_id == "lightrag-graph" else None),
                 "snippet_count": 0,
                 "pages": [],
             }
@@ -318,7 +337,7 @@ async def search(body: SearchRequest, scope: tuple[str, bool] = Depends(request_
         "relations": relations,
         "total_count": len(evidence),
         "document_count": len(doc_groups),
-        "semantic_search_enabled": bool(vector),
+        "semantic_search_enabled": semantic_enabled,
     }
 
 
@@ -326,12 +345,12 @@ async def search(body: SearchRequest, scope: tuple[str, bool] = Depends(request_
 async def get_document_chunks(body: DocumentDetailRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """获取指定文档的详细片段"""
     owner_id, is_admin = scope
-    document = store.get_document(body.document_id, owner_id, is_admin)
+    document = await asyncio.to_thread(store.get_document, body.document_id, owner_id, is_admin)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
     # 获取文档的所有evidence
-    chunks = store.get_document_evidence(body.document_id)
+    chunks = await asyncio.to_thread(store.get_document_evidence, body.document_id)
 
     # 按页码过滤
     if body.page_start is not None:
@@ -361,11 +380,11 @@ async def list_document_evidence(
 ) -> dict[str, Any]:
     """列出文档的所有evidence片段"""
     owner_id, is_admin = scope
-    document = store.get_document(document_id, owner_id, is_admin)
+    document = await asyncio.to_thread(store.get_document, document_id, owner_id, is_admin)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    evidence = store.get_document_evidence(document_id)
+    evidence = await asyncio.to_thread(store.get_document_evidence, document_id)
     if page is not None:
         evidence = [e for e in evidence if e.get("page") == page]
 
@@ -375,3 +394,19 @@ async def list_document_evidence(
         "evidence": evidence[:limit],
         "total_count": len(evidence),
     }
+
+
+class ReindexRequest(BaseModel):
+    space_id: str
+
+
+@app.post("/v1/lightrag/reindex", dependencies=[Depends(require_api_key)])
+async def reindex_lightrag(body: ReindexRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    """将指定知识空间的所有已完成文档重新索引到 LightRAG 图谱。"""
+    owner_id, is_admin = scope
+    if not await asyncio.to_thread(store.space_exists, body.space_id, owner_id, is_admin):
+        raise HTTPException(status_code=404, detail="Knowledge space not found")
+    if not lightrag.enabled:
+        raise HTTPException(status_code=503, detail="LightRAG is not configured (LIGHTRAG_URL not set)")
+    result = await lightrag.reindex_space(store, body.space_id)
+    return {"space_id": body.space_id, **result}

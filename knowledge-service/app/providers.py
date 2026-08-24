@@ -17,39 +17,94 @@ class ModelClient:
     def _headers(api_key: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-    def extract_facts(self, chunks: list[dict[str, Any]]) -> dict[str, Any]:
-        if not self.settings.chat_base_url or not self.settings.chat_model:
-            return self._heuristic_extract(chunks)
-        source = "\n\n".join(f"[片段 {index}] {chunk['content']}" for index, chunk in enumerate(chunks))
+    # 每批送入 LLM 的字符上限。超过会截断导致大文档实体覆盖不全，
+    # 分批处理保证全部内容参与抽取。
+    EXTRACT_BATCH_CHARS = 12000
+    # 并行批次上限：模型服务（MLX 单卡）并发过高会互相排队，2-3 为实测较优值
+    EXTRACT_MAX_WORKERS = 3
+
+    def _extract_batch(self, batch: list[tuple[int, dict[str, Any]]]) -> dict[str, Any]:
+        source = "\n\n".join(f"[片段 {index}] {chunk['content']}" for index, chunk in batch)
         prompt = (
             "你是汇智小助手的知识抽取器。仅根据给定材料抽取实体和明确关系。"
             "人物即使只出现在表格中也必须抽取。不要把推测写成事实。"
             "只返回 JSON 对象：{\"entities\":[{\"name\":...,\"type\":\"person|event|organization|place|case|other\","
             "\"role\":...,\"chunk_index\":0,\"confidence\":0.0}],\"relations\":[{\"subject\":...,\"predicate\":...,\"object\":...,\"confidence\":0.0}]}。\n\n"
-            + source[:50000]
+            + source
         )
         payload = {"model": self.settings.chat_model, "temperature": 0, "messages": [{"role": "user", "content": prompt}]}
         try:
-            response = httpx.post(f"{self.settings.chat_base_url}/chat/completions", headers=self._headers(self.settings.chat_api_key), json=payload, timeout=180)
+            response = httpx.post(
+                f"{self.settings.chat_base_url}/chat/completions",
+                headers=self._headers(self.settings.chat_api_key),
+                json=payload,
+                timeout=300,
+            )
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             return self._parse_json(content)
         except Exception:
+            return {}
+
+    def extract_facts(self, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+        if not self.settings.chat_base_url or not self.settings.chat_model:
             return self._heuristic_extract(chunks)
+        batches: list[list[tuple[int, dict[str, Any]]]] = []
+        current: list[tuple[int, dict[str, Any]]] = []
+        current_chars = 0
+        for index, chunk in enumerate(chunks):
+            piece = f"[片段 {index}] {chunk['content']}"
+            if current and current_chars + len(piece) > self.EXTRACT_BATCH_CHARS:
+                batches.append(current)
+                current = []
+                current_chars = 0
+            current.append((index, chunk))
+            current_chars += len(piece)
+        if current:
+            batches.append(current)
+
+        entities: list[dict[str, Any]] = []
+        relations: list[dict[str, Any]] = []
+        if len(batches) > 1 and self.EXTRACT_MAX_WORKERS > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=self.EXTRACT_MAX_WORKERS) as pool:
+                results = list(pool.map(self._extract_batch, batches))
+        else:
+            results = [self._extract_batch(batch) for batch in batches]
+        for parsed in results:
+            entities.extend(parsed.get("entities", []))
+            relations.extend(parsed.get("relations", []))
+
+        if not entities:
+            return self._heuristic_extract(chunks)
+        return {"entities": entities, "relations": relations}
+
+    # 单次 embedding 请求的文本条数上限，避免大文档一次性请求超时
+    EMBED_BATCH_SIZE = 32
 
     def embed(self, texts: list[str]) -> list[list[float]] | None:
         if not self.settings.embedding_base_url or not self.settings.embedding_model:
             return None
-        payload: dict[str, Any] = {"model": self.settings.embedding_model, "input": texts}
-        if self.settings.embedding_dimensions:
-            payload["dimensions"] = self.settings.embedding_dimensions
-        try:
-            response = httpx.post(f"{self.settings.embedding_base_url}/embeddings", headers=self._headers(self.settings.embedding_api_key), json=payload, timeout=120)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return [item["embedding"] for item in sorted(data, key=lambda item: item.get("index", 0))]
-        except Exception:
-            return None
+        all_vectors: list[list[float]] | None = None
+        for start in range(0, len(texts), self.EMBED_BATCH_SIZE):
+            batch = texts[start : start + self.EMBED_BATCH_SIZE]
+            payload: dict[str, Any] = {"model": self.settings.embedding_model, "input": batch}
+            if self.settings.embedding_dimensions:
+                payload["dimensions"] = self.settings.embedding_dimensions
+            try:
+                response = httpx.post(f"{self.settings.embedding_base_url}/embeddings", headers=self._headers(self.settings.embedding_api_key), json=payload, timeout=120)
+                response.raise_for_status()
+                data = response.json().get("data", [])
+                batch_vectors = [item["embedding"] for item in sorted(data, key=lambda item: item.get("index", 0))]
+            except Exception:
+                return None
+            if all_vectors is None:
+                all_vectors = []
+            all_vectors.extend(batch_vectors)
+            if len(batch_vectors) != len(batch):
+                break
+        return all_vectors
 
     def answer(self, query: str, evidence: list[dict[str, Any]], relations: list[dict[str, Any]]) -> str:
         if not self.settings.chat_base_url or not self.settings.chat_model:
