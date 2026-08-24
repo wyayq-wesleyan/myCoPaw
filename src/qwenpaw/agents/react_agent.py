@@ -188,6 +188,7 @@ class QwenPawAgent(CodingModeMixin, Agent):
         # native AgentScope compression (see compress_context /
         # _save_to_context).
         self._context_manager = context_manager
+        self._knowledge_auto_context_key: str | None = None
 
         # Register skills metadata on toolkit
         self._register_skills(toolkit, effective_skills=effective_skills or [])
@@ -676,6 +677,12 @@ class QwenPawAgent(CodingModeMixin, Agent):
         stripping, passive bad-request retry, and auto-continue on
         text-only responses."""
 
+        # ── Inject account-scoped knowledge hits before the first model step ──
+        # This makes uploaded business material available even when the model
+        # forgets to call query_knowledge. Detailed retrieval tools remain
+        # available for paging into a selected document.
+        await self._inject_auto_knowledge_context()
+
         # ── Inject background-tool results before each reasoning step ──
         await self._inject_pending_hints()
 
@@ -953,6 +960,85 @@ class QwenPawAgent(CodingModeMixin, Agent):
         hints = await mgr.pop_pending_hints(session_id)
         for hint in hints:
             self.state.context.append(hint)
+
+    async def _inject_auto_knowledge_context(self) -> None:
+        """Search the current account's knowledge spaces once per user turn."""
+        import os
+
+        service_url = os.environ.get("QWENPAW_KNOWLEDGE_URL", "").strip().rstrip("/")
+        if not service_url:
+            return
+        context = list(getattr(self.state, "context", []) or [])
+        user_msg = next(
+            (
+                msg
+                for msg in reversed(context)
+                if getattr(msg, "role", "") == "user"
+                and getattr(msg, "name", "") not in {
+                    "knowledge_auto_context",
+                    "visual_context",
+                    "visual_history",
+                }
+            ),
+            None,
+        )
+        if user_msg is None:
+            return
+        parts = []
+        raw_content = getattr(user_msg, "content", []) or []
+        if isinstance(raw_content, str):
+            parts.append(raw_content)
+        else:
+            for block in raw_content:
+                text = getattr(block, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        query = "\n".join(parts).strip()
+        knowledge_key = f"{id(user_msg)}:{query}"
+        if len(query) < 2 or knowledge_key == self._knowledge_auto_context_key:
+            return
+        self._knowledge_auto_context_key = knowledge_key
+        try:
+            import httpx
+            from .tools.knowledge import _resolve_account_username
+
+            username = _resolve_account_username()
+            headers = {
+                "X-User-Id": username,
+                "X-Is-Admin": "true" if username == "admin" else "false",
+            }
+            key = os.environ.get("QWENPAW_KNOWLEDGE_API_KEY", "").strip()
+            if key:
+                headers["X-Knowledge-Key"] = key
+            async with httpx.AsyncClient(timeout=20) as client:
+                spaces_response = await client.get(f"{service_url}/v1/spaces", headers=headers)
+                spaces_response.raise_for_status()
+                spaces = spaces_response.json()
+                snippets: list[str] = []
+                for space in spaces[:20]:
+                    response = await client.post(
+                        f"{service_url}/v1/search",
+                        headers=headers,
+                        json={"space_id": space["id"], "query": query, "top_k": 6},
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    for item in (payload.get("evidence") or [])[:6]:
+                        snippets.append(
+                            f"来源：{item.get('filename') or '未知文件'}，第 {item.get('page') or '?'} 页\n"
+                            f"{str(item.get('content') or '')[:900]}"
+                        )
+            if not snippets:
+                return
+            text = (
+                "以下内容来自当前账户可访问的知识空间，仅在与当前问题相关时使用；不要把它当作用户上传的当前图片。\n\n"
+                + "\n\n".join(snippets[:8])
+            )
+            # AgentScope providers expect dynamic context entries to use the
+            # user role (the runtime uses the same convention for injections).
+            self.state.context.append(Msg(name="knowledge_auto_context", role="user", content=[TextBlock(type="text", text=text)]))
+        except Exception:
+            logger.debug("Automatic knowledge retrieval failed", exc_info=True)
 
     async def _reply(self, **kwargs: Any) -> Any:
         """Override kept as extension point; hint injection moved to
