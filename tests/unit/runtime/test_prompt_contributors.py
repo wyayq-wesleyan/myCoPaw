@@ -7,6 +7,7 @@ import pytest
 
 from qwenpaw.runtime.prompt_contributors import (
     ConversationScopeContributor,
+    ResponseDisciplineContributor,
     WorkspacePromptFilesContributor,
     build_default_prompt_manager,
 )
@@ -119,3 +120,24 @@ def test_conversation_scope_distinguishes_internal_visual_history():
     assert fragment is not None
     assert "not images uploaded or shown by the user" in fragment
     assert "Previous assistant answers are not evidence" in fragment
+
+
+def test_response_discipline_forbids_agent_trace_meta_text():
+    fragment = ResponseDisciplineContributor().contribute_sync(
+        SimpleNamespace(extras={}),
+    )
+
+    assert fragment is not None
+    assert "This task is" in fragment
+    assert "No further tool calls are required" in fragment
+    assert "language of the user's current request" in fragment
+
+
+def test_response_discipline_registered_by_default():
+    pm = build_default_prompt_manager()
+
+    assert any(c.name == "response_discipline" for c in pm._contributors) or any(
+        "Response Discipline" in (f or "")
+        for c in pm._contributors
+        for f in [c.contribute_sync(SimpleNamespace(extras={}))]
+    )

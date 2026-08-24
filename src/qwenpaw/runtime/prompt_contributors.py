@@ -288,6 +288,35 @@ class ConversationScopeContributor(SyncPromptContributor):
         )
 
 
+class ResponseDisciplineContributor(SyncPromptContributor):
+    """Forbid agent-trace meta text and language switching after the answer.
+
+    gemma-4 tends to emit English task reports ("This task is complete",
+    "Summary of Findings", "No further tool calls are required") after a
+    complete Chinese answer. This contributor forbids that pattern at the
+    system-prompt level for every agent.
+    """
+
+    name = "response_discipline"
+    priority = 83
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        del ctx
+        return (
+            "# Response Discipline\n\n"
+            "Answer in the language of the user's current request: a Chinese "
+            "question gets a fully Chinese answer; an English question gets a "
+            "fully English answer. Never append a summary, abstract, or report "
+            "in a different language after the answer is complete.\n\n"
+            "Never emit agent-trace meta text such as \"This task is "
+            "complete\", \"Summary of Findings\", \"Final Status\", \"No "
+            "further tool calls are required\", or \"The user's request was "
+            "to...\". Do not narrate, review, or report on your own tool "
+            "usage. The reply ends immediately after the answer content; do "
+            "not add closing statements, status reports, or next-step plans."
+        )
+
+
 class CodingModeContributor(SyncPromptContributor):
     """Inject Coding Mode persona block when coding mode is active."""
 
@@ -443,6 +472,7 @@ _ALL_CONTRIBUTORS = (
     WorkspacePromptFilesContributor,
     MultimodalHintContributor,
     ConversationScopeContributor,
+    ResponseDisciplineContributor,
     CodingModeContributor,
     ScrollContextContributor,
     KnowledgeRetrievalContributor,
@@ -467,6 +497,7 @@ __all__ = [
     "WorkspacePromptFilesContributor",
     "MultimodalHintContributor",
     "ConversationScopeContributor",
+    "ResponseDisciplineContributor",
     "CodingModeContributor",
     "ScrollContextContributor",
     "KnowledgeRetrievalContributor",
