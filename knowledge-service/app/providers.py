@@ -106,6 +106,56 @@ class ModelClient:
                 break
         return all_vectors
 
+    def describe_image_chunks(self, chunks: list[dict[str, Any]]) -> int:
+        """Describe extracted document images when the configured model accepts vision input.
+
+        MinerU provides image bytes and captions for image blocks. Captions are
+        retained as a fallback, while a vision-capable OpenAI-compatible model
+        can add the actual chart/screenshot content to the text index.
+        """
+        if not self.settings.chat_base_url or not self.settings.chat_model:
+            return 0
+        described = 0
+        for chunk in chunks:
+            image_data = chunk.get("_image_data")
+            if not isinstance(image_data, str) or not image_data.startswith("data:image/"):
+                continue
+            prompt = (
+                "请描述这张业务文档图片，提取可见的标题、文字、表格、流程、数值、坐标轴和关键关系。"
+                "只写客观可检索的事实；看不清的内容明确说明，不要猜测。"
+            )
+            payload = {
+                "model": self.settings.chat_model,
+                "temperature": 0,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data}},
+                    ],
+                }],
+            }
+            try:
+                response = httpx.post(
+                    f"{self.settings.chat_base_url}/chat/completions",
+                    headers=self._headers(self.settings.chat_api_key),
+                    json=payload,
+                    timeout=180,
+                )
+                response.raise_for_status()
+                value = response.json()["choices"][0]["message"]["content"]
+                if isinstance(value, list):
+                    value = " ".join(str(item.get("text", "")) for item in value if isinstance(item, dict))
+                description = str(value).strip()
+                if description:
+                    original = str(chunk.get("content") or "").strip()
+                    chunk["content"] = f"{original}\n[图片视觉描述] {description}" if original else f"[图片视觉描述] {description}"
+                    described += 1
+            except Exception:
+                # A text-only model must not make document ingestion fail.
+                continue
+        return described
+
     def answer(self, query: str, evidence: list[dict[str, Any]], relations: list[dict[str, Any]]) -> str:
         if not self.settings.chat_base_url or not self.settings.chat_model:
             return "未配置对话模型。已找到以下相关材料：\n" + "\n".join(
@@ -119,6 +169,9 @@ class ModelClient:
         prompt = (
             "你是汇智小助手。请仅根据提供的证据回答问题。区分明确事实、可能关联和冲突信息，"
             "不要补造材料中没有的内容。回答中引用文件名和页码。\n"
+            "必须用提问的语言回答（中文提问用中文回答，英文提问用英文回答）。"
+            "只输出一种语言，不要同时给出中英文两份答案。"
+            "不要输出'This task is complete' 'Summary of Findings'等元描述，直接回答问题。\n"
             f"问题：{query}\n\n关系记录：\n{relation_text}\n\n证据：\n{evidence_text}"
         )
         payload = {"model": self.settings.chat_model, "temperature": 0.1, "messages": [{"role": "user", "content": prompt}]}
@@ -145,6 +198,9 @@ class ModelClient:
         prompt = (
             "你是汇智小助手。请仅根据提供的证据回答问题。区分明确事实、可能关联和冲突信息，"
             "不要补造材料中没有的内容。回答中引用文件名和页码。\n"
+            "必须用提问的语言回答（中文提问用中文回答，英文提问用英文回答）。"
+            "只输出一种语言，不要同时给出中英文两份答案。"
+            "不要输出'This task is complete' 'Summary of Findings'等元描述，直接回答问题。\n"
             f"问题：{query}\n\n关系记录：\n{relation_text}\n\n证据：\n{evidence_text}"
         )
         payload = {
