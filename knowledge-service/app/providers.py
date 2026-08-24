@@ -156,6 +156,16 @@ class ModelClient:
                 continue
         return described
 
+    @staticmethod
+    def _strip_meta(text: str) -> str:
+        """移除模型常见的英文元描述后缀"""
+        markers = ["This task is", "Summary of Findings", "Final Status:", "No further tool"]
+        for marker in markers:
+            idx = text.find(marker)
+            if idx > 0:
+                text = text[:idx]
+        return text.rstrip()
+
     def answer(self, query: str, evidence: list[dict[str, Any]], relations: list[dict[str, Any]]) -> str:
         if not self.settings.chat_base_url or not self.settings.chat_model:
             return "未配置对话模型。已找到以下相关材料：\n" + "\n".join(
@@ -166,19 +176,31 @@ class ModelClient:
             for item in evidence[:30]
         )
         relation_text = "\n".join(f"{item['subject']} --{item['predicate']}--> {item['object']}" for item in relations[:50])
-        prompt = (
-            "你是汇智小助手。请仅根据提供的证据回答问题。区分明确事实、可能关联和冲突信息，"
-            "不要补造材料中没有的内容。回答中引用文件名和页码。\n"
+        system_msg = (
+            "你是汇智小助手，一个内网知识库问答助手。"
             "必须用提问的语言回答（中文提问用中文回答，英文提问用英文回答）。"
-            "只输出一种语言，不要同时给出中英文两份答案。"
-            "不要输出'This task is complete' 'Summary of Findings'等元描述，直接回答问题。\n"
+            "只输出一种语言，绝不要同时给出中英文两份答案。"
+            "绝不要输出英文总结、元描述或任务完成声明。直接回答问题。"
+        )
+        user_msg = (
+            "请仅根据提供的证据回答问题。区分明确事实、可能关联和冲突信息，"
+            "不要补造材料中没有的内容。回答中引用文件名和页码。\n"
             f"问题：{query}\n\n关系记录：\n{relation_text}\n\n证据：\n{evidence_text}"
         )
-        payload = {"model": self.settings.chat_model, "temperature": 0.1, "messages": [{"role": "user", "content": prompt}]}
+        payload = {
+            "model": self.settings.chat_model,
+            "temperature": 0.1,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            "stop": ["This task is", "Summary of Findings", "Final Status:"],
+        }
         try:
             response = httpx.post(f"{self.settings.chat_base_url}/chat/completions", headers=self._headers(self.settings.chat_api_key), json=payload, timeout=300)
             response.raise_for_status()
-            return str(response.json()["choices"][0]["message"]["content"])
+            content = str(response.json()["choices"][0]["message"]["content"])
+            return self._strip_meta(content)
         except Exception as exc:
             return f"模型回答暂不可用，已返回检索证据。原因：{exc}"
 
@@ -195,19 +217,26 @@ class ModelClient:
             for item in evidence[:30]
         )
         relation_text = "\n".join(f"{item['subject']} --{item['predicate']}--> {item['object']}" for item in relations[:50])
-        prompt = (
-            "你是汇智小助手。请仅根据提供的证据回答问题。区分明确事实、可能关联和冲突信息，"
-            "不要补造材料中没有的内容。回答中引用文件名和页码。\n"
+        system_msg = (
+            "你是汇智小助手，一个内网知识库问答助手。"
             "必须用提问的语言回答（中文提问用中文回答，英文提问用英文回答）。"
-            "只输出一种语言，不要同时给出中英文两份答案。"
-            "不要输出'This task is complete' 'Summary of Findings'等元描述，直接回答问题。\n"
+            "只输出一种语言，绝不要同时给出中英文两份答案。"
+            "绝不要输出英文总结、元描述或任务完成声明。直接回答问题。"
+        )
+        user_msg = (
+            "请仅根据提供的证据回答问题。区分明确事实、可能关联和冲突信息，"
+            "不要补造材料中没有的内容。回答中引用文件名和页码。\n"
             f"问题：{query}\n\n关系记录：\n{relation_text}\n\n证据：\n{evidence_text}"
         )
         payload = {
             "model": self.settings.chat_model,
             "temperature": 0.1,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
             "stream": True,
+            "stop": ["This task is", "Summary of Findings", "Final Status:"],
         }
         try:
             with httpx.Client(timeout=300) as client:
