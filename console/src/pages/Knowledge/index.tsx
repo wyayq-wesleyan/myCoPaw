@@ -35,7 +35,7 @@ import {
 } from "../../api/modules/knowledge";
 import styles from "./index.module.less";
 
-const ACCEPTED_FILES = ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.csv,.txt,.md";
+const ACCEPTED_FILES = ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.csv,.txt,.md,.json";
 
 const statusMeta: Record<KnowledgeDocument["status"], { color: string; label: string }> = {
   queued: { color: "default", label: "等待处理" },
@@ -294,9 +294,39 @@ export default function KnowledgePage() {
     try {
       await knowledgeApi.upload(activeSpaceId, file);
       await loadDocuments(activeSpaceId);
-      message.success("文件已上传，正在后台串行解析");
+      message.success("文件已上传，正在后台解析");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "上传失败");
+    } finally {
+      setUploading(false);
+    }
+    return false;
+  };
+
+  const uploadMultiple = async (files: File[]) => {
+    if (!activeSpaceId) {
+      message.warning("请先创建或选择一个知识空间");
+      return false;
+    }
+    if (files.length === 0) return false;
+    setUploading(true);
+    let successCount = 0;
+    let failCount = 0;
+    try {
+      for (const file of files) {
+        try {
+          await knowledgeApi.upload(activeSpaceId, file);
+          successCount++;
+        } catch {
+          failCount++;
+        }
+      }
+      await loadDocuments(activeSpaceId);
+      if (failCount === 0) {
+        message.success(`${successCount} 个文件已上传，正在后台解析`);
+      } else {
+        message.warning(`${successCount} 个上传成功，${failCount} 个失败`);
+      }
     } finally {
       setUploading(false);
     }
@@ -390,7 +420,11 @@ export default function KnowledgePage() {
               <Upload
                 accept={ACCEPTED_FILES}
                 showUploadList={false}
-                beforeUpload={upload}
+                multiple
+                beforeUpload={(file, fileList) => {
+                  if (fileList.length <= 1) return upload(file);
+                  return uploadMultiple(fileList);
+                }}
                 disabled={!activeSpaceId || uploading}
               >
                 <Button type="primary" icon={<UploadOutlined />} loading={uploading} disabled={!activeSpaceId}>
@@ -398,7 +432,7 @@ export default function KnowledgePage() {
                 </Button>
               </Upload>
             </div>
-            <div className={styles.hint}>支持 PDF、Word、Excel、CSV、TXT、Markdown。</div>
+            <div className={styles.hint}>支持 PDF、DOC/DOCX、XLS/XLSX、CSV、TXT、Markdown、JSON。</div>
           </Card>
 
           <Card className={styles.search} bordered={false} title="检索与问答">
