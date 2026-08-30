@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -115,15 +115,18 @@ async def list_spaces(scope: tuple[str, bool] = Depends(request_scope)) -> list[
 @app.post("/v1/documents/upload", dependencies=[Depends(require_api_key)])
 async def upload_document(
     file: UploadFile = File(...),
-    space_id: str = Form(...),
+    space_id: str = Form(default=""),
     scope: tuple[str, bool] = Depends(request_scope),
 ) -> dict[str, Any]:
     owner_id, is_admin = scope
-    if not await asyncio.to_thread(store.space_exists, space_id, owner_id, is_admin):
+    if not space_id:
+        space_obj = await asyncio.to_thread(store.get_or_create_user_space, owner_id)
+        space_id = space_obj["id"]
+    elif not await asyncio.to_thread(store.space_exists, space_id, owner_id, is_admin):
         raise HTTPException(status_code=404, detail="Knowledge space not found")
     filename = _safe_filename(file.filename or "unnamed")
     suffix = Path(filename).suffix.lower()
-    allowed = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".csv", ".txt", ".md"}
+    allowed = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".csv", ".txt", ".md", ".json"}
     if suffix not in allowed:
         raise HTTPException(status_code=415, detail=f"Unsupported file type: {suffix or 'unknown'}")
     document_id = str(uuid.uuid4())
@@ -178,6 +181,86 @@ async def get_document_file(document_id: str, scope: tuple[str, bool] = Depends(
     return FileResponse(path=str(file_path), media_type=media_type, filename=document["filename"])
 
 
+@app.get("/v1/documents", dependencies=[Depends(require_api_key)])
+async def list_all_documents(
+    filename: str = Query(default=""),
+    created_after: str = Query(default=""),
+    created_before: str = Query(default=""),
+    doc_ids: str = Query(default=""),
+    scope: tuple[str, bool] = Depends(request_scope),
+) -> list[dict[str, Any]]:
+    owner_id, is_admin = scope
+    ids = [x.strip() for x in doc_ids.split(",") if x.strip()] if doc_ids else None
+    return await asyncio.to_thread(
+        store.list_user_documents,
+        owner_id,
+        is_admin,
+        filename_like=filename or None,
+        created_after=created_after or None,
+        created_before=created_before or None,
+        doc_ids=ids,
+    )
+
+
+@app.get("/v1/jobs", dependencies=[Depends(require_api_key)])
+async def list_all_jobs(
+    scope: tuple[str, bool] = Depends(request_scope),
+) -> list[dict[str, Any]]:
+    owner_id, is_admin = scope
+    return await asyncio.to_thread(store.list_user_jobs, owner_id, is_admin)
+
+
+@app.get("/v1/documents/{document_id}/preview", dependencies=[Depends(require_api_key)])
+async def preview_document(
+    document_id: str, scope: tuple[str, bool] = Depends(request_scope)
+) -> dict[str, Any]:
+    owner_id, is_admin = scope
+    document = await asyncio.to_thread(store.get_document, document_id, owner_id, is_admin)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    file_path = Path(document["path"])
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    suffix = file_path.suffix.lower()
+    MAX_LINES = 100
+    content = ""
+    if suffix in (".txt", ".md", ".json", ".csv"):
+        content = file_path.read_text(encoding="utf-8", errors="replace")[: MAX_LINES * 200]
+    elif suffix in (".xls", ".xlsx", ".xlsm"):
+        try:
+            import pandas as pd
+
+            df = pd.read_excel(str(file_path), nrows=MAX_LINES)
+            content = df.to_string(index=False)
+        except Exception as e:
+            content = f"[Excel预览失败: {e}]"
+    elif suffix == ".pdf":
+        content = "[PDF预览：请使用原文件查看，或通过 chunks 接口查看内容片段]"
+    elif suffix in (".doc", ".docx"):
+        content = "[DOCX预览：请使用原文件查看，或通过 chunks 接口查看内容片段]"
+    else:
+        content = file_path.read_text(encoding="utf-8", errors="replace")[: MAX_LINES * 200]
+    return {"document_id": document_id, "filename": document["filename"], "content": content, "truncated": True}
+
+
+class FilterRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=100000)
+    top_k: int = Field(default=20, ge=1, le=100)
+
+
+@app.post("/v1/search/filter", dependencies=[Depends(require_api_key)])
+async def search_filter(
+    body: FilterRequest,
+    scope: tuple[str, bool] = Depends(request_scope),
+) -> dict[str, Any]:
+    owner_id, is_admin = scope
+    space_obj = await asyncio.to_thread(store.get_or_create_user_space, owner_id)
+    space_id = space_obj["id"]
+    evidence, _relations, _semantic = await _hybrid_search(space_id, body.query, body.top_k)
+    doc_ids = list({e.get("document_id") for e in evidence if e.get("document_id")})
+    return {"document_ids": doc_ids, "total_count": len(evidence), "document_count": len(doc_ids)}
+
+
 @app.get("/v1/spaces/{space_id}/documents", dependencies=[Depends(require_api_key)])
 async def list_documents(space_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> list[dict[str, Any]]:
     owner_id, is_admin = scope
@@ -223,7 +306,7 @@ async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[di
     # 图检索本身无相关性分数，宁可回答"未找到"也不返回噪声。
     graph_results = []
     if merged:
-        graph_results = await lightrag.search(query, top_k)
+        graph_results = await lightrag.search(query, space_id, top_k)
     if graph_results:
         reserved = min(len(graph_results), max(2, top_k // 3))
         local_items = list(merged.values())
@@ -243,10 +326,10 @@ async def query(body: QueryRequest, scope: tuple[str, bool] = Depends(request_sc
         body.space_id, body.query, body.top_k
     )
     relations = relations if body.include_relations else []
-    remote = await lightrag.query(body.query)
-    remote_answer = remote.get("response") if isinstance(remote, dict) else None
-    # 本地模型生成答案时也纳入图检索片段，保证上下文完整
-    model_answer = remote_answer or await asyncio.to_thread(
+    # Answers must be generated from the already space-filtered evidence. The
+    # standalone LightRAG server has one shared graph and cannot safely answer
+    # this request without a space filter.
+    model_answer = await asyncio.to_thread(
         ModelClient(settings).answer, body.query, evidence, relations
     )
     return {
@@ -254,7 +337,7 @@ async def query(body: QueryRequest, scope: tuple[str, bool] = Depends(request_sc
         "evidence": evidence if body.include_evidence else [],
         "relations": relations,
         "semantic_search_enabled": semantic_enabled,
-        "lightrag": remote,
+        "lightrag": {"enabled": lightrag.enabled},
     }
 
 
