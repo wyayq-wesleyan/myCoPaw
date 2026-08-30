@@ -664,6 +664,87 @@ class Store:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_or_create_user_space(self, owner_id: str) -> dict[str, Any]:
+        """获取或创建用户的默认空间（user_{owner_id}）。"""
+        space_name = f"user_{owner_id}"
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT id, name, owner_id, created_at FROM spaces WHERE owner_id = %s LIMIT 1",
+                (owner_id,),
+            ).fetchone()
+            if row:
+                return dict(row)
+            space_id = str(uuid.uuid4())
+            row = db.execute(
+                "INSERT INTO spaces (id, name, owner_id, created_at) VALUES (%s, %s, %s, %s) RETURNING id, name, owner_id, created_at",
+                (space_id, space_name, owner_id, now_utc()),
+            ).fetchone()
+            return dict(row)
+
+    def list_user_documents(
+        self,
+        owner_id: str,
+        is_admin: bool = False,
+        filename_like: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        doc_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """列出该用户所有文档（跨所有空间），可选文件名模糊、时间、指定文档ID过滤。"""
+        conditions: list[str] = []
+        params: list[Any] = []
+        if not is_admin:
+            conditions.append("d.owner_id = %s")
+            params.append(owner_id)
+        if filename_like:
+            conditions.append("d.filename ILIKE %s")
+            params.append(f"%{filename_like}%")
+        if created_after:
+            conditions.append("d.created_at >= %s")
+            params.append(created_after)
+        if created_before:
+            conditions.append("d.created_at <= %s")
+            params.append(created_before)
+        if doc_ids:
+            placeholders = ",".join(["%s"] * len(doc_ids))
+            conditions.append(f"d.id IN ({placeholders})")
+            params.extend(doc_ids)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"""
+            SELECT d.id, d.filename, d.status, d.error, d.created_at, d.updated_at,
+                   j.id AS job_id, j.status AS job_status, j.attempts, j.error AS job_error
+            FROM documents d
+            LEFT JOIN LATERAL (
+                SELECT id, status, attempts, error FROM jobs
+                WHERE document_id = d.id ORDER BY created_at DESC, id DESC LIMIT 1
+            ) j ON TRUE
+            {where}
+            ORDER BY d.created_at DESC
+        """
+        with self._connect() as db:
+            rows = db.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_user_jobs(self, owner_id: str, is_admin: bool = False) -> list[dict[str, Any]]:
+        """列出该用户所有 job 状态。"""
+        conditions: list[str] = []
+        params: list[Any] = []
+        if not is_admin:
+            conditions.append("d.owner_id = %s")
+            params.append(owner_id)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"""
+            SELECT j.id, j.document_id, j.status, j.attempts, j.error, j.created_at, j.updated_at,
+                   d.filename
+            FROM jobs j
+            JOIN documents d ON d.id = j.document_id
+            {where}
+            ORDER BY j.created_at DESC
+        """
+        with self._connect() as db:
+            rows = db.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
     def get_document_evidence(self, document_id: str) -> list[dict[str, Any]]:
         with self._connect() as db:
             rows = db.execute(
