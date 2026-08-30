@@ -182,13 +182,15 @@ class Store:
 
     def create_document(
         self,
-        space_id: str,
+        space_id: str | None,
         owner_id: str,
         filename: str,
         path: str,
         media_type: str | None,
         document_id: str | None = None,
     ) -> dict[str, Any]:
+        if space_id is None:
+            space_id = self.get_or_create_user_space(owner_id)["id"]
         document_id = document_id or str(uuid.uuid4())
         job_id = str(uuid.uuid4())
         timestamp = now_utc()
