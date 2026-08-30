@@ -36,30 +36,11 @@ export interface KnowledgeSearchResult {
   semantic_search_enabled: boolean;
 }
 
-export interface KnowledgeQueryResult {
-  answer: string;
-  evidence: KnowledgeEvidence[];
-  relations: Array<{
-    subject: string;
-    predicate: string;
-    object: string;
-    filename?: string;
-  }>;
-  semantic_search_enabled: boolean;
-}
-
-export interface StreamQueryCallbacks {
-  onEvidence?: (evidence: KnowledgeEvidence[]) => void;
-  onAnswerChunk?: (chunk: string) => void;
-  onDone?: () => void;
-  onError?: (error: Error) => void;
-}
-
 export interface KnowledgeDocumentPreview {
   document_id: string;
   filename: string;
-  preview: string;
-  page_count: number;
+  content: string;
+  truncated: boolean;
 }
 
 export interface KnowledgeSearchFilterResult {
@@ -71,6 +52,8 @@ export interface KnowledgeSearchFilterResult {
 export interface KnowledgeJobItem {
   id: string;
   document_id: string;
+  filename: string;
+  attempts: number;
   status: "queued" | "processing" | "completed" | "failed";
   error?: string | null;
   created_at?: string;
@@ -105,66 +88,6 @@ export const knowledgeApi = {
       method: "POST",
       body: JSON.stringify({ query, top_k: 50 }),
     }),
-
-  query: (spaceId: string, query: string) =>
-    request<KnowledgeQueryResult>("/knowledge/query", {
-      method: "POST",
-      timeout: 10 * 60 * 1000,
-      body: JSON.stringify({ space_id: spaceId, query, top_k: 20 }),
-    }),
-
-  queryStream: async (spaceId: string, query: string, callbacks: StreamQueryCallbacks) => {
-    const response = await fetch(getApiUrl("/knowledge/query/stream"), {
-      method: "POST",
-      headers: {
-        ...buildAuthHeaders(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ space_id: spaceId, query, top_k: 20 }),
-    });
-
-    if (!response.ok) {
-      throw new Error(await response.text());
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error("Failed to get response reader");
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.type === "evidence") {
-                callbacks.onEvidence?.(data.data);
-              } else if (data.type === "answer") {
-                callbacks.onAnswerChunk?.(data.data);
-              } else if (data.type === "done") {
-                callbacks.onDone?.();
-              }
-            } catch (e) {
-              // Ignore parse errors
-            }
-          }
-        }
-      }
-    } catch (error) {
-      callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  },
 
   upload: async (file: File): Promise<KnowledgeDocument> => {
     const form = new FormData();

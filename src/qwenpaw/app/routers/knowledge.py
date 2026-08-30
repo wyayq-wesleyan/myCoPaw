@@ -16,7 +16,7 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
 class KnowledgeQueryRequest(BaseModel):
-    space_id: str = Field(min_length=1, max_length=200)
+    space_id: str = Field(default="", max_length=200)
     query: str = Field(min_length=2, max_length=100000)
     top_k: int = Field(default=20, ge=1, le=100)
     include_relations: bool = True
@@ -24,7 +24,7 @@ class KnowledgeQueryRequest(BaseModel):
 
 
 class KnowledgeSearchRequest(BaseModel):
-    space_id: str = Field(min_length=1, max_length=200)
+    space_id: str = Field(default="", max_length=200)
     query: str = Field(min_length=2, max_length=100000)
     top_k: int = Field(default=20, ge=1, le=100)
     include_relations: bool = True
@@ -37,9 +37,6 @@ class DocumentChunksRequest(BaseModel):
     page_end: int | None = Field(default=None, ge=1)
     max_chunks: int = Field(default=20, ge=1, le=200)
 
-
-class SpaceRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
 
 
 def _service_url() -> str:
@@ -112,20 +109,10 @@ async def _forward(
         raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
 
 
-@router.get("/spaces")
-async def list_knowledge_spaces(request: Request) -> Any:
-    return await _forward(request, "GET", "/v1/spaces", _request_username(request))
-
-
-@router.post("/spaces")
-async def create_knowledge_space(body: SpaceRequest, request: Request) -> Any:
-    return await _forward(request, "POST", "/v1/spaces", _request_username(request), json=body.model_dump())
-
-
 @router.post("/documents/upload")
 async def upload_knowledge_document(
     request: Request,
-    space_id: str = Form(...),
+    space_id: str = Form(default=""),
     file: UploadFile = File(...),
 ) -> Any:
     username = _request_username(request)
@@ -137,16 +124,6 @@ async def upload_knowledge_document(
         username,
         files={"file": (file.filename or "unnamed", content, file.content_type or "application/octet-stream")},
         data={"space_id": space_id},
-    )
-
-
-@router.get("/spaces/{space_id}/documents")
-async def list_knowledge_documents(space_id: str, request: Request) -> Any:
-    return await _forward(
-        request,
-        "GET",
-        f"/v1/spaces/{space_id}/documents",
-        _request_username(request),
     )
 
 
