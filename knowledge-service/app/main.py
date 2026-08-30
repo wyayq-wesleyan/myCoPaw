@@ -167,6 +167,16 @@ async def reprocess_document(document_id: str, scope: tuple[str, bool] = Depends
     return queued
 
 
+@app.delete("/v1/documents/{document_id}", dependencies=[Depends(require_api_key)])
+async def delete_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    """Delete a document and all its related data."""
+    owner_id, is_admin = scope
+    deleted = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted": True}
+
+
 @app.get("/v1/documents/{document_id}/file", dependencies=[Depends(require_api_key)])
 async def get_document_file(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> FileResponse:
     """返回原始文件，支持PDF/DOCX/TXT等格式的带格式预览"""

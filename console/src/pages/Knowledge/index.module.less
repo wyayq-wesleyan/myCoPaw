@@ -42,86 +42,28 @@
   place-items: center;
 }
 
-.controlCard,
-.documentsCard,
-.search {
-  overflow: hidden;
+.queryBar {
   background: color-mix(in srgb, var(--ant-color-bg-container) 91%, #e7f4f1);
-  border: 1px solid color-mix(in srgb, var(--ant-color-border) 75%, #6aa79d) !important;
-  box-shadow: 0 12px 36px rgba(22, 63, 58, 0.06);
+  border: 1px solid color-mix(in srgb, var(--ant-color-border) 75%, #6aa79d);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 18px;
+  box-shadow: 0 4px 12px rgba(22, 63, 58, 0.04);
 }
 
-.spaceBar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
-.spaceSelect {
-  min-width: min(200px, 100%);
-  flex: 1;
-}
-
-.hint,
-.searchEmpty {
-  margin-top: 14px;
+.hint {
+  margin-top: 10px;
   color: var(--ant-color-text-secondary);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.65;
 }
 
-.newLayout {
-  display: grid;
-  grid-template-columns: 400px 1fr;
-  gap: 18px;
-  margin-top: 18px;
-}
-
-.leftPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.rightPanel {
-  min-height: 600px;
-}
-
-.documentsCard {
-  height: 100%;
-}
-
-.documentItem {
-  display: grid !important;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 12px;
-  align-items: center;
-}
-
-.documentName {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 9px;
-  font-weight: 500;
-
-  span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-
-.error {
-  grid-column: 1 / -1;
-  color: var(--ant-color-error);
-  font-size: 12px;
-  word-break: break-word;
-}
-
-.result {
-  margin-top: 20px;
+.tableWrap {
+  background: color-mix(in srgb, var(--ant-color-bg-container) 91%, #e7f4f1);
+  border: 1px solid color-mix(in srgb, var(--ant-color-border) 75%, #6aa79d);
+  border-radius: 8px;
+  padding: 16px 20px;
+  box-shadow: 0 4px 12px rgba(22, 63, 58, 0.04);
 }
 
 .pdfPreview {
@@ -196,10 +138,6 @@
 }
 
 @media (max-width: 900px) {
-  .newLayout {
-    grid-template-columns: 1fr;
-  }
-
   .page {
     padding: 20px 16px 36px;
   }

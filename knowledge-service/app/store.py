@@ -220,6 +220,32 @@ class Store:
             ).fetchone()
         return dict(row) if row else None
 
+    def delete_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> bool:
+        """Delete a document and all related data. Returns True if deleted."""
+        document = self.get_document(document_id, owner_id, is_admin)
+        if not document:
+            return False
+        import os
+        with self._connect() as db:
+            db.execute(
+                "DELETE FROM relations WHERE evidence_chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
+                (document_id,),
+            )
+            db.execute(
+                "DELETE FROM mentions WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
+                (document_id,),
+            )
+            db.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            db.execute("DELETE FROM jobs WHERE document_id = %s", (document_id,))
+            db.execute("DELETE FROM documents WHERE id = %s", (document_id,))
+        try:
+            file_path = document.get("path", "")
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError:
+            pass
+        return True
+
     def list_documents(self, space_id: str, owner_id: str, is_admin: bool = False) -> list[dict[str, Any]]:
         with self._connect() as db:
             rows = db.execute(

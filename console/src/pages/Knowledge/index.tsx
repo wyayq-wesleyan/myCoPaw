@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Alert,
   Button,
-  Card,
+  DatePicker,
   Drawer,
   Empty,
   Input,
-  List,
-  Modal,
-  Pagination,
-  Select,
+  Popconfirm,
+  Row,
+  Col,
   Space,
   Spin,
+  Table,
   Tag,
   Tooltip,
   Typography,
@@ -20,22 +19,26 @@ import {
 } from "antd";
 import {
   DatabaseOutlined,
+  DeleteOutlined,
   FileSearchOutlined,
-  FolderAddOutlined,
+  FolderViewOutlined,
   ReloadOutlined,
   RetweetOutlined,
   SearchOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
+import dayjs from "dayjs";
 import {
   knowledgeApi,
   type KnowledgeDocument,
-  type KnowledgeSearchResult,
-  type KnowledgeSpace,
+  type KnowledgeJobItem,
 } from "../../api/modules/knowledge";
 import styles from "./index.module.less";
 
+const { RangePicker } = DatePicker;
+
 const ACCEPTED_FILES = ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.csv,.txt,.md,.json";
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 const statusMeta: Record<KnowledgeDocument["status"], { color: string; label: string }> = {
   queued: { color: "default", label: "等待处理" },
@@ -44,9 +47,18 @@ const statusMeta: Record<KnowledgeDocument["status"], { color: string; label: st
   failed: { color: "error", label: "处理失败" },
 };
 
+const jobStatusMeta: Record<KnowledgeJobItem["status"], { color: string; label: string }> = {
+  queued: { color: "default", label: "等待处理" },
+  processing: { color: "processing", label: "正在解析" },
+  completed: { color: "success", label: "已完成" },
+  failed: { color: "error", label: "处理失败" },
+};
+
 function getFileExtension(filename: string): string {
   return filename.split(".").pop()?.toLowerCase() || "";
 }
+
+/* ── Preview Components ────────────────────────────────────────── */
 
 function PdfPreview({ documentId }: { documentId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -90,6 +102,7 @@ function PdfPreview({ documentId }: { documentId: string }) {
           canvas.style.marginBottom = "8px";
           canvas.style.borderRadius = "4px";
           const ctx = canvas.getContext("2d")!;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
           containerRef.current!.appendChild(canvas);
         }
@@ -189,51 +202,46 @@ function TextPreview({ documentId }: { documentId: string }) {
 
 function DocumentPreview({ documentId, filename }: { documentId: string; filename: string }) {
   const ext = getFileExtension(filename);
-
-  if (ext === "pdf") {
-    return <PdfPreview documentId={documentId} />;
-  }
-  if (ext === "docx" || ext === "doc") {
-    return <DocxPreview documentId={documentId} />;
-  }
+  if (ext === "pdf") return <PdfPreview documentId={documentId} />;
+  if (ext === "docx" || ext === "doc") return <DocxPreview documentId={documentId} />;
   return <TextPreview documentId={documentId} />;
 }
 
+/* ── Main Page ─────────────────────────────────────────────────── */
+
 export default function KnowledgePage() {
-  const [spaces, setSpaces] = useState<KnowledgeSpace[]>([]);
-  const [activeSpaceId, setActiveSpaceId] = useState<string>();
-  const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [loading, setLoading] = useState(true);
+  const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [uploading, setUploading] = useState(false);
   const [reprocessingId, setReprocessingId] = useState<string>();
-  const [creating, setCreating] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [newSpaceName, setNewSpaceName] = useState("");
-  const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
-  const [searchResult, setSearchResult] = useState<KnowledgeSearchResult | null>(null);
-  const [configured, setConfigured] = useState<boolean | null>(null);
+
+  const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
+  const [filenameFilter, setFilenameFilter] = useState("");
+  const [keywordFilter, setKeywordFilter] = useState("");
+  const [querying, setQuerying] = useState(false);
+
+  const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
+  const [jobs, setJobs] = useState<KnowledgeJobItem[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDocument, setPreviewDocument] = useState<KnowledgeDocument | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 10;
 
-  const loadSpaces = async (preferredId?: string) => {
-    const nextSpaces = await knowledgeApi.listSpaces();
-    setSpaces(nextSpaces);
-    setActiveSpaceId((current) => {
-      if (preferredId && nextSpaces.some((space) => space.id === preferredId)) return preferredId;
-      if (current && nextSpaces.some((space) => space.id === current)) return current;
-      return nextSpaces[0]?.id;
-    });
-  };
+  /* ── Data Loading ──────────────────────────────────────────── */
 
-  const loadDocuments = async (spaceId = activeSpaceId) => {
-    if (!spaceId) {
-      setDocuments([]);
-      return;
+  const loadDocuments = async (params?: {
+    filename?: string;
+    created_after?: string;
+    created_before?: string;
+    doc_ids?: string;
+  }) => {
+    try {
+      const result = await knowledgeApi.listDocuments(params);
+      setDocuments(result);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "无法加载文档列表");
     }
-    setDocuments(await knowledgeApi.listDocuments(spaceId));
   };
 
   const refresh = async () => {
@@ -241,7 +249,7 @@ export default function KnowledgePage() {
     try {
       const health = await knowledgeApi.health();
       setConfigured(health.configured);
-      if (health.configured) await loadSpaces();
+      if (health.configured) await loadDocuments();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "知识服务连接失败");
     } finally {
@@ -249,51 +257,70 @@ export default function KnowledgePage() {
     }
   };
 
-  useEffect(() => {
-    void refresh();
-  }, []);
+  useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Polling for active jobs ───────────────────────────────── */
 
   useEffect(() => {
-    setCurrentPage(1);
-    void loadDocuments().catch((error) => {
-      message.error(error instanceof Error ? error.message : "无法加载文档列表");
-    });
-  }, [activeSpaceId]);
-
-  useEffect(() => {
-    if (!activeSpaceId || !documents.some((item) => item.status === "queued" || item.status === "processing")) {
-      return undefined;
-    }
+    if (!documents.some((d) => d.status === "queued" || d.status === "processing")) return;
     const timer = window.setInterval(() => void loadDocuments(), 2500);
     return () => window.clearInterval(timer);
-  }, [activeSpaceId, documents]);
+  }, [documents]);
 
-  const createSpace = async () => {
-    const name = newSpaceName.trim();
-    if (!name) return;
-    setCreating(true);
+  /* ── Query / Filter ────────────────────────────────────────── */
+
+  const handleQuery = async () => {
+    setQuerying(true);
     try {
-      const space = await knowledgeApi.createSpace(name);
-      setNewSpaceName("");
-      setModalOpen(false);
-      await loadSpaces(space.id);
-      message.success("知识空间已创建");
+      let docIds: string[] | undefined;
+
+      if (keywordFilter.trim()) {
+        const filterResult = await knowledgeApi.searchFilter(keywordFilter.trim());
+        docIds = filterResult.document_ids;
+        if (docIds.length === 0) {
+          setDocuments([]);
+          return;
+        }
+      }
+
+      const params: {
+        filename?: string;
+        created_after?: string;
+        created_before?: string;
+        doc_ids?: string;
+      } = {};
+
+      if (filenameFilter.trim()) params.filename = filenameFilter.trim();
+      if (dateRange && dateRange[0]) params.created_after = dateRange[0].startOf("day").toISOString();
+      if (dateRange && dateRange[1]) params.created_before = dateRange[1].endOf("day").toISOString();
+      if (docIds) params.doc_ids = docIds.join(",");
+
+      await loadDocuments(params);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "创建知识空间失败");
+      message.error(error instanceof Error ? error.message : "检索失败");
     } finally {
-      setCreating(false);
+      setQuerying(false);
     }
   };
 
-  const upload = async (file: File) => {
-    if (!activeSpaceId) {
-      message.warning("请先创建或选择一个知识空间");
+  const handleReset = () => {
+    setDateRange(null);
+    setFilenameFilter("");
+    setKeywordFilter("");
+    void loadDocuments();
+  };
+
+  /* ── Upload ────────────────────────────────────────────────── */
+
+  const handleUpload = async (file: File) => {
+    if (file.size >= MAX_FILE_SIZE) {
+      message.warning("文件大小不能超过10MB");
       return false;
     }
     setUploading(true);
     try {
-      await knowledgeApi.upload(activeSpaceId, file);
-      await loadDocuments(activeSpaceId);
+      await knowledgeApi.upload(file);
+      await loadDocuments();
       message.success("文件已上传，正在后台解析");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "上传失败");
@@ -303,50 +330,33 @@ export default function KnowledgePage() {
     return false;
   };
 
-  const uploadMultiple = async (files: File[]) => {
-    if (!activeSpaceId) {
-      message.warning("请先创建或选择一个知识空间");
-      return false;
-    }
-    if (files.length === 0) return false;
-    setUploading(true);
-    let successCount = 0;
-    let failCount = 0;
+  /* ── Jobs Drawer ───────────────────────────────────────────── */
+
+  const loadJobs = async () => {
+    setJobsLoading(true);
     try {
-      for (const file of files) {
-        try {
-          await knowledgeApi.upload(activeSpaceId, file);
-          successCount++;
-        } catch {
-          failCount++;
-        }
-      }
-      await loadDocuments(activeSpaceId);
-      if (failCount === 0) {
-        message.success(`${successCount} 个文件已上传，正在后台解析`);
-      } else {
-        message.warning(`${successCount} 个上传成功，${failCount} 个失败`);
-      }
+      setJobs(await knowledgeApi.listJobs());
+    } catch {
+      message.error("加载上传队列失败");
     } finally {
-      setUploading(false);
+      setJobsLoading(false);
     }
-    return false;
   };
 
-  const search = async () => {
-    if (!activeSpaceId || !query.trim()) return;
-    setSearching(true);
-    setSearchResult(null);
-
-    try {
-      const result = await knowledgeApi.search(activeSpaceId, query.trim());
-      setSearchResult(result);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "知识检索失败");
-    } finally {
-      setSearching(false);
-    }
+  const openJobsDrawer = () => {
+    setJobsDrawerOpen(true);
+    void loadJobs();
   };
+
+  useEffect(() => {
+    if (!jobsDrawerOpen) return;
+    const hasActive = jobs.some((j) => j.status === "queued" || j.status === "processing");
+    if (!hasActive) return;
+    const timer = window.setInterval(() => void loadJobs(), 3000);
+    return () => window.clearInterval(timer);
+  }, [jobsDrawerOpen, jobs]);
+
+  /* ── Preview ───────────────────────────────────────────────── */
 
   const openPreview = (doc: KnowledgeDocument) => {
     if (doc.status !== "completed") {
@@ -357,11 +367,13 @@ export default function KnowledgePage() {
     setPreviewOpen(true);
   };
 
+  /* ── Reprocess ─────────────────────────────────────────────── */
+
   const reprocess = async (doc: KnowledgeDocument) => {
     setReprocessingId(doc.id);
     try {
       await knowledgeApi.reprocessDocument(doc.id);
-      await loadDocuments(activeSpaceId);
+      await loadDocuments();
       message.success("已加入重新处理队列");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "重新处理失败");
@@ -370,8 +382,81 @@ export default function KnowledgePage() {
     }
   };
 
-  const selectedSpace = spaces.find((item) => item.id === activeSpaceId);
-  const paginatedDocuments = documents.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  /* ── Delete ────────────────────────────────────────────────── */
+
+  const deleteDocument = async (doc: KnowledgeDocument) => {
+    try {
+      await knowledgeApi.deleteDocument(doc.id);
+      await loadDocuments();
+      message.success("文件已删除");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "删除失败");
+    }
+  };
+
+  /* ── Table Columns ─────────────────────────────────────────── */
+
+  const columns = [
+    {
+      title: "文件名",
+      dataIndex: "filename",
+      key: "filename",
+      render: (text: string, record: KnowledgeDocument) => (
+        <Typography.Link
+          onClick={() => openPreview(record)}
+          style={{ cursor: record.status === "completed" ? "pointer" : "default" }}
+        >
+          <FileSearchOutlined style={{ marginRight: 6 }} />
+          {text}
+        </Typography.Link>
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      key: "status",
+      width: 120,
+      render: (status: KnowledgeDocument["status"]) => {
+        const meta = statusMeta[status];
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      },
+    },
+    {
+      title: "上传时间",
+      dataIndex: "created_at",
+      key: "created_at",
+      width: 180,
+      render: (val: string) => val ? dayjs(val).format("YYYY-MM-DD HH:mm") : "-",
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 160,
+      render: (_: unknown, record: KnowledgeDocument) => (
+        <Space size={4}>
+          <Tooltip title="按当前解析规则重新入库">
+            <Button
+              type="text"
+              size="small"
+              icon={<RetweetOutlined />}
+              loading={reprocessingId === record.id}
+              onClick={() => void reprocess(record)}
+            />
+          </Tooltip>
+          <Popconfirm
+            title="确定删除此文件？"
+            onConfirm={() => void deleteDocument(record)}
+            okText="删除"
+            cancelText="取消"
+          >
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  /* ── Render ────────────────────────────────────────────────── */
 
   if (loading) {
     return <div className={styles.loading}><Spin size="large" /></div>;
@@ -380,12 +465,9 @@ export default function KnowledgePage() {
   if (configured === false) {
     return (
       <section className={styles.page}>
-        <Alert
-          type="info"
-          showIcon
-          message="知识服务尚未启用"
-          description="管理员需要先部署独立知识服务，并为汇智小助手配置 QWENPAW_KNOWLEDGE_URL 与 QWENPAW_KNOWLEDGE_API_KEY。"
-        />
+        <Typography.Paragraph type="secondary">
+          知识服务尚未启用。管理员需要先部署独立知识服务，并为汇智小助手配置 QWENPAW_KNOWLEDGE_URL 与 QWENPAW_KNOWLEDGE_API_KEY。
+        </Typography.Paragraph>
       </section>
     );
   }
@@ -400,171 +482,145 @@ export default function KnowledgePage() {
             <Typography.Text>将业务资料变为可追溯、可关联、可供智能体检索的本地知识。</Typography.Text>
           </div>
         </div>
-        <Tooltip title="刷新空间与处理状态">
+        <Tooltip title="刷新列表">
           <Button type="text" icon={<ReloadOutlined />} onClick={() => void refresh()} />
         </Tooltip>
       </header>
 
-      <div className={styles.newLayout}>
-        <div className={styles.leftPanel}>
-          <Card className={styles.controlCard} bordered={false}>
-            <div className={styles.spaceBar}>
-              <Select
-                className={styles.spaceSelect}
-                value={activeSpaceId}
-                placeholder="选择知识空间"
-                options={spaces.map((space) => ({ value: space.id, label: space.name }))}
-                onChange={setActiveSpaceId}
-              />
-              <Button icon={<FolderAddOutlined />} onClick={() => setModalOpen(true)}>新建空间</Button>
+      {/* ── Query Conditions ────────────────────────────────────── */}
+      <div className={styles.queryBar}>
+        <Row gutter={[12, 12]} align="middle">
+          <Col>
+            <RangePicker
+              value={dateRange as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null}
+              onChange={(dates) => setDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
+              placeholder={["开始日期", "结束日期"]}
+            />
+          </Col>
+          <Col>
+            <Input
+              placeholder="文件名"
+              value={filenameFilter}
+              onChange={(e) => setFilenameFilter(e.target.value)}
+              style={{ width: 160 }}
+              allowClear
+            />
+          </Col>
+          <Col>
+            <Input
+              placeholder="检索问答关键词"
+              value={keywordFilter}
+              onChange={(e) => setKeywordFilter(e.target.value)}
+              style={{ width: 200 }}
+              allowClear
+              onPressEnter={() => void handleQuery()}
+            />
+          </Col>
+          <Col>
+            <Space>
+              <Button type="primary" icon={<SearchOutlined />} loading={querying} onClick={() => void handleQuery()}>
+                查询
+              </Button>
+              <Button onClick={handleReset}>重置</Button>
+            </Space>
+          </Col>
+          <Col flex="auto" />
+          <Col>
+            <Space>
               <Upload
                 accept={ACCEPTED_FILES}
                 showUploadList={false}
                 multiple
-                beforeUpload={(file, fileList) => {
-                  if (fileList.length <= 1) return upload(file);
-                  return uploadMultiple(fileList);
+                beforeUpload={(_file, fileList) => {
+                  if (fileList.length <= 1) return handleUpload(fileList[0]);
+                  (async () => {
+                    setUploading(true);
+                    let success = 0;
+                    let fail = 0;
+                    for (const f of fileList) {
+                      if (f.size >= MAX_FILE_SIZE) { fail++; continue; }
+                      try { await knowledgeApi.upload(f); success++; } catch { fail++; }
+                    }
+                    await loadDocuments();
+                    setUploading(false);
+                    if (fail === 0) message.success(`${success} 个文件已上传`);
+                    else message.warning(`${success} 个成功，${fail} 个失败`);
+                  })();
+                  return false;
                 }}
-                disabled={!activeSpaceId || uploading}
+                disabled={uploading}
               >
-                <Button type="primary" icon={<UploadOutlined />} loading={uploading} disabled={!activeSpaceId}>
+                <Button type="primary" icon={<UploadOutlined />} loading={uploading}>
                   上传资料
                 </Button>
               </Upload>
-            </div>
-            <div className={styles.hint}>支持 PDF、DOC/DOCX、XLS/XLSX、CSV、TXT、Markdown、JSON。</div>
-          </Card>
-
-          <Card className={styles.search} bordered={false} title="检索与问答">
-            <Input.Search
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onSearch={() => void search()}
-              placeholder="输入人物、事件、主题或写作需求"
-              enterButton={<SearchOutlined />}
-              loading={searching}
-              disabled={!activeSpaceId}
-            />
-            {!searchResult ? (
-              <div className={styles.searchEmpty}>检索结果会同时保留回答依据，方便核对原始材料。</div>
-            ) : (
-              <div className={styles.result}>
-                {searchResult.documents.length === 0 ? (
-                  <Typography.Text type="secondary">未找到相关文档</Typography.Text>
-                ) : (
-                  <>
-                    <Typography.Text strong>命中的文档（{searchResult.document_count} 个）</Typography.Text>
-                    <List
-                      size="small"
-                      dataSource={searchResult.documents}
-                      renderItem={(item) => (
-                        <List.Item
-                          style={{ cursor: "pointer" }}
-                          onClick={() => {
-                            const doc = documents.find((d) => d.id === item.document_id);
-                            if (doc) openPreview(doc);
-                          }}
-                        >
-                          <div>
-                            <Typography.Text strong>{item.filename}</Typography.Text>
-                            <Typography.Text type="secondary">
-                              {" "}· {item.snippet_count} 个相关片段
-                            </Typography.Text>
-                            {item.pages.length > 0 && (
-                              <Typography.Text type="secondary">
-                                {" "}· 涉及页码：{item.pages.slice(0, 5).join(", ")}
-                                {item.pages.length > 5 ? "..." : ""}
-                              </Typography.Text>
-                            )}
-                          </div>
-                        </List.Item>
-                      )}
-                    />
-                  </>
-                )}
-              </div>
-            )}
-          </Card>
-        </div>
-
-        <div className={styles.rightPanel}>
-          <Card
-            className={styles.documentsCard}
-            bordered={false}
-            title={selectedSpace ? `${selectedSpace.name} 的资料` : "资料列表"}
-          >
-            {!activeSpaceId ? (
-              <Empty description='先创建一个知识空间，例如"案件资料"或"写作素材"' />
-            ) : (
-              <>
-                <List
-                  dataSource={paginatedDocuments}
-                  locale={{ emptyText: "还没有资料" }}
-                  renderItem={(item) => {
-                    const meta = statusMeta[item.status];
-                    return (
-                      <List.Item
-                        className={styles.documentItem}
-                        style={{ cursor: item.status === "completed" ? "pointer" : "default" }}
-                        onClick={() => openPreview(item)}
-                      >
-                        <div className={styles.documentName}>
-                          <FileSearchOutlined />
-                          <span>{item.filename}</span>
-                        </div>
-                        <Space size={8}>
-                          {item.status === "processing" && <Spin size="small" />}
-                          <Tag color={meta.color}>{meta.label}</Tag>
-                          <Tooltip title="按当前解析规则重新入库">
-                            <Button
-                              type="text"
-                              size="small"
-                              icon={<RetweetOutlined />}
-                              loading={reprocessingId === item.id}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void reprocess(item);
-                              }}
-                            >
-                              重新处理
-                            </Button>
-                          </Tooltip>
-                        </Space>
-                        {item.status === "failed" && item.error ? <div className={styles.error}>{item.error}</div> : null}
-                      </List.Item>
-                    );
-                  }}
-                />
-                {documents.length > pageSize && (
-                  <div style={{ marginTop: 16, textAlign: "right" }}>
-                    <Pagination
-                      current={currentPage}
-                      total={documents.length}
-                      pageSize={pageSize}
-                      onChange={setCurrentPage}
-                      size="small"
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </Card>
-        </div>
+              <Button icon={<FolderViewOutlined />} onClick={openJobsDrawer}>
+                上传队列
+              </Button>
+            </Space>
+          </Col>
+        </Row>
+        <div className={styles.hint}>支持 PDF、DOC/DOCX、XLS/XLSX、CSV、TXT、Markdown、JSON，单文件不超过 10MB。</div>
       </div>
 
-      <Modal
-        open={modalOpen}
-        title="新建知识空间"
-        okText="创建"
-        cancelText="取消"
-        confirmLoading={creating}
-        onOk={() => void createSpace()}
-        onCancel={() => setModalOpen(false)}
-      >
-        <Typography.Paragraph type="secondary">按业务边界分空间，例如"案件资料""日常写作素材"。同一账户的智能体可检索该账户的空间。</Typography.Paragraph>
-        <Input autoFocus value={newSpaceName} onChange={(event) => setNewSpaceName(event.target.value)} onPressEnter={() => void createSpace()} placeholder="知识空间名称" />
-      </Modal>
+      {/* ── Document Table ──────────────────────────────────────── */}
+      <div className={styles.tableWrap}>
+        <Table
+          dataSource={documents}
+          columns={columns}
+          rowKey="id"
+          locale={{ emptyText: <Empty description="暂无资料" /> }}
+          pagination={{ pageSize: 20, showTotal: (total) => `共 ${total} 个文件` }}
+          size="middle"
+        />
+      </div>
 
+      {/* ── Upload Queue Drawer ─────────────────────────────────── */}
+      <Drawer
+        title="上传队列"
+        placement="right"
+        width={560}
+        open={jobsDrawerOpen}
+        onClose={() => setJobsDrawerOpen(false)}
+        destroyOnClose
+      >
+        <Table
+          dataSource={jobs}
+          loading={jobsLoading}
+          rowKey="id"
+          pagination={false}
+          size="small"
+          columns={[
+            { title: "文件名", dataIndex: "filename", key: "filename", ellipsis: true },
+            {
+              title: "状态",
+              dataIndex: "status",
+              key: "status",
+              width: 100,
+              render: (status: KnowledgeJobItem["status"]) => {
+                const meta = jobStatusMeta[status];
+                return <Tag color={meta.color}>{meta.label}</Tag>;
+              },
+            },
+            {
+              title: "创建时间",
+              dataIndex: "created_at",
+              key: "created_at",
+              width: 160,
+              render: (val: string) => val ? dayjs(val).format("YYYY-MM-DD HH:mm") : "-",
+            },
+            {
+              title: "错误",
+              dataIndex: "error",
+              key: "error",
+              ellipsis: true,
+              render: (val: string | null) => val ? <Typography.Text type="danger">{val}</Typography.Text> : "-",
+            },
+          ]}
+        />
+      </Drawer>
+
+      {/* ── Preview Drawer ──────────────────────────────────────── */}
       <Drawer
         title={previewDocument?.filename || "文档预览"}
         placement="left"

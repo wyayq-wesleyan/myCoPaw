@@ -137,6 +137,11 @@ async def reprocess_knowledge_document(document_id: str, request: Request) -> An
     return await _forward(request, "POST", f"/v1/documents/{document_id}/reprocess", _request_username(request))
 
 
+@router.delete("/documents/{document_id}")
+async def delete_knowledge_document(document_id: str, request: Request) -> Any:
+    return await _forward(request, "DELETE", f"/v1/documents/{document_id}", _request_username(request))
+
+
 @router.get("/documents/{document_id}/file")
 async def get_knowledge_document_file(document_id: str, request: Request):
     """代理原始文件请求，返回文件流"""

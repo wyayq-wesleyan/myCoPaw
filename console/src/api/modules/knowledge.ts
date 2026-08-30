@@ -83,6 +83,11 @@ export const knowledgeApi = {
       method: "POST",
     }),
 
+  deleteDocument: (documentId: string) =>
+    request<{ deleted: boolean }>(`/knowledge/documents/${encodeURIComponent(documentId)}`, {
+      method: "DELETE",
+    }),
+
   searchFilter: (query: string) =>
     request<KnowledgeSearchFilterResult>("/knowledge/search/filter", {
       method: "POST",
