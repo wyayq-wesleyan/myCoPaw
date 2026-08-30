@@ -23,7 +23,6 @@ def merge_spaces(dry_run: bool = False) -> None:
     cur = conn.cursor()
 
     try:
-        # 找到所有有文档的用户
         cur.execute("SELECT DISTINCT owner_id FROM documents")
         owners = [r[0] for r in cur.fetchall()]
         print(f"Found {len(owners)} owners with documents")
@@ -31,7 +30,6 @@ def merge_spaces(dry_run: bool = False) -> None:
         for owner_id in owners:
             print(f"\nProcessing owner: {owner_id}")
 
-            # 获取或创建默认空间
             default_name = f"user_{owner_id}"
             cur.execute(
                 "SELECT id FROM spaces WHERE owner_id = %s AND name = %s",
@@ -50,7 +48,6 @@ def merge_spaces(dry_run: bool = False) -> None:
                         (default_space_id, default_name, owner_id, now_utc()),
                     )
 
-            # 找到该用户所有其他空间
             cur.execute(
                 "SELECT id, name FROM spaces WHERE owner_id = %s AND id != %s",
                 (owner_id, default_space_id),
@@ -65,38 +62,105 @@ def merge_spaces(dry_run: bool = False) -> None:
             other_space_names = [s[1] for s in other_spaces]
             print(f"  Found {len(other_spaces)} other spaces: {other_space_names}")
 
-            # 更新 documents
             placeholders = ",".join(["%s"] * len(other_space_ids))
+
+            # 更新 documents
             cur.execute(
                 f"UPDATE documents SET space_id = %s WHERE space_id IN ({placeholders})",
                 [default_space_id] + other_space_ids,
             )
-            docs_updated = cur.rowcount
-            print(f"  Updated {docs_updated} documents")
+            print(f"  Updated {cur.rowcount} documents")
 
             # 更新 chunks
             cur.execute(
                 f"UPDATE chunks SET space_id = %s WHERE space_id IN ({placeholders})",
                 [default_space_id] + other_space_ids,
             )
-            chunks_updated = cur.rowcount
-            print(f"  Updated {chunks_updated} chunks")
+            print(f"  Updated {cur.rowcount} chunks")
 
-            # 更新 entities
+            # 先清理 mentions（引用了即将删除的实体的）
+            cur.execute(f"""
+                DELETE FROM mentions
+                WHERE entity_id IN (
+                    SELECT e1.id FROM entities e1
+                    JOIN entities e2 ON e1.name = e2.name AND e1.entity_type = e2.entity_type
+                    WHERE e1.id > e2.id
+                    AND e1.space_id = e2.space_id
+                    AND e1.space_id IN ({placeholders})
+                )
+            """, other_space_ids)
+            print(f"  Cleaned {cur.rowcount} mentions for intra-space dup entities")
+
+            # 先在每个旧空间内部去重
+            cur.execute(
+                f"""
+                DELETE FROM entities e1
+                USING entities e2
+                WHERE e1.id > e2.id
+                AND e1.space_id = e2.space_id
+                AND e1.name = e2.name
+                AND e1.entity_type = e2.entity_type
+                AND e1.space_id IN ({placeholders})
+                """,
+                other_space_ids,
+            )
+            print(f"  Deleted {cur.rowcount} intra-space duplicate entities")
+
+            # 清理跨旧空间重复实体的 mentions
+            cur.execute(f"""
+                DELETE FROM mentions
+                WHERE entity_id IN (
+                    SELECT e1.id FROM entities e1
+                    JOIN entities e2 ON e1.name = e2.name AND e1.entity_type = e2.entity_type
+                    WHERE e1.id > e2.id
+                    AND e1.space_id != e2.space_id
+                    AND e1.space_id IN ({placeholders})
+                    AND e2.space_id IN ({placeholders})
+                )
+            """, other_space_ids + other_space_ids)
+            print(f"  Cleaned {cur.rowcount} mentions for cross-space dup entities")
+
+            # 跨旧空间去重：保留一个，删除其余
+            cur.execute(
+                f"""
+                DELETE FROM entities e1
+                USING entities e2
+                WHERE e1.id > e2.id
+                AND e1.space_id != e2.space_id
+                AND e1.name = e2.name
+                AND e1.entity_type = e2.entity_type
+                AND e1.space_id IN ({placeholders})
+                AND e2.space_id IN ({placeholders})
+                """,
+                other_space_ids + other_space_ids,
+            )
+            print(f"  Deleted {cur.rowcount} cross-old-space duplicate entities")
+
+            # 迁移剩余 entities
             cur.execute(
                 f"UPDATE entities SET space_id = %s WHERE space_id IN ({placeholders})",
                 [default_space_id] + other_space_ids,
             )
-            entities_updated = cur.rowcount
-            print(f"  Updated {entities_updated} entities")
+            print(f"  Updated {cur.rowcount} entities")
+
+            # 清理 mentions（引用了已删除实体的）
+            cur.execute("DELETE FROM mentions WHERE entity_id NOT IN (SELECT id FROM entities)")
+            print(f"  Cleaned {cur.rowcount} orphaned mentions")
+
+            # 清理 relations（引用了已删除实体的）
+            cur.execute("""
+                DELETE FROM relations
+                WHERE subject_id NOT IN (SELECT id FROM entities)
+                   OR object_id NOT IN (SELECT id FROM entities)
+            """)
+            print(f"  Cleaned {cur.rowcount} orphaned relations")
 
             # 更新 relations
             cur.execute(
                 f"UPDATE relations SET space_id = %s WHERE space_id IN ({placeholders})",
                 [default_space_id] + other_space_ids,
             )
-            relations_updated = cur.rowcount
-            print(f"  Updated {relations_updated} relations")
+            print(f"  Updated {cur.rowcount} relations")
 
             # 删除旧空间
             if not dry_run:
