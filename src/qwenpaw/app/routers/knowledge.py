@@ -33,6 +33,8 @@ class KnowledgeSearchRequest(BaseModel):
 
 class DocumentChunksRequest(BaseModel):
     document_id: str = Field(min_length=1, max_length=200)
+    page_start: int | None = Field(default=None, ge=1)
+    page_end: int | None = Field(default=None, ge=1)
     max_chunks: int = Field(default=20, ge=1, le=200)
 
 
@@ -186,9 +188,55 @@ async def get_knowledge_document_file(document_id: str, request: Request):
         raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
 
 
+@router.get("/documents")
+async def list_knowledge_documents_v2(
+    request: Request,
+    filename: str | None = None,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    doc_ids: str | None = None,
+) -> Any:
+    params: dict[str, str] = {}
+    if filename:
+        params["filename"] = filename
+    if created_after:
+        params["created_after"] = created_after
+    if created_before:
+        params["created_before"] = created_before
+    if doc_ids:
+        params["doc_ids"] = doc_ids
+    username = _request_username(request)
+    url = _service_url()
+    if not url:
+        raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.get(
+                f"{url}/v1/documents",
+                headers=_service_headers(username),
+                params=params,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text[:2000]) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
+
+
+@router.get("/jobs")
+async def list_knowledge_jobs(request: Request) -> Any:
+    return await _forward(request, "GET", "/v1/jobs", _request_username(request))
+
+
 @router.get("/jobs/{job_id}")
 async def get_knowledge_job(job_id: str, request: Request) -> Any:
     return await _forward(request, "GET", f"/v1/jobs/{job_id}", _request_username(request))
+
+
+@router.get("/documents/{document_id}/preview")
+async def preview_knowledge_document(document_id: str, request: Request) -> Any:
+    return await _forward(request, "GET", f"/v1/documents/{document_id}/preview", _request_username(request))
 
 
 @router.post("/search")
@@ -202,6 +250,33 @@ async def search_knowledge(body: KnowledgeSearchRequest, request: Request) -> di
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(
                 f"{url}/v1/search",
+                headers=_service_headers(username),
+                json=body.model_dump(),
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:2000]
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
+
+
+class KnowledgeSearchFilterRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=100000)
+    top_k: int = Field(default=50, ge=1, le=200)
+
+
+@router.post("/search/filter")
+async def search_knowledge_filter(body: KnowledgeSearchFilterRequest, request: Request) -> dict[str, Any]:
+    username = _request_username(request)
+    url = _service_url()
+    if not url:
+        raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.post(
+                f"{url}/v1/search/filter",
                 headers=_service_headers(username),
                 json=body.model_dump(),
             )
