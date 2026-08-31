@@ -406,7 +406,61 @@ class KnowledgeRetrievalContributor(SyncPromptContributor):
             "- Do not claim no relevant materials exist unless query_knowledge returns no documents\n"
             "- You MUST call get_document_detail to get actual content before answering\n"
             "- Use the evidence to answer the user's question based on your own reasoning\n"
-            "- If the evidence is insufficient, say so clearly; do not make up information"
+            "- If the evidence is insufficient, say so clearly; do not make up information\n\n"
+            "## Data Analysis + Knowledge Collaboration\n\n"
+            "When querying data tables (via `query_data_table`), if the user's "
+            "question contains business jargon, acronyms, metric names, or "
+            "terminology you are not confident about, search the knowledge base "
+            "first to understand the correct definition or calculation logic "
+            "before writing the SQL query. For example: if a column is called "
+            "「核心客户」and the user filters by it, check if the knowledge base "
+            "has a definition of what counts as a core customer. Do NOT look up "
+            "knowledge for every query — only when the terms are genuinely "
+            "ambiguous or unfamiliar to you."
+        )
+
+
+class DataAnalysisContributor(SyncPromptContributor):
+    """Tell agents about the available data analysis tools."""
+
+    name = "data_analysis"
+    priority = 86
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        del ctx
+        return (
+            "# Data Analysis\n\n"
+            "You have access to data analysis tools for querying structured "
+            "data (CSV/Excel uploads). Use these when the user asks to query, "
+            "summarize, or analyze data in a table.\n\n"
+            "## Available Tools\n\n"
+            "### list_data_tables\n\n"
+            "List all uploaded data tables with row counts and column info.\n"
+            "Call this first to see what data is available.\n\n"
+            "### describe_data_table\n\n"
+            "Show column definitions (name, type, description) for a specific "
+            "table.\n\n"
+            "**Parameters:**\n"
+            "- `table_name`: Table name (required)\n\n"
+            "### query_data_table\n\n"
+            "Execute a SQL query against a data table. Returns query results "
+            "in a readable format.\n\n"
+            "**Parameters:**\n"
+            "- `sql`: SQL query (required). Only SELECT statements are allowed.\n"
+            "  Table name is available in the FROM clause as the registered "
+            "  table name (use the exact name from list_data_tables).\n\n"
+            "## Workflow\n\n"
+            "1. Call `list_data_tables` to see what data is available\n"
+            "2. Call `describe_data_table` to understand the column structure\n"
+            "3. Write a SELECT SQL query and call `query_data_table`\n"
+            "4. Present the results in a clear, readable format\n\n"
+            "**Tips:**\n"
+            "- Use Chinese column names as-is in SQL (they are stored as-is)\n"
+            "- If a query returns too many rows, add LIMIT and ORDER BY\n"
+            "- For aggregations, use GROUP BY with aggregate functions\n"
+            "- If you are unsure about business terms in the data, refer to "
+            "the knowledge retrieval section above — search the knowledge "
+            "base for the correct definition before writing the SQL\n"
         )
 
 
@@ -446,6 +500,7 @@ _ALL_CONTRIBUTORS = (
     CodingModeContributor,
     ScrollContextContributor,
     KnowledgeRetrievalContributor,
+    DataAnalysisContributor,
     DriverPolicyHintContributor,
     EnvContextContributor,
 )
@@ -470,6 +525,7 @@ __all__ = [
     "CodingModeContributor",
     "ScrollContextContributor",
     "KnowledgeRetrievalContributor",
+    "DataAnalysisContributor",
     "DriverPolicyHintContributor",
     "EnvContextContributor",
     "build_default_prompt_manager",
