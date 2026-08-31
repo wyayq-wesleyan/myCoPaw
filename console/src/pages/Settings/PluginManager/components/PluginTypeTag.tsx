@@ -16,42 +16,42 @@ const PLUGIN_TYPE_CONFIG: Record<
   { label: string; color: string; icon: React.ReactNode }
 > = {
   tool: {
-    label: "Tool",
+    label: "工具",
     color: "blue",
     icon: <Wrench size={11} />,
   },
   provider: {
-    label: "Provider",
+    label: "模型服务",
     color: "purple",
     icon: <BrainCircuit size={11} />,
   },
   hook: {
-    label: "Hook",
+    label: "钩子",
     color: "orange",
     icon: <Zap size={11} />,
   },
   command: {
-    label: "Command",
+    label: "命令",
     color: "cyan",
     icon: <Terminal size={11} />,
   },
   frontend: {
-    label: "Frontend",
+    label: "前端",
     color: "green",
     icon: <LayoutDashboard size={11} />,
   },
   app: {
-    label: "App",
+    label: "应用",
     color: "geekblue",
     icon: <AppWindow size={11} />,
   },
   channel: {
-    label: "Channel",
+    label: "渠道",
     color: "default",
     icon: <SparkWifiLine size={11} />,
   },
   general: {
-    label: "General",
+    label: "通用",
     color: "default",
     icon: <Package size={11} />,
   },

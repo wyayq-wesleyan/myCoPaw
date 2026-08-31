@@ -19,15 +19,15 @@ interface ProviderGroupCardProps {
 const VARIANT_LABELS: Record<string, string> = {
   dashscope: "DashScope",
   open_platform: "Open Platform",
-  open_platform_cn: "China",
-  open_platform_intl: "International",
+  open_platform_cn: "国内",
+  open_platform_intl: "国际",
   coding_plan: "Coding Plan",
   coding_plan_cn: "Coding (CN)",
   coding_plan_intl: "Coding (Intl)",
-  token_plan: "Token Plan",
-  token_plan_intl: "Token (Intl)",
-  china: "China",
-  international: "International",
+  token_plan: "词元 Plan",
+  token_plan_intl: "词元 (Intl)",
+  china: "国内",
+  international: "国际",
 };
 
 export const ProviderGroupCard = React.memo(function ProviderGroupCard({
@@ -72,11 +72,11 @@ export const ProviderGroupCard = React.memo(function ProviderGroupCard({
       <div className={styles.groupCardHeader}>
         <ProviderIcon providerId={group.providers[0]?.id ?? ""} size={36} />
         <span className={styles.groupCardName}>{group.groupName}</span>
-        {hasFreeTier && <span className={styles.freeTag}>FREE</span>}
+        {hasFreeTier && <span className={styles.freeTag}>免费</span>}
         {liveCount > 0 && (
           <div className={styles.groupCardLiveBadge}>
             <span className={styles.groupCardPulse} />
-            {liveCount} Live
+            {liveCount} 在线
           </div>
         )}
       </div>
@@ -111,14 +111,14 @@ export const ProviderGroupCard = React.memo(function ProviderGroupCard({
       {/* Content */}
       <div className={styles.groupCardContent}>
         <div className={styles.groupCardField}>
-          <span className={styles.groupCardFieldLabel}>Endpoint</span>
+          <span className={styles.groupCardFieldLabel}>接口地址</span>
           <div className={styles.groupCardMono}>
             {activeProvider.base_url || "—"}
           </div>
         </div>
 
         <div className={styles.groupCardField}>
-          <span className={styles.groupCardFieldLabel}>API Key</span>
+          <span className={styles.groupCardFieldLabel}>API密钥</span>
           {activeProvider.api_key ? (
             <div className={styles.groupCardMono}>
               <span>{activeProvider.api_key}</span>
@@ -162,7 +162,7 @@ export const ProviderGroupCard = React.memo(function ProviderGroupCard({
         </div>
 
         <div className={styles.groupCardField}>
-          <span className={styles.groupCardFieldLabel}>Models</span>
+          <span className={styles.groupCardFieldLabel}>模型列表</span>
           <span className={styles.groupCardFieldValue}>
             {totalModels > 0
               ? t("models.modelsCount", { count: totalModels })

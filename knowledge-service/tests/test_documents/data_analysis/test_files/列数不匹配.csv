@@ -1,0 +1,11 @@
+订单编号,客户名称,产品名称,数量,单价,订单日期,额外列1,额外列2
+EXTRA-0001,测试客户有限公司,测试产品,1,656.99,2024-06-01,extra_value_1,extra_data_1
+EXTRA-0002,测试客户有限公司,测试产品,3,648.74,2024-06-01,extra_value_2,extra_data_2
+EXTRA-0003,测试客户有限公司,测试产品,9,999.02,2024-06-01,extra_value_3,extra_data_3
+EXTRA-0004,测试客户有限公司,测试产品,10,613.53,2024-06-01,extra_value_4,extra_data_4
+EXTRA-0005,测试客户有限公司,测试产品,7,950.94,2024-06-01,extra_value_5,extra_data_5
+EXTRA-0006,测试客户有限公司,测试产品,6,648.83,2024-06-01,extra_value_6,extra_data_6
+EXTRA-0007,测试客户有限公司,测试产品,3,612.38,2024-06-01,extra_value_7,extra_data_7
+EXTRA-0008,测试客户有限公司,测试产品,8,715.93,2024-06-01,extra_value_8,extra_data_8
+EXTRA-0009,测试客户有限公司,测试产品,6,120.45,2024-06-01,extra_value_9,extra_data_9
+EXTRA-0010,测试客户有限公司,测试产品,10,895.16,2024-06-01,extra_value_10,extra_data_10

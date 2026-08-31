@@ -226,7 +226,7 @@ function ModelConfigEditor({
       <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
           <div style={labelStyle}>
-            {t("models.maxTokensLabel", "Max Tokens")}
+            {t("models.maxTokensLabel", "Max 词元")}
           </div>
           <InputNumber
             style={{ width: "100%" }}
@@ -243,7 +243,7 @@ function ModelConfigEditor({
               marginTop: 2,
             }}
           >
-            {t("models.maxTokensHint", "每次响应的最大输出 token 数")}
+            {t("models.maxTokensHint", "每次响应的最大输出词元数")}
           </div>
         </div>
         <div style={{ flex: 1 }}>
@@ -507,8 +507,8 @@ function ModelConfigEditor({
           }}
           options={[
             { label: "对话模型", value: "chat" },
-            { label: "Embedding", value: "embedding" },
-            { label: "Reranker", value: "reranker" },
+            { label: "向量化模型", value: "embedding" },
+            { label: "重排序模型", value: "reranker" },
           ]}
         />
       </div>
@@ -1332,8 +1332,8 @@ export function RemoteModelManageModal({
                   block
                   options={[
                     { label: "对话模型", value: "chat" },
-                    { label: "Embedding", value: "embedding" },
-                    { label: "Reranker", value: "reranker" },
+                    { label: "向量化模型", value: "embedding" },
+                    { label: "重排序模型", value: "reranker" },
                   ]}
                 />
               </Form.Item>

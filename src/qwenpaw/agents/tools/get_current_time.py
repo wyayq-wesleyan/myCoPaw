@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
     async_execution=True,
     tool_type="internal",
     policy_name="GetCurrentTime",
-    ui_description="Get current date and time",
+    ui_description="获取当前日期和时间",
     ui_icon="🕐",
 )
 async def get_current_time() -> ToolChunk:
@@ -65,7 +65,7 @@ async def get_current_time() -> ToolChunk:
     tool_type="internal",
     target_param="timezone_name",
     policy_name="SetUserTimezone",
-    ui_description="Set user timezone",
+    ui_description="设置用户时区",
     ui_icon="🌍",
 )
 async def set_user_timezone(timezone_name: str) -> ToolChunk:

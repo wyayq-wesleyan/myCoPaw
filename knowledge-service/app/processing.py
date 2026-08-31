@@ -19,9 +19,21 @@ def process_document(store: Store, settings: Settings, job: dict[str, Any]) -> N
     for chunk in chunks:
         chunk["space_id"] = document["space_id"]
     client = ModelClient(settings)
+    client.describe_image_chunks(chunks)
     extracted = client.extract_facts(chunks)
     embeddings = client.embed([chunk["content"] for chunk in chunks])
+    for chunk in chunks:
+        chunk.pop("_image_data", None)
     store.replace_document_content(document, chunks, extracted, embeddings)
+    # Record which parser backend was used for this document.
+    store.update_document_backend(document["id"], backend)
     # The evidence store is authoritative. Graph indexing is best-effort so a
     # temporary LightRAG/model outage never loses an uploaded document.
-    asyncio.run(LightRAGBridge(settings).insert(document["filename"], chunks))
+    asyncio.run(
+        LightRAGBridge(settings).insert(
+            space_id=document["space_id"],
+            document_id=document["id"],
+            source_name=document["filename"],
+            chunks=chunks,
+        )
+    )

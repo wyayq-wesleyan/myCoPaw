@@ -477,7 +477,7 @@ function MCPPage() {
                       style={{ width: "100%" }}
                       options={[
                         {
-                          label: "Streamable HTTP",
+                          label: "流式HTTP",
                           value: "streamable_http",
                         },
                         { label: "SSE", value: "sse" },

@@ -49,10 +49,10 @@ export function EnvRow({
             error ? styles.inputGroupError : ""
           }`}
         >
-          <span className={styles.inputLabel}>Key</span>
+          <span className={styles.inputLabel}>变量名</span>
           <Input
             value={row.key}
-            placeholder="Variable Name"
+            placeholder="变量名称"
             disabled={!row.isNew}
             onChange={(e) => onChange(idx, "key", e.target.value)}
             className={styles.inputField}
@@ -61,10 +61,10 @@ export function EnvRow({
         </div>
 
         <div className={styles.inputGroup}>
-          <span className={styles.inputLabel}>Value</span>
+          <span className={styles.inputLabel}>变量值</span>
           <Input
             value={row.value}
-            placeholder="Value"
+            placeholder="变量值"
             type={isPasswordVisible ? "text" : "password"}
             onChange={(e) => onChange(idx, "value", e.target.value)}
             className={styles.inputField}

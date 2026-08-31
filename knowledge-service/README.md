@@ -22,7 +22,7 @@ python scripts/migrate_sqlite_to_postgres.py /data/metadata.sqlite3 \
 
 这是汇智小助手的独立知识处理服务。它不依赖汇智小助手主进程，负责文档解析、异步处理、实体关系抽取、全文/向量检索和证据返回。
 
-当前 `0.1.4` 提供两种镜像构建方式：核心镜像包含轻量解析、PostgreSQL 17 存储和检索能力；增强镜像额外安装 LightRAG 1.5.6 与 MinerU 3.4.5。MinerU 的本地 pipeline 还需要 PyTorch 和本地模型文件，未准备这些文件时服务会自动回退到轻量解析；扫描 PDF 的 OCR 会显示明确的依赖错误，不会伪装成处理成功。
+当前 `0.1.4` 提供两种镜像构建方式：核心镜像包含轻量解析、PostgreSQL 17 存储和检索能力；增强镜像额外安装 LightRAG 1.5.6 与 MinerU 3.4.5。支持 PDF、DOC、DOCX、XLS、XLSX、XLSM、CSV、TXT、MD、JSON；DOC/DOCX 通过 LibreOffice 转 PDF 后进入 MinerU。MinerU 的本地 pipeline 还需要 PyTorch 和本地模型文件，未准备这些文件时文档任务会明确失败，不会伪装成处理成功。
 
 ## 运行结构
 
@@ -66,6 +66,8 @@ GET  /v1/documents/{document_id}
 GET  /v1/jobs/{job_id}
 POST /v1/query
 GET  /v1/evidence/{evidence_id}
+POST /v1/search
+POST /v1/documents/chunks
 ```
 
 查询结果始终返回来源文件、页码/位置和原始片段，不能只返回模型总结。

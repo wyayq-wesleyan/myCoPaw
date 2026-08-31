@@ -75,6 +75,7 @@ class Store:
               media_type TEXT,
               status TEXT NOT NULL,
               error TEXT,
+              size BIGINT DEFAULT 0,
               created_at TIMESTAMPTZ NOT NULL,
               updated_at TIMESTAMPTZ NOT NULL
             )
@@ -154,6 +155,11 @@ class Store:
             db.execute("SELECT pg_advisory_xact_lock(2026082201)")
             for statement in statements:
                 db.execute(statement)
+            # Migration: add size column to documents if missing
+            try:
+                db.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS size BIGINT DEFAULT 0")
+            except Exception:
+                pass  # column already exists or DB doesn't support IF NOT EXISTS
 
     def create_space(self, name: str, owner_id: str) -> dict[str, Any]:
         space_id = str(uuid.uuid4())
@@ -188,6 +194,7 @@ class Store:
         path: str,
         media_type: str | None,
         document_id: str | None = None,
+        size: int = 0,
     ) -> dict[str, Any]:
         if space_id is None:
             space_id = self.get_or_create_user_space(owner_id)["id"]
@@ -198,10 +205,10 @@ class Store:
             db.execute(
                 """
                 INSERT INTO documents
-                  (id, space_id, owner_id, filename, path, media_type, status, error, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'queued', NULL, %s, %s)
+                  (id, space_id, owner_id, filename, path, media_type, status, error, size, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'queued', NULL, %s, %s, %s)
                 """,
-                (document_id, space_id, owner_id, filename, path, media_type, timestamp, timestamp),
+                (document_id, space_id, owner_id, filename, path, media_type, size, timestamp, timestamp),
             )
             db.execute(
                 """
@@ -219,6 +226,36 @@ class Store:
                 (document_id, owner_id, is_admin),
             ).fetchone()
         return dict(row) if row else None
+
+    def get_document_stats(self, document_id: str, owner_id: str, is_admin: bool = False) -> dict[str, Any] | None:
+        """返回文档的统计信息：分片数、实体数、关系数等。"""
+        document = self.get_document(document_id, owner_id, is_admin)
+        if not document:
+            return None
+        with self._connect() as db:
+            chunks_row = db.execute(
+                "SELECT count(*) AS cnt FROM chunks WHERE document_id = %s", (document_id,)
+            ).fetchone()
+            entities_row = db.execute(
+                """SELECT count(*) AS cnt FROM entities e
+                   JOIN mentions m ON m.entity_id = e.id
+                   JOIN chunks c ON c.id = m.chunk_id
+                   WHERE c.document_id = %s""", (document_id,)
+            ).fetchone()
+            relations_row = db.execute(
+                """SELECT count(*) AS cnt FROM relations r
+                   JOIN chunks c ON c.id = r.evidence_chunk_id
+                   WHERE c.document_id = %s""", (document_id,)
+            ).fetchone()
+        return {
+            "document_id": document_id,
+            "filename": document["filename"],
+            "status": document["status"],
+            "size": document.get("size", 0),
+            "chunk_count": chunks_row["cnt"] if chunks_row else 0,
+            "entity_count": entities_row["cnt"] if entities_row else 0,
+            "relation_count": relations_row["cnt"] if relations_row else 0,
+        }
 
     def delete_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> bool:
         """Delete a document and all related data. Returns True if deleted."""
@@ -319,6 +356,13 @@ class Store:
             db.execute(
                 "UPDATE documents SET status = 'completed', updated_at = %s, error = NULL WHERE id = %s",
                 (timestamp, document_id),
+            )
+
+    def update_document_backend(self, document_id: str, backend: str) -> None:
+        with self._connect() as db:
+            db.execute(
+                "UPDATE documents SET backend = %s WHERE id = %s",
+                (backend, document_id),
             )
 
     def fail_job(self, job_id: str, document_id: str, error: str) -> None:
@@ -550,8 +594,13 @@ class Store:
                 rows = []
 
         merged: dict[str, dict[str, Any]] = {}
-        for row in [*rows, *full_text_rows]:
+        for row in full_text_rows:
             item = dict(row)
+            item["source"] = "fulltext"
+            merged[item["id"]] = item
+        for row in rows:
+            item = dict(row)
+            item["source"] = "literal"
             if item["id"] not in merged or (item.get("score") or 0) > (merged[item["id"]].get("score") or 0):
                 merged[item["id"]] = item
         return list(merged.values())[:limit]
@@ -642,6 +691,8 @@ class Store:
                     ranked.append({**item, "score": score})
 
         ranked.sort(key=lambda item: item["score"], reverse=True)
+        for item in ranked:
+            item["source"] = "semantic"
         return ranked[:limit]
 
     def entity_context(self, space_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -660,7 +711,10 @@ class Store:
                 """,
                 (space_id, f"%{query}%", limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        results = [dict(row) for row in rows]
+        for item in results:
+            item["source"] = "entity"
+        return results
 
     def relation_context(self, space_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as db:
@@ -739,7 +793,7 @@ class Store:
             params.extend(doc_ids)
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         sql = f"""
-            SELECT d.id, d.filename, d.status, d.error, d.created_at, d.updated_at,
+            SELECT d.id, d.filename, d.status, d.error, d.size, d.created_at, d.updated_at,
                    j.id AS job_id, j.status AS job_status, j.attempts, j.error AS job_error
             FROM documents d
             LEFT JOIN LATERAL (

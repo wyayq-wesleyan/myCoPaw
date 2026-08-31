@@ -84,23 +84,23 @@ export default function DebugPage() {
                     {
                       value: "error",
                       label: (
-                        <Tag color={backendLevelColor("error")}>ERROR</Tag>
+                        <Tag color={backendLevelColor("error")}>错误</Tag>
                       ),
                     },
                     {
                       value: "warning",
                       label: (
-                        <Tag color={backendLevelColor("warning")}>WARNING</Tag>
+                        <Tag color={backendLevelColor("warning")}>警告</Tag>
                       ),
                     },
                     {
                       value: "info",
-                      label: <Tag color={backendLevelColor("info")}>INFO</Tag>,
+                      label: <Tag color={backendLevelColor("info")}>信息</Tag>,
                     },
                     {
                       value: "debug",
                       label: (
-                        <Tag color={backendLevelColor("debug")}>DEBUG</Tag>
+                        <Tag color={backendLevelColor("debug")}>调试</Tag>
                       ),
                     },
                   ]}

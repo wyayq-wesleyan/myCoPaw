@@ -15,7 +15,7 @@ from ...token_usage import get_token_usage_manager
     async_execution=True,
     tool_type="internal",
     policy_name="GetTokenUsage",
-    ui_description="Get llm token usage",
+    ui_description="查询大模型词元消耗",
     ui_icon="📊",
 )
 async def get_token_usage(

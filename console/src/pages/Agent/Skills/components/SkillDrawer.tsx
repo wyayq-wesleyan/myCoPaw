@@ -288,7 +288,7 @@ export function SkillDrawer({
           {!editing ? (
             <Form.Item
               name="name"
-              label="Name"
+label="技能名称"
               rules={[{ required: true, message: t("skills.pleaseInputName") }]}
             >
               <Input placeholder={t("skills.skillNamePlaceholder")} />
@@ -301,7 +301,7 @@ export function SkillDrawer({
 
           <Form.Item
             name="content"
-            label="Content"
+            label="技能内容"
             rules={[{ required: true, validator: validateFrontmatter }]}
           >
             <MarkdownCopy

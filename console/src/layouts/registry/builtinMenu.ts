@@ -44,7 +44,7 @@ import {
   SparkVoiceChat01Line,
   SparkWifiLine,
 } from "@agentscope-ai/icons";
-import { GitBranch } from "lucide-react";
+import { GitBranch, BookOpen } from "lucide-react";
 import i18next from "i18next";
 import { Files } from "lucide-react";
 import { menuRegistry } from "../../plugins/registry/store";
@@ -60,9 +60,17 @@ export const BUILTIN_MENU: MenuItem[] = [
     id: "core.knowledge",
     location: "primary.agentScoped",
     label: navLabel("nav.knowledge", "知识空间"),
-    icon: SparkDataLine,
+    icon: BookOpen,
     route: "core.knowledge",
     order: 5,
+  },
+  {
+    id: "core.data-analysis",
+    location: "primary.agentScoped",
+    label: navLabel("nav.data-analysis", "数据分析"),
+    icon: SparkDataLine,
+    route: "core.data-analysis",
+    order: 6,
   },
   {
     id: "core.inbox",

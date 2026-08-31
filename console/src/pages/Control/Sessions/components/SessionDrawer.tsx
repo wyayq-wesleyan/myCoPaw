@@ -45,27 +45,27 @@ export function SessionDrawer({
       <Form form={form} layout="vertical" onFinish={onSubmit}>
         <Form.Item
           name="name"
-          label="name"
-          rules={[{ required: false, message: "Please input name" }]}
+          label="名称"
+          rules={[{ required: false, message: "请输入名称" }]}
         >
-          <Input placeholder="Session name" />
+          <Input placeholder="会话名称" />
         </Form.Item>
 
         {editingSession && (
           <>
-            <Form.Item label="id">
+            <Form.Item label="ID">
               <Input value={editingSession.id} disabled />
             </Form.Item>
 
-            <Form.Item label="session_id">
+            <Form.Item label="会话ID">
               <Input value={editingSession.session_id} disabled />
             </Form.Item>
 
-            <Form.Item label="user_id">
+            <Form.Item label="用户ID">
               <Input value={editingSession.user_id} disabled />
             </Form.Item>
 
-            <Form.Item label="channel">
+            <Form.Item label="渠道">
               <Input value={editingSession.channel} disabled />
             </Form.Item>
           </>

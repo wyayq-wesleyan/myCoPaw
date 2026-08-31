@@ -24,7 +24,7 @@ import { QWENPAW_CLIENT_MESSAGE_ID_KEY } from "../../../utils/clientMessageId";
 
 const DEFAULT_USER_ID = "default";
 const DEFAULT_CHANNEL = "console";
-const DEFAULT_SESSION_NAME = "New Chat";
+const DEFAULT_SESSION_NAME = "新对话";
 const ROLE_TOOL = "tool";
 const ROLE_USER = "user";
 const ROLE_ASSISTANT = "assistant";
@@ -354,6 +354,15 @@ const convertMessages = (
 
   while (i < len) {
     if (messages[i].role === ROLE_USER) {
+      // Skip internal knowledge auto-context injections that should not
+      // appear as visible user bubbles in the chat UI.
+      const origName =
+        (messages[i].metadata as Record<string, unknown>)
+          ?.original_name as string | undefined;
+      if (origName === "knowledge_auto_context") {
+        i++;
+        continue;
+      }
       result.push(buildUserCard(messages[i++]));
     } else {
       // Collect consecutive non-user messages via slice

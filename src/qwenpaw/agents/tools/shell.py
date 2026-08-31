@@ -953,7 +953,7 @@ async def _execute_posix_host(
     tool_type="shell",
     target_param="command",
     policy_name="Bash",
-    ui_description="Execute shell commands",
+    ui_description="执行Shell命令",
     ui_icon="💻",
 )
 async def execute_shell_command(

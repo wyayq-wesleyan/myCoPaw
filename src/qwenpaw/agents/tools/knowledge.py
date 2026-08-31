@@ -43,7 +43,7 @@ def _resolve_account_username() -> str:
 
 
 def _format_search_result(payload: dict[str, Any]) -> str:
-    """格式化检索结果，只返回文档列表和摘要，不返回完整内容"""
+    """格式化检索结果，包含来源和置信度信息"""
     documents = payload.get("documents") or []
     evidence = payload.get("evidence") or []
     total_count = payload.get("total_count", 0)
@@ -52,6 +52,19 @@ def _format_search_result(payload: dict[str, Any]) -> str:
     if not documents:
         return "未找到相关文档。"
 
+    SOURCE_LABEL = {
+        "fulltext": "全文检索",
+        "literal": "关键词匹配",
+        "semantic": "语义相似",
+        "entity": "实体匹配",
+        "lightrag": "知识图谱",
+    }
+    CONFIDENCE_LABEL = {
+        "high": "高置信",
+        "medium": "中置信",
+        "low": "低置信",
+    }
+
     lines = [f"找到 {document_count} 个相关文档，共 {total_count} 个相关片段：\n"]
 
     for i, doc in enumerate(documents[:5], 1):
@@ -59,8 +72,10 @@ def _format_search_result(payload: dict[str, Any]) -> str:
         filename = doc.get("filename", "未知文件")
         snippet_count = doc.get("snippet_count", 0)
         pages = doc.get("pages", [])
+        sources = doc.get("sources", [])
         pages_str = f"，涉及页码：{', '.join(str(p) for p in sorted(pages)[:5])}" if pages else ""
-        lines.append(f"[{i}] {filename}（{snippet_count} 个相关片段{pages_str}）")
+        sources_str = "，来源：" + "、".join(SOURCE_LABEL.get(s, s) for s in sources) if sources else ""
+        lines.append(f"[{i}] {filename}（{snippet_count} 个相关片段{pages_str}{sources_str}）")
         lines.append(f"    文档ID: {doc_id}")
 
     if document_count > 5:
@@ -84,14 +99,15 @@ def _format_search_result(payload: dict[str, Any]) -> str:
 async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
     """Search local knowledge before answering questions grounded in uploaded materials.
 
-    Use this whenever the user asks about uploaded reference files, historical
-    materials, people, events, relationships, or facts that may be stored in
-    a knowledge space. Do not claim that no relevant materials exist unless
-    the returned evidence is empty. ``space_name`` is optional; omit it to
-    search all spaces available to the current account.
+    检索来源说明：
+    - 全文检索(fulltext)：直接匹配原文，可信度最高
+    - 关键词匹配(literal)：CJK 二元组部分匹配，可信度高
+    - 语义相似(semantic)：embedding 向量相似，可能不完全精确
+    - 实体匹配(entity)：人名/机构名等实体匹配
+    - 知识图谱(lightrag)：图谱关系推断，需核实原文
 
-    Returns a list of relevant documents and snippet counts. Use
-    get_document_detail to retrieve the actual content of specific documents.
+    回答时优先使用"全文检索"和"关键词匹配"来源的内容，对"知识图谱"
+    来源的推断性内容需谨慎使用，尽量引用原文佐证。
     """
     url = _service_url()
     username = _resolve_account_username()

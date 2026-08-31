@@ -221,6 +221,11 @@ async def preview_knowledge_document(document_id: str, request: Request) -> Any:
     return await _forward(request, "GET", f"/v1/documents/{document_id}/preview", _request_username(request))
 
 
+@router.get("/documents/{document_id}/stats")
+async def get_document_stats(document_id: str, request: Request) -> Any:
+    return await _forward(request, "GET", f"/v1/documents/{document_id}/stats", _request_username(request))
+
+
 @router.post("/search")
 async def search_knowledge(body: KnowledgeSearchRequest, request: Request) -> dict[str, Any]:
     """纯检索接口，只返回检索结果，不生成answer"""

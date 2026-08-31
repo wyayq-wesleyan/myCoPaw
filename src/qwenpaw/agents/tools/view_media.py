@@ -350,7 +350,7 @@ def _get_multimodal_fallback_hint(media_type: str, path: str) -> str:
     policy_name="ViewImage",
     default_policy="allow",
     policy_reason="Image view (global)",
-    ui_description="Load an image into LLM context for visual analysis",
+    ui_description="将图片加载到大模型上下文进行视觉分析",
     ui_icon="🖼️",
     display_to_user=False,
 )
@@ -444,7 +444,7 @@ async def view_image(image_path: str) -> ToolChunk:
     policy_name="ViewVideo",
     default_policy="allow",
     policy_reason="Video view (global)",
-    ui_description="Load a video into LLM context for visual analysis",
+    ui_description="将视频加载到大模型上下文进行视觉分析",
     ui_icon="🎥",
     display_to_user=False,
 )

@@ -41,7 +41,7 @@ class LightRAGBridge:
         except Exception:
             return None
 
-    async def search(self, query: str, top_k: int = 20) -> list[dict[str, Any]]:
+    async def search(self, query: str, space_id: str, top_k: int = 20) -> list[dict[str, Any]]:
         """Query LightRAG retrieval data (no LLM generation) for fusion with local search."""
         if not self.enabled:
             return []
@@ -55,25 +55,32 @@ class LightRAGBridge:
                 response = await client.post(f"{self.settings.lightrag_url}/query/data", headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
-                return self._normalize_lightrag_result(data)
+                return self._normalize_lightrag_result(data, space_id)
         except Exception:
             return []
 
-    def _normalize_lightrag_result(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _normalize_lightrag_result(self, payload: dict[str, Any], space_id: str) -> list[dict[str, Any]]:
         """Convert LightRAG /query/data response to standard evidence format."""
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             return []
         evidence: list[dict[str, Any]] = []
+        scope_prefix = f"knowledge://{space_id}/"
         for index, chunk in enumerate(data.get("chunks") or []):
             content = chunk.get("content") or chunk.get("text") or ""
             if not content:
+                continue
+            file_path = str(chunk.get("file_path") or "")
+            # LightRAG is a shared graph store. Only accept documents explicitly
+            # indexed under the requested space; legacy unscoped records are
+            # intentionally excluded instead of risking cross-user leakage.
+            if not file_path.startswith(scope_prefix):
                 continue
             evidence.append({
                 "id": f"lightrag-{chunk.get('chunk_id') or index}",
                 "document_id": None,
                 "page": None,
-                "location": str(chunk.get("file_path") or "LightRAG 图谱"),
+                "location": file_path or "LightRAG 图谱",
                 "content": content,
                 "filename": chunk.get("file_path"),
                 "source": "lightrag",
@@ -81,7 +88,14 @@ class LightRAGBridge:
             })
         return evidence
 
-    async def insert(self, source_name: str, chunks: list[dict[str, Any]]) -> bool:
+    async def insert(
+        self,
+        *,
+        space_id: str,
+        document_id: str,
+        source_name: str,
+        chunks: list[dict[str, Any]],
+    ) -> bool:
         """Index normalized content in LightRAG after local evidence is durable."""
         if not self.enabled or not chunks:
             return False
@@ -95,7 +109,10 @@ class LightRAGBridge:
                 response = await client.post(
                     f"{self.settings.lightrag_url}/documents/text",
                     headers=headers,
-                    json={"text": text, "file_source": source_name},
+                    json={
+                        "text": text,
+                        "file_source": f"knowledge://{space_id}/{document_id}/{source_name}",
+                    },
                 )
                 # 409 = 内容已在图谱中，视为索引成功
                 if response.status_code == 409:
@@ -117,7 +134,12 @@ class LightRAGBridge:
             if doc.get("status") != "completed":
                 continue
             chunks = store.get_document_evidence(doc["id"])
-            if chunks and await self.insert(doc["filename"], chunks):
+            if chunks and await self.insert(
+                space_id=space_id,
+                document_id=doc["id"],
+                source_name=doc["filename"],
+                chunks=chunks,
+            ):
                 indexed += 1
             else:
                 failed += 1

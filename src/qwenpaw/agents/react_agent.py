@@ -1015,6 +1015,13 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 spaces_response.raise_for_status()
                 spaces = spaces_response.json()
                 snippets: list[str] = []
+                SOURCE_LABEL = {
+                    "fulltext": "全文检索",
+                    "literal": "关键词匹配",
+                    "semantic": "语义相似",
+                    "entity": "实体匹配",
+                    "lightrag": "知识图谱",
+                }
                 for space in spaces[:20]:
                     response = await client.post(
                         f"{service_url}/v1/search",
@@ -1024,8 +1031,12 @@ class QwenPawAgent(CodingModeMixin, Agent):
                     response.raise_for_status()
                     payload = response.json()
                     for item in (payload.get("evidence") or [])[:6]:
+                        source = SOURCE_LABEL.get(item.get("source", ""), item.get("source", ""))
+                        confidence = item.get("confidence", "")
+                        confidence_str = f" [{confidence}置信]" if confidence else ""
                         snippets.append(
-                            f"来源：{item.get('filename') or '未知文件'}，第 {item.get('page') or '?'} 页\n"
+                            f"来源：{item.get('filename') or '未知文件'}，第 {item.get('page') or '?'} 页"
+                            f"（{source}{confidence_str}）\n"
                             f"{str(item.get('content') or '')[:900]}"
                         )
             if not snippets:

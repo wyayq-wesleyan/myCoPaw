@@ -21,22 +21,22 @@ describe("ChatHeaderTitle", () => {
     expect(screen.getAllByText("My Chat")[0]).toBeInTheDocument();
   });
 
-  it('displays "New Chat" when session name is empty', () => {
+  it('displays "新对话" when session name is empty', () => {
     mockUseChatAnywhereSessionsState.mockReturnValue({
       sessions: [{ id: "sess-1", name: "" }],
       currentSessionId: "sess-1",
     });
     renderWithProviders(<ChatHeaderTitle />);
-    expect(screen.getAllByText("New Chat")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("新对话")[0]).toBeInTheDocument();
   });
 
-  it('displays "New Chat" when no matching session exists', () => {
+  it('displays "新对话" when no matching session exists', () => {
     mockUseChatAnywhereSessionsState.mockReturnValue({
       sessions: [],
       currentSessionId: null,
     });
     renderWithProviders(<ChatHeaderTitle />);
-    expect(screen.getAllByText("New Chat")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("新对话")[0]).toBeInTheDocument();
   });
 
   it("displays the correct session name after switching currentSessionId", () => {

@@ -225,10 +225,10 @@ const SessionItem: React.FC<SessionItemProps> = ({
                     aria-hidden
                   />
                 </span>
-                <div className={styles.name}>{name || "New Chat"}</div>
+                <div className={styles.name}>{name || "新对话"}</div>
               </div>
             ) : (
-              <div className={styles.name}>{name || "New Chat"}</div>
+              <div className={styles.name}>{name || "新对话"}</div>
             )}
           </>
         )}

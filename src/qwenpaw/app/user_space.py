@@ -45,6 +45,7 @@ DEFAULT_USER_MENU_IDS = frozenset(
         "core.agents",
         "core.files",
         "core.knowledge",
+        "core.data-analysis",
         "core.sessions",
         "core.cron-jobs",
         "core.token-usage",
@@ -456,7 +457,7 @@ def get_menu_permissions(username: str, role: str = "user") -> list[str] | None:
     # inbox. Keep it available to existing accounts as well as new ones.
     return sorted(
         set(_names(values if isinstance(values, list) else []))
-        | {"core.skills", "core.tools", "core.inbox", "core.knowledge"}
+        | {"core.skills", "core.tools", "core.inbox", "core.knowledge", "core.data-analysis"}
     )
 
 
@@ -467,7 +468,7 @@ def set_menu_permissions(username: str, permissions: list[str] | None) -> None:
     else:
         # Knowledge space is part of the standard console for every account.
         # Keep it enabled even when an older admin form submits a stale list.
-        state[MENU_PERMISSIONS] = _names([*_names(permissions), "core.knowledge"])
+        state[MENU_PERMISSIONS] = _names([*_names(permissions), "core.knowledge", "core.data-analysis"])
     save_user_state(username, state)
 
 

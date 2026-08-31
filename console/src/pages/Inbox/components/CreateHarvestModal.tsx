@@ -18,25 +18,25 @@ interface CreateHarvestModalProps {
 const TEMPLATES: HarvestTemplate[] = [
   {
     id: "tech-daily",
-    name: "Tech Frontier Harvest",
+    name: "前沿技术日报",
     emoji: "🚀",
-    description: "Daily updates on AI, tech trends and open source.",
+    description: "每日AI、科技趋势和开源动态更新。",
     estimatedReadTime: 8,
     defaultSchedule: { cron: "0 9 * * *", timezone: "Asia/Shanghai" },
   },
   {
     id: "industry-weekly",
-    name: "Industry Intelligence",
+    name: "行业情报周报",
     emoji: "📊",
-    description: "Weekly deep-dive analysis of industry trends.",
+    description: "每周行业趋势深度分析。",
     estimatedReadTime: 15,
     defaultSchedule: { cron: "0 10 * * 1", timezone: "Asia/Shanghai" },
   },
   {
     id: "competitor-daily",
-    name: "Competitor Watch",
+    name: "竞品动态监控",
     emoji: "🏢",
-    description: "Track competitor moves and key market signals.",
+    description: "跟踪竞品动态和关键市场信号。",
     estimatedReadTime: 6,
     defaultSchedule: { cron: "0 18 * * *", timezone: "Asia/Shanghai" },
   },
@@ -76,7 +76,7 @@ export function CreateHarvestModal({
       width={860}
       title={
         <span className={styles.modalTitle}>
-          <Sparkles size={18} /> Create Harvest
+          <Sparkles size={18} /> 创建信息采集
         </span>
       }
       destroyOnHidden
@@ -99,7 +99,7 @@ export function CreateHarvestModal({
             </div>
             <p className={styles.templateDesc}>{template.description}</p>
             <span className={styles.templateMeta}>
-              ~{template.estimatedReadTime} min read
+              约{template.estimatedReadTime}分钟阅读
             </span>
           </Card>
         ))}
@@ -119,33 +119,33 @@ export function CreateHarvestModal({
         >
           <Form.Item
             name="name"
-            label="Harvest Name"
-            rules={[{ required: true, message: "Please input harvest name" }]}
+            label="采集名称"
+            rules={[{ required: true, message: "请输入采集名称" }]}
           >
             <Input />
           </Form.Item>
           <Form.Item
             name="keywords"
-            label="Keywords"
-            rules={[{ required: true, message: "Please input keywords" }]}
+            label="关键词"
+            rules={[{ required: true, message: "请输入关键词" }]}
           >
             <Input.TextArea
               rows={3}
-              placeholder="AI, Open Source, Product..."
+              placeholder="人工智能, 开源, 产品..."
             />
           </Form.Item>
-          <Form.Item name="frequency" label="Frequency" initialValue="daily">
+          <Form.Item name="frequency" label="采集频率" initialValue="daily">
             <Select
               options={[
-                { label: "Daily", value: "daily" },
-                { label: "Weekly", value: "weekly" },
+                { label: "每日", value: "daily" },
+                { label: "每周", value: "weekly" },
               ]}
             />
           </Form.Item>
           <div className={styles.actions}>
-            <Button onClick={onClose}>Cancel</Button>
+            <Button onClick={onClose}>取消</Button>
             <Button type="primary" htmlType="submit">
-              Create Harvest
+              创建采集
             </Button>
           </div>
         </Form>

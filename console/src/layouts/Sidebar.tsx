@@ -66,7 +66,7 @@ const ADMIN_ONLY_MENU_IDS = new Set([
   "core.agent-config",
   "core.user-management",
 ]);
-const ALWAYS_USER_MENU_IDS = new Set(["core.knowledge"]);
+const ALWAYS_USER_MENU_IDS = new Set(["core.knowledge", "core.data-analysis"]);
 
 // This edition is a browser-console product for air-gapped networks. External
 // channel adapters are deliberately not loaded by the service, so leaving a
@@ -667,24 +667,23 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       )}
 
       <div className={styles.collapseToggleContainer}>
-        {/* Gear stays visible in collapsed state too — otherwise users
-            (especially on mobile, where the sidebar starts collapsed)
-            cannot discover how to restore full mode. */}
-        <Popover
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-          placement={collapsed ? "rightBottom" : "topRight"}
-          trigger="click"
-          content={
-            <SidebarSettingsPanel onClose={() => setSettingsOpen(false)} />
-          }
-        >
-          <Button
-            type="text"
-            icon={<SparkSettingLine size={18} />}
-            className={styles.collapseToggle}
-          />
-        </Popover>
+        {isAdmin && (
+          <Popover
+            open={settingsOpen}
+            onOpenChange={setSettingsOpen}
+            placement={collapsed ? "rightBottom" : "topRight"}
+            trigger="click"
+            content={
+              <SidebarSettingsPanel onClose={() => setSettingsOpen(false)} />
+            }
+          >
+            <Button
+              type="text"
+              icon={<SparkSettingLine size={18} />}
+              className={styles.collapseToggle}
+            />
+          </Popover>
+        )}
         <Button
           type="text"
           icon={

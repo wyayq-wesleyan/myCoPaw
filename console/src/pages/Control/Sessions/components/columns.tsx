@@ -30,31 +30,31 @@ export const createColumns = (
 
   const cols: ColumnsType<Session> = [
     {
-      title: "ID",
+      title: "编号",
       dataIndex: "id",
       key: "id",
       width: 250,
     },
     {
-      title: "Name",
+      title: "名称",
       dataIndex: "name",
       key: "name",
       width: 200,
     },
     {
-      title: "SessionID",
+      title: "会话ID",
       dataIndex: "session_id",
       key: "session_id",
       width: 180,
     },
     {
-      title: "UserID",
+      title: "用户ID",
       dataIndex: "user_id",
       key: "user_id",
       width: 150,
     },
     {
-      title: "Channel",
+      title: "渠道",
       dataIndex: "channel",
       key: "channel",
       width: 120,
@@ -63,7 +63,7 @@ export const createColumns = (
       ),
     },
     {
-      title: "CreatedAt",
+      title: "创建时间",
       dataIndex: "created_at",
       key: "created_at",
       width: 180,
@@ -72,7 +72,7 @@ export const createColumns = (
         toUTCTime(a.created_at) - toUTCTime(b.created_at),
     },
     {
-      title: "UpdatedAt",
+      title: "更新时间",
       dataIndex: "updated_at",
       key: "updated_at",
       width: 180,
@@ -97,7 +97,7 @@ export const createColumns = (
   }
 
   cols.push({
-    title: "Action",
+    title: "操作",
     key: "action",
     width: isArchived ? 210 : 250,
     fixed: "right",

@@ -11,7 +11,7 @@ const ChatHeaderTitle: React.FC = () => {
     useChatAnywhereSessionsState();
   const { codingMode } = useCodingMode();
   const currentSession = sessions.find((s) => s.id === currentSessionId);
-  const chatName = currentSession?.name || "New Chat";
+  const chatName = currentSession?.name || "新对话";
 
   const [open, setOpen] = useState(false);
 
@@ -52,7 +52,7 @@ const ChatHeaderTitle: React.FC = () => {
     label: (
       <div className={styles.menuItem}>
         <span className={styles.menuItemName}>
-          {session.name || "New Chat"}
+          {session.name || "新对话"}
         </span>
         {session.id === currentSessionId && (
           <span className={styles.menuItemActive}>✓</span>

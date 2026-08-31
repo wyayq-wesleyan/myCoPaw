@@ -72,11 +72,11 @@ export const RemoteProviderCard = React.memo(function RemoteProviderCard({
         <ProviderIcon providerId={provider.id} size={36} />
         <span className={styles.groupCardName}>{provider.name}</span>
         {providerTag}
-        {provider.is_free_tier && <span className={styles.freeTag}>FREE</span>}
+        {provider.is_free_tier && <span className={styles.freeTag}>免费</span>}
         {isAvailable && (
           <div className={styles.groupCardLiveBadge}>
             <span className={styles.groupCardPulse} />
-            Live
+在线
           </div>
         )}
       </div>
@@ -84,12 +84,12 @@ export const RemoteProviderCard = React.memo(function RemoteProviderCard({
       {/* Content - same layout as GroupCard */}
       <div className={styles.groupCardContent}>
         <div className={styles.groupCardField}>
-          <span className={styles.groupCardFieldLabel}>Endpoint</span>
+          <span className={styles.groupCardFieldLabel}>接口地址</span>
           <div className={styles.groupCardMono}>{provider.base_url || "—"}</div>
         </div>
 
         <div className={styles.groupCardField}>
-          <span className={styles.groupCardFieldLabel}>API Key</span>
+          <span className={styles.groupCardFieldLabel}>API密钥</span>
           {provider.api_key ? (
             <div className={styles.groupCardMono}>
               <span>{provider.api_key}</span>
@@ -152,7 +152,7 @@ export const RemoteProviderCard = React.memo(function RemoteProviderCard({
         </div>
 
         <div className={styles.groupCardField}>
-          <span className={styles.groupCardFieldLabel}>Models</span>
+          <span className={styles.groupCardFieldLabel}>模型列表</span>
           <span className={styles.groupCardFieldValue}>
             {totalCount > 0
               ? t("models.modelsCount", { count: totalCount })

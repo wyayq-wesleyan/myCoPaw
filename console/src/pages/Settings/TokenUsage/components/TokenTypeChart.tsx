@@ -17,7 +17,7 @@ export function TokenTypeChart({ chartConfig }: TokenTypeChartProps) {
       className={styles.chartCard}
       title={
         <span className={styles.chartTitle}>
-          {t("tokenUsage.tokenTypeChart", "Token Type Trend")}
+          {t("tokenUsage.tokenTypeChart", "词元 Type Trend")}
         </span>
       }
     >

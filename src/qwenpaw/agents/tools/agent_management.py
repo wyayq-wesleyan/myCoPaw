@@ -480,7 +480,7 @@ def format_background_status_text(
     async_execution=True,
     tool_type="internal",
     policy_name="ListAgents",
-    ui_description="List configured agents from the local API",
+    ui_description="列出已配置的智能体",
     ui_icon="🤖",
 )
 async def list_agents(
@@ -502,10 +502,7 @@ async def list_agents(
     tool_type="internal",
     target_param="to_agent",
     policy_name="ChatWithAgent",
-    ui_description=(
-        "Send a message to another configured agent and wait for "
-        "the response"
-    ),
+    ui_description="向其他智能体发送消息并等待回复",
     ui_icon="💬",
 )
 async def chat_with_agent(
@@ -622,7 +619,7 @@ async def chat_with_agent(
     tool_type="internal",
     target_param="to_agent",
     policy_name="SubmitToAgent",
-    ui_description="Submit a background task to another configured agent",
+    ui_description="向其他智能体提交后台任务",
     ui_icon="📨",
 )
 async def submit_to_agent(
@@ -713,7 +710,7 @@ async def submit_to_agent(
     tool_type="internal",
     target_param="task_id",
     policy_name="CheckAgentTask",
-    ui_description="Check the status of a background agent task",
+    ui_description="检查后台智能体任务状态",
     ui_icon="⏳",
 )
 async def check_agent_task(

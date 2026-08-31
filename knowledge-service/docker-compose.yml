@@ -89,7 +89,7 @@ services:
       WORKING_DIR: /data/lightrag
       TIKTOKEN_CACHE_DIR: /data/lightrag/tiktoken_cache
       LIGHTRAG_API_KEY: "${LIGHTRAG_API_KEY:-}"
-    command: ["lightrag-server", "--host", "0.0.0.0", "--port", "9621"]
+    command: ["python", "-m", "lightrag.server", "--host", "0.0.0.0", "--port", "9621"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

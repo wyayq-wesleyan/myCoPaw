@@ -248,12 +248,12 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
 
   const handleCommit = useCallback(async () => {
     if (!commitMsg.trim()) {
-      void msgApi.warning("Please enter a commit message");
+      void msgApi.warning("请输入提交信息");
       return;
     }
     const hasStaged = status?.changes.some((f) => f.staged);
     if (!hasStaged) {
-      void msgApi.warning("No staged files. Stage changes before committing.");
+      void msgApi.warning("没有已暂存的文件。请先暂存变更再提交。");
       return;
     }
     setCommitting(true);
@@ -262,14 +262,14 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
       setCommitMsg("");
       await refresh();
       await refreshLog();
-      void msgApi.success("Committed successfully");
+      void msgApi.success("提交成功");
     } catch (e: unknown) {
       const raw = e instanceof Error ? e.message : String(e);
       if (raw.includes("nothing to commit")) {
-        void msgApi.warning("Nothing to commit");
+        void msgApi.warning("没有可提交的内容");
       } else if (raw.includes("nothing added to commit")) {
         void msgApi.warning(
-          "No staged files. Stage changes before committing.",
+          "没有已暂存的文件。请先暂存变更再提交。",
         );
       } else {
         void msgApi.error(raw);
@@ -315,7 +315,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                 className={styles.newBranchOption}
                 onClick={() => setNewBranchModal(true)}
               >
-                <Plus size={12} /> New branch
+                <Plus size={12} /> 新建分支
               </div>
             </>
           )}
@@ -330,7 +330,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
             ↓{status.behind}
           </Tag>
         )}
-        <Tooltip title="Refresh">
+        <Tooltip title="刷新">
           <button
             type="button"
             className={styles.iconBtn}
@@ -352,7 +352,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
             key: "changes",
             label: (
               <span>
-                Changes{" "}
+                变更{" "}
                 {status.changes.length > 0 && (
                   <span className={styles.badge}>{status.changes.length}</span>
                 )}
@@ -364,8 +364,8 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                 {staged.length > 0 && (
                   <div className={styles.section}>
                     <div className={styles.sectionHeader}>
-                      <span>Staged ({staged.length})</span>
-                      <Tooltip title="Unstage all">
+                      <span>已暂存 ({staged.length})</span>
+                      <Tooltip title="全部取消暂存">
                         <button
                           type="button"
                           className={styles.iconBtn}
@@ -384,7 +384,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                         onStage={() => void handleUnstage(f)}
                         onDiff={() => void handleShowDiff(f)}
                         actionIcon={<Minus size={11} />}
-                        actionTip="Unstage"
+                        actionTip="取消暂存"
                       />
                     ))}
                     {!showAllStaged && staged.length > FILE_LIMIT && (
@@ -393,7 +393,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                         className={styles.showMoreBtn}
                         onClick={() => setShowAllStaged(true)}
                       >
-                        Show all {staged.length} files…
+                        显示全部 {staged.length} 个文件…
                       </button>
                     )}
                   </div>
@@ -403,8 +403,8 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                 {unstaged.length > 0 && (
                   <div className={styles.section}>
                     <div className={styles.sectionHeader}>
-                      <span>Changes ({unstaged.length})</span>
-                      <Tooltip title="Stage all">
+                      <span>变更 ({unstaged.length})</span>
+                      <Tooltip title="全部暂存">
                         <button
                           type="button"
                           className={styles.iconBtn}
@@ -422,7 +422,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                         onDiff={() => void handleShowDiff(f)}
                         onDiscard={() => void handleDiscard(f)}
                         actionIcon={<Plus size={11} />}
-                        actionTip="Stage"
+                        actionTip="暂存"
                       />
                     ))}
                     {!showAllUnstaged && unstaged.length > FILE_LIMIT && (
@@ -431,25 +431,25 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                         className={styles.showMoreBtn}
                         onClick={() => setShowAllUnstaged(true)}
                       >
-                        Show all {unstaged.length} files…
+                        显示全部 {unstaged.length} 个文件…
                       </button>
                     )}
                   </div>
                 )}
 
                 {status.changes.length === 0 && (
-                  <p className={styles.empty}>No changes</p>
+                  <p className={styles.empty}>无变更</p>
                 )}
               </div>
             ),
           },
           {
             key: "log",
-            label: "History",
+            label: "历史",
             children: (
               <div className={styles.logPane}>
                 {log.length === 0 ? (
-                  <p className={styles.empty}>No commits yet</p>
+                  <p className={styles.empty}>暂无提交记录</p>
                 ) : (
                   log.map((c) => (
                     <div key={c.hash} className={styles.logEntry}>
@@ -457,7 +457,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                         <span className={styles.logHash}>{c.hash}</span>
                         <span className={styles.logMsg}>{c.message}</span>
                         <div className={styles.logActions}>
-                          <Tooltip title="View diff">
+                          <Tooltip title="查看差异">
                             <button
                               type="button"
                               className={styles.iconBtn}
@@ -467,14 +467,14 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
                             </button>
                           </Tooltip>
                           <Popconfirm
-                            title={`Revert commit "${c.message}"?`}
-                            description="This creates a new commit that undoes these changes."
+                            title={`回退提交"${c.message}"？`}
+                            description="此操作将创建一个新的提交来撤销这些变更。"
                             onConfirm={() => void handleRevert(c)}
-                            okText="Revert"
-                            cancelText="Cancel"
+                            okText="回退"
+                            cancelText="取消"
                             placement="topRight"
                           >
-                            <Tooltip title="Revert this commit">
+                            <Tooltip title="回退此提交">
                               <button type="button" className={styles.iconBtn}>
                                 <Undo2 size={11} />
                               </button>
@@ -498,7 +498,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
       <div className={styles.commitBox}>
         <Input.TextArea
           rows={2}
-          placeholder="Commit message…"
+          placeholder="提交信息…"
           value={commitMsg}
           onChange={(e) => setCommitMsg(e.target.value)}
           className={styles.commitInput}
@@ -516,7 +516,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
           onClick={handleCommit}
           icon={<GitCommit size={12} />}
         >
-          Commit
+          提交
         </Button>
       </div>
 
@@ -543,7 +543,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
         title={
           <span>
             <GitMerge size={14} style={{ marginRight: 6 }} />
-            New branch
+            新建分支
           </span>
         }
         onOk={handleCreateBranch}
@@ -551,7 +551,7 @@ export default function GitPanel({ chatId }: { chatId?: string }) {
           setNewBranchModal(false);
           setNewBranchName("");
         }}
-        okText="Create & Switch"
+        okText="创建并切换"
         width={360}
       >
         <Input
@@ -595,22 +595,22 @@ function FileRow({
         <span className={styles.fileName}>{name}</span>
       </Tooltip>
       <div className={styles.fileActions}>
-        <Tooltip title="View diff">
+        <Tooltip title="查看差异">
           <button type="button" className={styles.iconBtn} onClick={onDiff}>
             <FileDiff size={11} />
           </button>
         </Tooltip>
         {onDiscard && (
           <Popconfirm
-            title="Discard changes?"
-            description={`Discard all changes in ${file.path}?`}
+            title="放弃变更？"
+            description={`放弃${file.path}中的所有变更？`}
             onConfirm={onDiscard}
-            okText="Discard"
-            cancelText="Cancel"
+            okText="放弃"
+            cancelText="取消"
             okButtonProps={{ danger: true }}
             placement="topRight"
           >
-            <Tooltip title="Discard changes">
+            <Tooltip title="放弃变更">
               <button type="button" className={styles.iconBtn}>
                 <RotateCcw size={11} />
               </button>

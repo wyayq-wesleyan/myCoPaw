@@ -65,7 +65,7 @@ const SETTINGS_ITEMS: SettingsItem[] = [
   {
     routeId: "core.token-usage",
     labelKey: "nav.tokenUsage",
-    fallback: "Token Usage",
+    fallback: "词元 Usage",
     Icon: BarChart3,
   },
   {

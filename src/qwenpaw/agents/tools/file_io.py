@@ -104,7 +104,7 @@ def _get_encoding_for_file(file_path: str) -> str:
     policy_name="Read",
     default_policy="allow",
     policy_reason="Read-only file access (global)",
-    ui_description="Read file contents",
+    ui_description="读取文件内容",
     ui_icon="📄",
 )
 # Keep numeric strings in the public type: AgentScope validates the generated
@@ -277,7 +277,7 @@ async def read_file(  # pylint: disable=too-many-return-statements
     tool_type="file",
     target_param="file_path",
     policy_name="Write",
-    ui_description="Write content to file",
+    ui_description="写入文件内容",
     ui_icon="✍️",
 )
 async def write_file(
@@ -346,7 +346,7 @@ async def write_file(
     tool_type="file",
     target_param="file_path",
     policy_name="Edit",
-    ui_description="Edit file using find-and-replace",
+    ui_description="通过查找替换编辑文件",
     ui_icon="🖊️",
 )
 async def edit_file(
@@ -475,7 +475,7 @@ async def edit_file(
     tool_type="file",
     target_param="file_path",
     policy_name="Append",
-    ui_description="Append content to a file",
+    ui_description="向文件追加内容",
     ui_icon="📎",
 )
 async def append_file(

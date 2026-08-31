@@ -570,10 +570,12 @@ async def get_inbox_events(
     unread_only: bool = Query(False),
 ):
     from ..inbox_store import query_events
+    from ..user_space import is_admin_user
 
     selected_sources = set(source_types or [])
     if source_type:
         selected_sources.add(source_type)
+    username = getattr(request.state, "user", None)
     events, total, unread_count = await query_events(
         limit=limit,
         offset=offset,
@@ -581,7 +583,8 @@ async def get_inbox_events(
         status=status,
         agent_id=agent_id,
         unread_only=unread_only,
-        recipient_username=getattr(request.state, "user", None),
+        recipient_username=username,
+        is_admin=is_admin_user(username),
     )
     return {
         "events": events,
@@ -591,22 +594,41 @@ async def get_inbox_events(
 
 
 @router.post("/inbox/read")
-async def post_mark_inbox_read(payload: MarkInboxReadRequest):
+async def post_mark_inbox_read(
+    payload: MarkInboxReadRequest,
+    request: Request,
+):
     from ..inbox_store import mark_all_read, mark_read
+    from ..user_space import is_admin_user
 
+    username = getattr(request.state, "user", None)
+    admin = is_admin_user(username)
     if payload.all:
-        updated = await mark_all_read()
+        updated = await mark_all_read(
+            recipient_username=username,
+            is_admin=admin,
+        )
     else:
-        updated = await mark_read(payload.event_ids)
+        updated = await mark_read(
+            payload.event_ids,
+            recipient_username=username,
+            is_admin=admin,
+        )
     return {"updated": updated}
 
 
 @router.delete("/inbox/events/{event_id}")
-async def delete_inbox_event(event_id: str):
+async def delete_inbox_event(event_id: str, request: Request):
     from ..inbox_store import delete_event
     from ..inbox_trace_store import delete_trace
+    from ..user_space import is_admin_user
 
-    deleted, run_id, run_id_still_referenced = await delete_event(event_id)
+    username = getattr(request.state, "user", None)
+    deleted, run_id, run_id_still_referenced = await delete_event(
+        event_id,
+        recipient_username=username,
+        is_admin=is_admin_user(username),
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="event not found")
     trace_deleted = False

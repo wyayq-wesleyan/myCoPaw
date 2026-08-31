@@ -22,7 +22,7 @@ from .file_io import _resolve_file_path, _path_to_file_url
     policy_name="SendFileToUser",
     default_policy="allow",
     policy_reason="File send to user (global)",
-    ui_description="Send files to user",
+    ui_description="发送文件给用户",
     ui_icon="📤",
 )
 async def send_file_to_user(

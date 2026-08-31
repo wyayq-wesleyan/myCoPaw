@@ -24,6 +24,7 @@ import defaultConfig, { getDefaultConfig } from "./OptionsPanel/defaultConfig";
 import { chatApi } from "../../api/modules/chat";
 import { agentApi } from "../../api/modules/agent";
 import { skillApi } from "../../api/modules/skill";
+import { authApi } from "../../api/modules/auth";
 import { getApiUrl } from "../../api/config";
 import { buildAuthHeaders } from "../../api/authHeaders";
 import { providerApi } from "../../api/modules/provider";
@@ -1163,6 +1164,7 @@ export default function ChatPage() {
   const location = useLocation();
   const { isDark } = useTheme();
   const { selectedAgent, agents } = useAgentStore();
+  const [isAdmin, setIsAdmin] = useState(false);
   const chatId = useMemo(
     () => getSessionIdFromPath(location.pathname),
     [location.pathname],
@@ -1216,6 +1218,13 @@ export default function ChatPage() {
     });
   }, [currentSessionFilesScopeKey, dispatchFilesDrawer]);
   const loopAvailableModes = useLoopStore((state) => state.availableModes);
+
+  useEffect(() => {
+    authApi
+      .getCurrentUser()
+      .then((user) => setIsAdmin(user.role === "admin"))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const openPreview = (event: Event) => {
@@ -3097,14 +3106,10 @@ export default function ChatPage() {
               <HarnessModelSelector providerId={selectedAgentBackend} />
             ) : null}
             <ChatActionGroup
-              onToggleWorkspace={toggleFilesWorkspace}
-              workspaceOpen={filesWorkspaceOpen}
               onToggleHistory={
                 effectiveIsFullMode ? toggleHistoryPanel : undefined
               }
               historyOpen={effectiveIsFullMode ? historyPanelOpen : false}
-              isWideMode={isWideMode}
-              onToggleWideMode={toggleWideMode}
             />
             {pluginRightHeader}
           </>
@@ -3152,7 +3157,7 @@ export default function ChatPage() {
         ) : undefined,
         prefix: (
           <>
-            {usesQwenPawBackend && <LoopModeSelector />}
+            {usesQwenPawBackend && isAdmin && <LoopModeSelector />}
             {pluginSenderPrefix}
           </>
         ),
@@ -3168,7 +3173,7 @@ export default function ChatPage() {
                 onNew={handleNewCommand}
               />
             )}
-            {usesQwenPawBackend && (
+            {usesQwenPawBackend && isAdmin && (
               <SessionProjectDirectory
                 scope={sessionScope}
                 compact={compactSender}
@@ -3237,6 +3242,31 @@ export default function ChatPage() {
           const payload = JSON.parse(chunk) as Record<string, unknown>;
           markLoopModeRunning();
           sanitizeHeadlinePayload(payload, headlineStreamFilterRef.current);
+
+          // Filter out internal runtime injections (knowledge context,
+          // visual/screenshot context) from the SSE output so they never
+          // appear as user bubbles in the UI.
+          const INTERNAL_INJECTION_NAMES = new Set([
+            "knowledge_auto_context",
+            "visual_context",
+            "visual_history",
+          ]);
+          if (Array.isArray(payload.output)) {
+            payload.output = (payload.output as any[]).filter(
+              (msg: any) => {
+                if (msg?.role !== "user") return true;
+                const name = msg?.name as string | undefined;
+                if (name && INTERNAL_INJECTION_NAMES.has(name)) return false;
+                const text = Array.isArray(msg?.content)
+                  ? msg.content
+                      .filter((c: any) => c.type === "text")
+                      .map((c: any) => c.text)
+                      .join("")
+                  : "";
+                return !text.startsWith("以下内容来自当前账户可访问的知识空间");
+              },
+            );
+          }
 
           if (payloadCompletesResponse(payload)) {
             const trailing = flushHeadlineFilter(

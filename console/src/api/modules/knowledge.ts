@@ -8,6 +8,7 @@ export interface KnowledgeDocument {
   filename: string;
   status: "queued" | "processing" | "completed" | "failed";
   error?: string | null;
+  size?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -60,6 +61,16 @@ export interface KnowledgeJobItem {
   updated_at?: string;
 }
 
+export interface KnowledgeDocumentStats {
+  document_id: string;
+  filename: string;
+  status: string;
+  size: number;
+  chunk_count: number;
+  entity_count: number;
+  relation_count: number;
+}
+
 export const knowledgeApi = {
   health: () => request<{ configured: boolean; status: string }>("/knowledge/health"),
 
@@ -87,6 +98,20 @@ export const knowledgeApi = {
     request<{ deleted: boolean }>(`/knowledge/documents/${encodeURIComponent(documentId)}`, {
       method: "DELETE",
     }),
+
+  deleteDocuments: async (documentIds: string[]): Promise<{ deleted: number }> => {
+    let deleted = 0;
+    for (const id of documentIds) {
+      try {
+        await request<{ deleted: boolean }>(`/knowledge/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
+        deleted++;
+      } catch { /* skip failed */ }
+    }
+    return { deleted };
+  },
+
+  getDocumentStats: (documentId: string) =>
+    request<KnowledgeDocumentStats>(`/knowledge/documents/${encodeURIComponent(documentId)}/stats`),
 
   searchFilter: (query: string) =>
     request<KnowledgeSearchFilterResult>("/knowledge/search/filter", {

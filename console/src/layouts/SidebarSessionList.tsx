@@ -108,7 +108,7 @@ const VirtualRow = React.memo(function VirtualRow({
       <SessionItem
         variant="sidebar"
         sessionId={session.id!}
-        name={session.name || "New Chat"}
+        name={session.name || "新对话"}
         channelKey={channelKey || undefined}
         channelLabel={channelLabel}
         chatStatus={session.status}
@@ -214,7 +214,7 @@ export default function SidebarSessionList({
     const q = searchQuery.trim().toLowerCase();
     if (!q) return sortedSessions;
     return sortedSessions.filter((s) =>
-      (s.name || "New Chat").toLowerCase().includes(q),
+      (s.name || "新对话").toLowerCase().includes(q),
     );
   }, [sortedSessions, searchQuery]);
 

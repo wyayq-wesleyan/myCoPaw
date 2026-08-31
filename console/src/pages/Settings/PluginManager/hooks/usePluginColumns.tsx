@@ -66,7 +66,7 @@ export function usePluginColumns({
       ),
     },
     {
-      title: "Status",
+      title: "状态",
       dataIndex: "loaded",
       key: "loaded",
       width: 110,

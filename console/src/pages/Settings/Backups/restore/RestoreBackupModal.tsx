@@ -448,7 +448,7 @@ export default function RestoreBackupModal({
           <div className={styles.strategySection}>
             <div className={styles.strategyLabel}>
               {t("backup.restoreStrategy", {
-                defaultValue: "Restore strategy",
+                defaultValue: "恢复策略",
               })}
             </div>
             <Radio.Group
@@ -460,13 +460,13 @@ export default function RestoreBackupModal({
                 <div className={styles.radioOption}>
                   <Text strong>
                     {t("backup.restoreStrategyPreserve", {
-                      defaultValue: "Preserve local security and MCP",
+                      defaultValue: "保留本地安全和MCP配置",
                     })}
                   </Text>
                   <Text type="secondary" className={styles.radioDesc}>
                     {t("backup.restoreStrategyPreserveDesc", {
                       defaultValue:
-                        "Keep this instance's security guards and MCP configuration.",
+                        "保留当前实例的安全防护和MCP配置。",
                     })}
                   </Text>
                 </div>

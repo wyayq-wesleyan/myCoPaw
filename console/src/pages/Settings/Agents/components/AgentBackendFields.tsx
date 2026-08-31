@@ -10,7 +10,6 @@ import {
   ExternalLink,
   LogOut,
   Network,
-  PawPrint,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -232,49 +231,6 @@ export function AgentBackendFields({ form, open }: AgentBackendFieldsProps) {
       <Form.Item name="backend" hidden>
         <Input />
       </Form.Item>
-
-      <div className={styles.sectionHeading}>
-        <span className={styles.eyebrow}>{t("agent.backend.eyebrow")}</span>
-        <h3>{t("agent.backend.typeTitle")}</h3>
-        <p>{t("agent.backend.typeDescription")}</p>
-      </div>
-
-      <div className={styles.typeGrid}>
-        <button
-          type="button"
-          className={`${styles.typeCard} ${
-            backend === "qwenpaw" ? styles.selected : ""
-          }`}
-          onClick={() => selectBackend("qwenpaw")}
-        >
-          <span className={styles.typeIcon}>
-            <PawPrint size={20} />
-          </span>
-          <span className={styles.typeCopy}>
-            <strong>{t("agent.backend.nativeTitle")}</strong>
-            <small>{t("agent.backend.nativeDescription")}</small>
-          </span>
-          <span className={styles.radioMark} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className={`${styles.typeCard} ${
-            backend !== "qwenpaw" ? styles.selected : ""
-          }`}
-          onClick={() =>
-            selectBackend(backend === "qwenpaw" ? "codex" : backend)
-          }
-        >
-          <span className={styles.typeIcon}>
-            <Blocks size={20} />
-          </span>
-          <span className={styles.typeCopy}>
-            <strong>{t("agent.backend.thirdPartyTitle")}</strong>
-            <small>{t("agent.backend.thirdPartyDescription")}</small>
-          </span>
-          <span className={styles.radioMark} aria-hidden="true" />
-        </button>
-      </div>
 
       {backend !== "qwenpaw" && (
         <div className={styles.thirdPartyPanel}>

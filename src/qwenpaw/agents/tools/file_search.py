@@ -608,7 +608,7 @@ def _walk_and_glob(
     policy_name="Grep",
     default_policy="allow",
     policy_reason="Content search (global)",
-    ui_description="Search file contents by pattern",
+    ui_description="按模式搜索文件内容",
     ui_icon="🔍",
 )
 async def grep_search(
@@ -732,7 +732,7 @@ async def grep_search(
     policy_name="Glob",
     default_policy="allow",
     policy_reason="File listing (global)",
-    ui_description="Find files matching a glob pattern",
+    ui_description="按通配符模式查找文件",
     ui_icon="📁",
 )
 async def glob_search(

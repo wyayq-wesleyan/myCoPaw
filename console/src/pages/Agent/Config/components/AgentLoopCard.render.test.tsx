@@ -50,7 +50,7 @@ describe("AgentLoopCard custom mode rendering", () => {
     ).toHaveAttribute("aria-selected", "true");
     const editor = within(screen.getByRole("tabpanel"));
     expect(editor.getByText("Iteration limit")).toBeInTheDocument();
-    expect(editor.getByText("Token budget")).toBeInTheDocument();
+    expect(editor.getByText("词元 budget")).toBeInTheDocument();
     expect(editor.getByText("Repetition protection")).toBeInTheDocument();
     expect(
       editor.getByText("Qualitative completion check"),

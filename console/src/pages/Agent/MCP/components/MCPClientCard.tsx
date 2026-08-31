@@ -62,7 +62,7 @@ export const MCPClientCard = React.memo(function MCPClientCard({
   // Determine if MCP client is remote or local based on command
   const isRemote =
     client.transport === "streamable_http" || client.transport === "sse";
-  const clientType = isRemote ? "Remote" : "Local";
+  const clientType = isRemote ? "远程" : "本地";
 
   const oauthStatus = client.oauth_status;
   const now = Date.now() / 1000;

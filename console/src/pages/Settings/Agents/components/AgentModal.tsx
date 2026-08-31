@@ -2,9 +2,10 @@ import { useEffect, useState, useMemo } from "react";
 import { Modal, Form, Input, Select, Space, Spin } from "antd";
 import { useTranslation } from "react-i18next";
 import type { AgentSummary } from "@/api/types/agents";
-import type { ProviderInfo } from "@/api/types/provider";
+import type { ProviderInfo, ActiveModelsInfo } from "@/api/types/provider";
 import { getAgentDisplayName } from "@/utils/agentDisplayName";
 import { providerApi } from "@/api/modules/provider";
+import { authApi } from "@/api/modules/auth";
 import { providerIcon } from "../../Models/components/providerIcon";
 import { AgentBackendFields } from "./AgentBackendFields";
 
@@ -32,10 +33,19 @@ export function AgentModal({
   const { t } = useTranslation();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [loadingProviders, setLoadingProviders] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [globalActiveModel, setGlobalActiveModel] = useState<ActiveModelsInfo | null>(null);
 
   const selectedProviderId = Form.useWatch("active_model_provider", form);
   const selectedModelId = Form.useWatch("active_model_model", form);
   const selectedBackend = Form.useWatch("backend", form) ?? "qwenpaw";
+
+  useEffect(() => {
+    authApi
+      .getCurrentUser()
+      .then((user) => setIsAdmin(user.role === "admin"))
+      .catch(() => {});
+  }, []);
 
   const eligibleProviders: EligibleProvider[] = useMemo(() => {
     return providers
@@ -51,8 +61,11 @@ export function AgentModal({
       .map((p) => ({
         id: p.id,
         name: p.name,
-        models: [...(p.models ?? []), ...(p.extra_models ?? [])],
-      }));
+        models: [...(p.models ?? []), ...(p.extra_models ?? [])].filter(
+          (m) => (m.model_type ?? "chat") === "chat",
+        ),
+      }))
+      .filter((p) => p.models.length > 0);
   }, [providers]);
 
   const availableModels = useMemo(() => {
@@ -65,10 +78,20 @@ export function AgentModal({
     if (!open || selectedBackend !== "qwenpaw") return;
 
     setLoadingProviders(true);
-    providerApi
-      .listProviders()
-      .then((data) => {
-        if (Array.isArray(data)) setProviders(data);
+    Promise.all([
+      providerApi.listProviders(),
+      providerApi.getActiveModels({ scope: "global" }),
+    ])
+      .then(([provData, activeData]) => {
+        if (Array.isArray(provData)) setProviders(provData);
+        if (activeData) setGlobalActiveModel(activeData);
+        // For new agents, pre-select the global default model
+        if (!editingAgent && activeData?.active_llm) {
+          form.setFieldsValue({
+            active_model_provider: activeData.active_llm.provider_id,
+            active_model_model: activeData.active_llm.model,
+          });
+        }
       })
       .catch((err) => console.error("Failed to load providers:", err))
       .finally(() => setLoadingProviders(false));
@@ -76,6 +99,7 @@ export function AgentModal({
   }, [
     open,
     selectedBackend,
+    editingAgent,
   ]);
 
   const handleProviderChange = (providerId: string) => {
@@ -149,7 +173,9 @@ export function AgentModal({
           help={
             editingAgent
               ? t("agent.modelHelp")
-              : "仅显示管理员为当前账号授权的模型。"
+              : globalActiveModel?.active_llm
+                ? `默认模型：${globalActiveModel.active_llm.provider_id} / ${globalActiveModel.active_llm.model}`
+                : "仅显示管理员为当前账号授权的模型。"
           }
         >
           <Space.Compact style={{ width: "100%" }}>
@@ -160,13 +186,18 @@ export function AgentModal({
               allowClear={!!editingAgent}
               onClear={editingAgent ? handleClearModel : undefined}
               loading={loadingProviders}
+              disabled={!isAdmin}
               style={{ width: "45%", gap: "8px" }}
               showSearch
               optionFilterProp="label"
-              options={eligibleProviders.map((p) => ({
-                value: p.id,
-                label: p.name,
-              }))}
+              options={eligibleProviders.map((p) => {
+                const isDefault =
+                  globalActiveModel?.active_llm?.provider_id === p.id;
+                return {
+                  value: p.id,
+                  label: isDefault ? `${p.name} (默认)` : p.name,
+                };
+              })}
               optionRender={({ value }) => {
                 const p = eligibleProviders.find((ep) => ep.id === value);
                 if (!p) return value;
@@ -199,14 +230,19 @@ export function AgentModal({
                   ? t("models.model")
                   : t("agent.modelPlaceholder")
               }
-              disabled={!selectedProviderId}
+              disabled={!selectedProviderId || !isAdmin}
               style={{ width: "55%" }}
               showSearch
               optionFilterProp="label"
-              options={availableModels.map((m) => ({
-                value: m.id,
-                label: m.name || m.id,
-              }))}
+              options={availableModels.map((m) => {
+                const isDefault =
+                  globalActiveModel?.active_llm?.provider_id === selectedProviderId &&
+                  globalActiveModel?.active_llm?.model === m.id;
+                return {
+                  value: m.id,
+                  label: isDefault ? `${m.name || m.id} (默认)` : (m.name || m.id),
+                };
+              })}
             />
           </Space.Compact>
         </Form.Item>

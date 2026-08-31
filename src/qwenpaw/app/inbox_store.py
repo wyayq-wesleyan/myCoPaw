@@ -92,6 +92,7 @@ async def list_events(
     agent_id: str | None = None,
     unread_only: bool = False,
     recipient_username: str | None = None,
+    is_admin: bool = False,
 ) -> list[dict[str, Any]]:
     async with _LOCK:
         events = await run_sync_io(_load_events)
@@ -111,8 +112,14 @@ async def list_events(
         events = [
             event
             for event in events
-            if not event.get("recipient_username")
-            or event.get("recipient_username") == recipient_username
+            if event.get("recipient_username") == recipient_username
+            or (not event.get("recipient_username") and is_admin)
+        ]
+    elif not is_admin:
+        events = [
+            event
+            for event in events
+            if event.get("recipient_username")
         ]
     if unread_only:
         events = [event for event in events if not bool(event.get("read"))]
@@ -128,6 +135,7 @@ async def query_events(
     agent_id: str | None = None,
     unread_only: bool = False,
     recipient_username: str | None = None,
+    is_admin: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Return a filtered page with exact total and unread counts."""
     async with _LOCK:
@@ -148,8 +156,14 @@ async def query_events(
         events = [
             event
             for event in events
-            if not event.get("recipient_username")
-            or event.get("recipient_username") == recipient_username
+            if event.get("recipient_username") == recipient_username
+            or (not event.get("recipient_username") and is_admin)
+        ]
+    elif not is_admin:
+        events = [
+            event
+            for event in events
+            if event.get("recipient_username")
         ]
     unread_count = sum(not bool(event.get("read")) for event in events)
     if unread_only:
@@ -159,7 +173,25 @@ async def query_events(
     return page, total, unread_count
 
 
-async def mark_read(event_ids: list[str]) -> int:
+def _can_view(
+    event: dict[str, Any],
+    recipient_username: str | None,
+    is_admin: bool,
+) -> bool:
+    """System events (no recipient) are admin-only; scoped events
+    are visible only to their recipient."""
+    event_recipient = event.get("recipient_username")
+    if not event_recipient:
+        return is_admin
+    return event_recipient == recipient_username
+
+
+async def mark_read(
+    event_ids: list[str],
+    *,
+    recipient_username: str | None = None,
+    is_admin: bool = False,
+) -> int:
     if not event_ids:
         return 0
     event_id_set = set(event_ids)
@@ -168,25 +200,40 @@ async def mark_read(event_ids: list[str]) -> int:
         events = await run_sync_io(_load_events)
         for event in events:
             if event.get("id") in event_id_set and not bool(event.get("read")):
+                if not _can_view(event, recipient_username, is_admin):
+                    continue
                 event["read"] = True
                 updated += 1
         await run_sync_io(_save_events, events)
     return updated
 
 
-async def mark_all_read() -> int:
+async def mark_all_read(
+    *,
+    recipient_username: str | None = None,
+    is_admin: bool = False,
+) -> int:
     updated = 0
     async with _LOCK:
         events = await run_sync_io(_load_events)
         for event in events:
-            if not bool(event.get("read")):
+            if not bool(event.get("read")) and _can_view(
+                event,
+                recipient_username,
+                is_admin,
+            ):
                 event["read"] = True
                 updated += 1
         await run_sync_io(_save_events, events)
     return updated
 
 
-async def delete_event(event_id: str) -> tuple[bool, str | None, bool]:
+async def delete_event(
+    event_id: str,
+    *,
+    recipient_username: str | None = None,
+    is_admin: bool = False,
+) -> tuple[bool, str | None, bool]:
     if not event_id:
         return False, None, False
     deleted = False
@@ -197,6 +244,9 @@ async def delete_event(event_id: str) -> tuple[bool, str | None, bool]:
         kept_events = []
         for event in events:
             if not deleted and event.get("id") == event_id:
+                if not _can_view(event, recipient_username, is_admin):
+                    kept_events.append(event)
+                    continue
                 payload = event.get("payload") or {}
                 if isinstance(payload, dict) and isinstance(
                     payload.get("run_id"),

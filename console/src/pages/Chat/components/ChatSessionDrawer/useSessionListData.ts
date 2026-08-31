@@ -420,7 +420,7 @@ export function useSessionListData(
         key: "rename",
         label: t("chat.contextMenu.rename", "Rename"),
         onClick: () =>
-          handleEditStart(contextMenuSessionId, session?.name || "New Chat"),
+          handleEditStart(contextMenuSessionId, session?.name || "新对话"),
       },
       {
         key: "pin",

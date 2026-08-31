@@ -85,7 +85,7 @@ def _is_scroll_memory_placeholder(msg: Msg) -> bool:
 # Visual compression collapses history/context ranges into user-role
 # messages with these names. They are model-only reconstructions.
 _VISUAL_PLACEHOLDER_NAMES = frozenset(
-    {"visual_context", "visual_history"},
+    {"visual_context", "visual_history", "knowledge_auto_context"},
 )
 
 

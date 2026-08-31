@@ -55,13 +55,13 @@ function FindingsModal({
         size="small"
         columns={[
           {
-            title: "Title",
+            title: "标题",
             dataIndex: "title",
             key: "title",
             width: 200,
           },
           {
-            title: "File",
+            title: "文件",
             key: "location",
             width: 160,
             render: (_: unknown, record: BlockedSkillFinding) =>
@@ -70,7 +70,7 @@ function FindingsModal({
                 : record.file_path,
           },
           {
-            title: "Description",
+            title: "描述",
             dataIndex: "description",
             key: "description",
             ellipsis: true,

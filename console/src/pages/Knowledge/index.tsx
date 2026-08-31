@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Badge,
   Button,
   DatePicker,
   Drawer,
@@ -10,6 +11,7 @@ import {
   Col,
   Space,
   Spin,
+  Statistic,
   Table,
   Tag,
   Tooltip,
@@ -21,17 +23,18 @@ import {
   DatabaseOutlined,
   DeleteOutlined,
   FileSearchOutlined,
-  FolderViewOutlined,
+  InfoCircleOutlined,
   ReloadOutlined,
   RetweetOutlined,
   SearchOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
+import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import {
   knowledgeApi,
   type KnowledgeDocument,
-  type KnowledgeJobItem,
+  type KnowledgeDocumentStats,
 } from "../../api/modules/knowledge";
 import styles from "./index.module.less";
 
@@ -47,82 +50,112 @@ const statusMeta: Record<KnowledgeDocument["status"], { color: string; label: st
   failed: { color: "error", label: "处理失败" },
 };
 
-const jobStatusMeta: Record<KnowledgeJobItem["status"], { color: string; label: string }> = {
-  queued: { color: "default", label: "等待处理" },
-  processing: { color: "processing", label: "正在解析" },
-  completed: { color: "success", label: "已完成" },
-  failed: { color: "error", label: "处理失败" },
-};
-
 function getFileExtension(filename: string): string {
   return filename.split(".").pop()?.toLowerCase() || "";
+}
+
+function formatFileSize(bytes?: number | null): string {
+  if (bytes == null) return "-";
+  if (bytes === 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /* ── Preview Components ────────────────────────────────────────── */
 
 function PdfPreview({ documentId }: { documentId: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const startedGuard = useRef(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-
-    async function renderPdf() {
-      if (!containerRef.current) return;
-      try {
-        const pdfjsLib = await import("pdfjs-dist");
-        pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-          "pdfjs-dist/build/pdf.worker.min.mjs",
-          import.meta.url,
-        ).toString();
-
-        const url = knowledgeApi.getFileUrl(documentId);
-        const headers = knowledgeApi.getFileHeaders();
-        const response = await fetch(url, { headers, signal: controller.signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const arrayBuffer = await response.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-        if (cancelled) return;
-        containerRef.current!.innerHTML = "";
-
-        for (let i = 1; i <= pdf.numPages; i++) {
-          if (cancelled) return;
-          const page = await pdf.getPage(i);
-          const scale = 1.5;
-          const viewport = page.getViewport({ scale });
-          const canvas = document.createElement("canvas");
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          canvas.style.width = "100%";
-          canvas.style.height = "auto";
-          canvas.style.display = "block";
-          canvas.style.marginBottom = "8px";
-          canvas.style.borderRadius = "4px";
-          const ctx = canvas.getContext("2d")!;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
-          containerRef.current!.appendChild(canvas);
-        }
-
-        if (!cancelled) setLoading(false);
-      } catch (err) {
-        if (!cancelled && !controller.signal.aborted) {
-          setError(err instanceof Error ? err.message : "PDF loading failed");
-          setLoading(false);
-        }
-      }
+  const callbackRef = useCallback((node: HTMLDivElement | null) => {
+    if (node && !startedGuard.current) {
+      startedGuard.current = true;
+      void renderPdf(node);
     }
+  }, [documentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    void renderPdf();
-    return () => { cancelled = true; controller.abort(); };
-  }, [documentId]);
+  async function renderPdf(container: HTMLDivElement) {
+    const controller = new AbortController();
+    const watchdog = window.setTimeout(() => {
+      controller.abort();
+      setError("PDF 加载超时，请下载后查看");
+      setLoading(false);
+    }, 120000);
+    try {
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.min.mjs",
+        import.meta.url,
+      ).toString();
+
+      const url = knowledgeApi.getFileUrl(documentId);
+      const headers = knowledgeApi.getFileHeaders();
+      const response = await fetch(url, { headers, signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const contentLength = Number(response.headers.get("content-length") || 0);
+      if (contentLength > 50 * 1024 * 1024) {
+        setError("PDF 文件过大（>50MB），请下载后查看");
+        setLoading(false);
+        return;
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+      container.innerHTML = "";
+      // render first page synchronously then clear the spinner
+      const maxPages = Math.min(pdf.numPages, 50);
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const scale = 1.2;
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.style.width = "100%";
+        canvas.style.height = "auto";
+        canvas.style.display = "block";
+        canvas.style.marginBottom = "8px";
+        canvas.style.borderRadius = "4px";
+        const ctx = canvas.getContext("2d")!;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await page.render({ canvasContext: ctx, viewport, canvas } as any).promise;
+        container.appendChild(canvas);
+        if (i === 1) setLoading(false);
+      }
+
+      if (maxPages < pdf.numPages) {
+        const hint = document.createElement("div");
+        hint.style.cssText = "text-align:center;padding:16px;color:#999;font-size:13px;";
+        hint.textContent = `（仅显示前 ${maxPages} 页，共 ${pdf.numPages} 页）`;
+        container.appendChild(hint);
+      }
+
+      setLoading(false);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : "PDF loading failed");
+        setLoading(false);
+      }
+    } finally {
+      window.clearTimeout(watchdog);
+    }
+  }
 
   if (error) return <Typography.Text type="danger">PDF 加载失败: {error}</Typography.Text>;
-  if (loading) return <div style={{ textAlign: "center", padding: "40px 0" }}><Spin size="large" /></div>;
-  return <div ref={containerRef} className={styles.pdfPreview} />;
+  return (
+    <div style={{ position: "relative" }}>
+      <div ref={callbackRef} className={styles.pdfPreview} />
+      {loading && (
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.7)", borderRadius: 8 }}>
+          <Spin size="large" tip="正在解析 PDF..." />
+        </div>
+      )}
+    </div>
+  );
 }
 
 async function renderDocx(
@@ -207,6 +240,47 @@ function DocumentPreview({ documentId, filename }: { documentId: string; filenam
   return <TextPreview documentId={documentId} />;
 }
 
+/* ── Stats Drawer ──────────────────────────────────────────────── */
+
+function StatsDrawer({ documentId, filename, open, onClose }: {
+  documentId: string;
+  filename: string;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [stats, setStats] = useState<KnowledgeDocumentStats | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open || !documentId) return;
+    setLoading(true);
+    knowledgeApi.getDocumentStats(documentId)
+      .then(setStats)
+      .catch(() => setStats(null))
+      .finally(() => setLoading(false));
+  }, [open, documentId]);
+
+  return (
+    <Drawer title={`详情：${filename}`} placement="right" width={400} open={open} onClose={onClose} destroyOnClose>
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 40 }}><Spin /></div>
+      ) : stats ? (
+        <Space direction="vertical" size="large" style={{ width: "100%" }}>
+          <Row gutter={[16, 16]}>
+            <Col span={12}><Statistic title="文件大小" value={formatFileSize(stats.size)} /></Col>
+            <Col span={12}><Statistic title="状态" value={statusMeta[stats.status as KnowledgeDocument["status"]]?.label || stats.status} /></Col>
+            <Col span={12}><Statistic title="分片数" value={stats.chunk_count} /></Col>
+            <Col span={12}><Statistic title="实体数" value={stats.entity_count} /></Col>
+            <Col span={12}><Statistic title="关系数" value={stats.relation_count} /></Col>
+          </Row>
+        </Space>
+      ) : (
+        <Typography.Text type="secondary">无法加载统计信息</Typography.Text>
+      )}
+    </Drawer>
+  );
+}
+
 /* ── Main Page ─────────────────────────────────────────────────── */
 
 export default function KnowledgePage() {
@@ -215,18 +289,20 @@ export default function KnowledgePage() {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [uploading, setUploading] = useState(false);
   const [reprocessingId, setReprocessingId] = useState<string>();
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
 
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [filenameFilter, setFilenameFilter] = useState("");
   const [keywordFilter, setKeywordFilter] = useState("");
   const [querying, setQuerying] = useState(false);
 
-  const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
-  const [jobs, setJobs] = useState<KnowledgeJobItem[]>([]);
-  const [jobsLoading, setJobsLoading] = useState(false);
-
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDocument, setPreviewDocument] = useState<KnowledgeDocument | null>(null);
+
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [statsDocument, setStatsDocument] = useState<KnowledgeDocument | null>(null);
+
+  const activeJobCount = documents.filter((d) => d.status === "queued" || d.status === "processing").length;
 
   /* ── Data Loading ──────────────────────────────────────────── */
 
@@ -330,43 +406,6 @@ export default function KnowledgePage() {
     return false;
   };
 
-  /* ── Jobs Drawer ───────────────────────────────────────────── */
-
-  const loadJobs = async () => {
-    setJobsLoading(true);
-    try {
-      setJobs(await knowledgeApi.listJobs());
-    } catch {
-      message.error("加载上传队列失败");
-    } finally {
-      setJobsLoading(false);
-    }
-  };
-
-  const openJobsDrawer = () => {
-    setJobsDrawerOpen(true);
-    void loadJobs();
-  };
-
-  useEffect(() => {
-    if (!jobsDrawerOpen) return;
-    const hasActive = jobs.some((j) => j.status === "queued" || j.status === "processing");
-    if (!hasActive) return;
-    const timer = window.setInterval(() => void loadJobs(), 3000);
-    return () => window.clearInterval(timer);
-  }, [jobsDrawerOpen, jobs]);
-
-  /* ── Preview ───────────────────────────────────────────────── */
-
-  const openPreview = (doc: KnowledgeDocument) => {
-    if (doc.status !== "completed") {
-      message.warning("文档尚未处理完成，无法预览");
-      return;
-    }
-    setPreviewDocument(doc);
-    setPreviewOpen(true);
-  };
-
   /* ── Reprocess ─────────────────────────────────────────────── */
 
   const reprocess = async (doc: KnowledgeDocument) => {
@@ -394,9 +433,45 @@ export default function KnowledgePage() {
     }
   };
 
+  const batchDelete = async () => {
+    if (selectedRowKeys.length === 0) return;
+    try {
+      const result = await knowledgeApi.deleteDocuments(selectedRowKeys as string[]);
+      setSelectedRowKeys([]);
+      await loadDocuments();
+      message.success(`已删除 ${result.deleted} 个文件`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "批量删除失败");
+    }
+  };
+
+  /* ── Preview ───────────────────────────────────────────────── */
+
+  const openPreview = (doc: KnowledgeDocument) => {
+    if (doc.status !== "completed") {
+      message.warning("文档尚未处理完成，无法预览");
+      return;
+    }
+    setPreviewDocument(doc);
+    setPreviewOpen(true);
+  };
+
+  /* ── Stats ─────────────────────────────────────────────────── */
+
+  const openStats = (doc: KnowledgeDocument) => {
+    setStatsDocument(doc);
+    setStatsOpen(true);
+  };
+
   /* ── Table Columns ─────────────────────────────────────────── */
 
-  const columns = [
+  const columns: ColumnsType<KnowledgeDocument> = [
+    {
+      title: "序号",
+      key: "index",
+      width: 60,
+      render: (_: unknown, __: KnowledgeDocument, index: number) => index + 1,
+    },
     {
       title: "文件名",
       dataIndex: "filename",
@@ -412,10 +487,17 @@ export default function KnowledgePage() {
       ),
     },
     {
+      title: "大小",
+      dataIndex: "size",
+      key: "size",
+      width: 100,
+      render: (val: number) => formatFileSize(val),
+    },
+    {
       title: "状态",
       dataIndex: "status",
       key: "status",
-      width: 120,
+      width: 100,
       render: (status: KnowledgeDocument["status"]) => {
         const meta = statusMeta[status];
         return <Tag color={meta.color}>{meta.label}</Tag>;
@@ -425,15 +507,18 @@ export default function KnowledgePage() {
       title: "上传时间",
       dataIndex: "created_at",
       key: "created_at",
-      width: 180,
+      width: 170,
       render: (val: string) => val ? dayjs(val).format("YYYY-MM-DD HH:mm") : "-",
     },
     {
       title: "操作",
       key: "actions",
-      width: 160,
+      width: 140,
       render: (_: unknown, record: KnowledgeDocument) => (
         <Space size={4}>
+          <Tooltip title="详情">
+            <Button type="text" size="small" icon={<InfoCircleOutlined />} onClick={() => openStats(record)} />
+          </Tooltip>
           <Tooltip title="按当前解析规则重新入库">
             <Button
               type="text"
@@ -527,6 +612,18 @@ export default function KnowledgePage() {
           <Col flex="auto" />
           <Col>
             <Space>
+              {selectedRowKeys.length > 0 && (
+                <Popconfirm
+                  title={`确定删除选中的 ${selectedRowKeys.length} 个文件？`}
+                  onConfirm={batchDelete}
+                  okText="删除"
+                  cancelText="取消"
+                >
+                  <Button danger icon={<DeleteOutlined />}>
+                    批量删除 ({selectedRowKeys.length})
+                  </Button>
+                </Popconfirm>
+              )}
               <Upload
                 accept={ACCEPTED_FILES}
                 showUploadList={false}
@@ -550,13 +647,12 @@ export default function KnowledgePage() {
                 }}
                 disabled={uploading}
               >
-                <Button type="primary" icon={<UploadOutlined />} loading={uploading}>
-                  上传资料
-                </Button>
+                <Badge count={activeJobCount} offset={[-5, 0]} size="small">
+                  <Button type="primary" icon={<UploadOutlined />} loading={uploading}>
+                    上传资料
+                  </Button>
+                </Badge>
               </Upload>
-              <Button icon={<FolderViewOutlined />} onClick={openJobsDrawer}>
-                上传队列
-              </Button>
             </Space>
           </Col>
         </Row>
@@ -569,56 +665,15 @@ export default function KnowledgePage() {
           dataSource={documents}
           columns={columns}
           rowKey="id"
+          rowSelection={{
+            selectedRowKeys,
+            onChange: setSelectedRowKeys,
+          }}
           locale={{ emptyText: <Empty description="暂无资料" /> }}
           pagination={{ pageSize: 20, showTotal: (total) => `共 ${total} 个文件` }}
           size="middle"
         />
       </div>
-
-      {/* ── Upload Queue Drawer ─────────────────────────────────── */}
-      <Drawer
-        title="上传队列"
-        placement="right"
-        width={560}
-        open={jobsDrawerOpen}
-        onClose={() => setJobsDrawerOpen(false)}
-        destroyOnClose
-      >
-        <Table
-          dataSource={jobs}
-          loading={jobsLoading}
-          rowKey="id"
-          pagination={false}
-          size="small"
-          columns={[
-            { title: "文件名", dataIndex: "filename", key: "filename", ellipsis: true },
-            {
-              title: "状态",
-              dataIndex: "status",
-              key: "status",
-              width: 100,
-              render: (status: KnowledgeJobItem["status"]) => {
-                const meta = jobStatusMeta[status];
-                return <Tag color={meta.color}>{meta.label}</Tag>;
-              },
-            },
-            {
-              title: "创建时间",
-              dataIndex: "created_at",
-              key: "created_at",
-              width: 160,
-              render: (val: string) => val ? dayjs(val).format("YYYY-MM-DD HH:mm") : "-",
-            },
-            {
-              title: "错误",
-              dataIndex: "error",
-              key: "error",
-              ellipsis: true,
-              render: (val: string | null) => val ? <Typography.Text type="danger">{val}</Typography.Text> : "-",
-            },
-          ]}
-        />
-      </Drawer>
 
       {/* ── Preview Drawer ──────────────────────────────────────── */}
       <Drawer
@@ -633,6 +688,16 @@ export default function KnowledgePage() {
           <DocumentPreview documentId={previewDocument.id} filename={previewDocument.filename} />
         )}
       </Drawer>
+
+      {/* ── Stats Drawer ────────────────────────────────────────── */}
+      {statsDocument && (
+        <StatsDrawer
+          documentId={statsDocument.id}
+          filename={statsDocument.filename}
+          open={statsOpen}
+          onClose={() => { setStatsOpen(false); setStatsDocument(null); }}
+        />
+      )}
     </section>
   );
 }

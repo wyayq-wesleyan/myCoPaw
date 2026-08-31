@@ -69,7 +69,7 @@ const translations: Record<string, string> = {
   "agentConfig.visualCompactHigh": "高",
   "agentConfig.visualCompactLowDescription": "优先保证可读性。",
   "agentConfig.visualCompactMediumDescription": "平衡节省与可读性。",
-  "agentConfig.visualCompactHighDescription": "优先节省 Token。",
+  "agentConfig.visualCompactHighDescription": "优先节省词元。",
   "agentConfig.visualCompactQualityNote": "压缩强度不代表回答质量。",
   "agentConfig.visualCompactCapabilityNote": "仅对支持图片的模型生效。",
 };
@@ -102,7 +102,7 @@ describe("VisualCompactSettings", () => {
 
     render(<VisualCompactSettings />);
 
-    expect(screen.getByText("优先节省 Token。")).toBeInTheDocument();
+    expect(screen.getByText("优先节省词元。")).toBeInTheDocument();
   });
 
   it("disables the effort selector while Visual Compact is off", () => {

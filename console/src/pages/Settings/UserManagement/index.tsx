@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -10,6 +9,7 @@ import {
   Modal,
   Popconfirm,
   Space,
+  Switch,
   Table,
   Tag,
   message,
@@ -42,6 +42,7 @@ type FormValues = {
   username: string;
   password?: string;
   confirmPassword?: string;
+  enabled: boolean;
   models: string[];
   skills: string[];
   tools: string[];
@@ -59,11 +60,13 @@ const DEFAULT_MENUS = [
   "core.agents",
   "core.files",
   "core.knowledge",
+  "core.data-analysis",
   "core.sessions",
   "core.cron-jobs",
   "core.token-usage",
   "core.skills",
   "core.tools",
+  "core.inbox",
 ];
 
 const MENU_OPTIONS = [
@@ -74,6 +77,7 @@ const MENU_OPTIONS = [
   ["core.heartbeat", "心跳"],
   ["core.files", "文件"],
   ["core.knowledge", "知识空间"],
+  ["core.data-analysis", "数据分析"],
   ["core.skills", "技能"],
   ["core.tools", "工具"],
   ["core.mcp", "MCP"],
@@ -84,7 +88,7 @@ const MENU_OPTIONS = [
   ["core.environments", "环境变量"],
   ["core.offload-policy", "工具卸载策略"],
   ["core.security", "安全设置"],
-  ["core.token-usage", "Token 消耗"],
+  ["core.token-usage", "词元消耗"],
   ["core.backups", "备份"],
   ["core.voice-transcription", "语音转写"],
   ["core.debug", "会话调试"],
@@ -99,7 +103,6 @@ function selectionToModels(values: string[]): ModelPermission[] {
 }
 
 export default function UserManagementPage() {
-  const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<ManagedUser | null>(null);
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -211,6 +214,7 @@ export default function UserManagementPage() {
         username: user.username,
         password: "",
         confirmPassword: "",
+        enabled: user.enabled,
         models:
           modelResult.permissions === null
             ? options.models
@@ -364,6 +368,7 @@ export default function UserManagementPage() {
           values.password
             ? authApi.setUserPassword(editingUser.username, values.password)
             : Promise.resolve(),
+          authApi.setUserStatus(editingUser.username, values.enabled),
         ]);
         message.success("用户配置已更新");
       }
@@ -485,7 +490,7 @@ export default function UserManagementPage() {
         <Alert
           type="info"
           showIcon
-          message="普通用户默认只显示对话、智能体、文件、会话、定时任务和 Token 消耗。模型供应商由管理员统一维护，用户只会看到被授权的模型。"
+          message="普通用户默认只显示对话、智能体、文件、会话、定时任务和词元消耗。模型供应商由管理员统一维护，用户只会看到被授权的模型。"
         />
         <Input
           value={keyword}
@@ -555,34 +560,8 @@ export default function UserManagementPage() {
                       icon={<EditOutlined />}
                       onClick={() => void openEdit(user)}
                     >
-                      编辑授权
+                      编辑
                     </Button>
-                    <Button
-                      size="small"
-                      onClick={() => navigate(`/agent-config?user=${encodeURIComponent(user.username)}`)}
-                    >
-                      运行配置
-                    </Button>
-                    <Button
-                      size="small"
-                      onClick={async () => {
-                        await authApi.setUserStatus(user.username, !user.enabled);
-                        await load();
-                      }}
-                    >
-                      {user.enabled ? "禁用" : "启用"}
-                    </Button>
-                    <Popconfirm
-                      title="删除该用户及其独立工作区？"
-                      onConfirm={async () => {
-                        await authApi.deleteUser(user.username);
-                        await load();
-                      }}
-                    >
-                      <Button size="small" danger>
-                        删除
-                      </Button>
-                    </Popconfirm>
                   </Space>
                 ),
             },
@@ -687,6 +666,34 @@ export default function UserManagementPage() {
                   }))}
                 />
               </Form.Item>
+              <Divider orientation="left">账号状态</Divider>
+              <Form.Item name="enabled" label="启用状态" valuePropName="checked">
+                <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+              </Form.Item>
+              <Divider orientation="left" plain>
+                <span style={{ color: "#ff4d4f" }}>危险操作</span>
+              </Divider>
+              <div style={{ display: "flex", gap: 12 }}>
+                <Popconfirm
+                  title="确定删除该用户及其独立工作区？此操作不可恢复。"
+                  onConfirm={async () => {
+                    if (!editingUser) return;
+                    try {
+                      await authApi.deleteUser(editingUser.username);
+                      message.success("用户已删除");
+                      setDialog(null);
+                      form.resetFields();
+                      await load();
+                    } catch {
+                      message.error("删除失败");
+                    }
+                  }}
+                  okText="确定删除"
+                  cancelText="取消"
+                >
+                  <Button danger>删除用户</Button>
+                </Popconfirm>
+              </div>
             </>
           ) : (
             <Alert

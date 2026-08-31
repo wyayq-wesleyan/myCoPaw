@@ -191,7 +191,7 @@ def _html_to_text(html_content: str) -> str:
     policy_name="WebSearch",
     default_policy="allow",
     policy_reason="Allow web search",
-    ui_description="Search the web for real-time information",
+    ui_description="搜索网络实时信息",
     ui_icon="🔎",
 )
 async def web_search(search_term: str) -> ToolChunk:
@@ -264,7 +264,7 @@ async def web_search(search_term: str) -> ToolChunk:
     policy_name="WebFetch",
     default_policy="allow",
     policy_reason="Allow web fetch",
-    ui_description="Fetch and read content from a URL",
+    ui_description="获取并读取URL内容",
     ui_icon="📥",
 )
 async def web_fetch(url: str) -> ToolChunk:

@@ -468,7 +468,7 @@ function GoalModeTab() {
       >
         <Form.Item
           name={["loop", "goal", "max_tokens"]}
-          label={t("agentConfig.loopMode.maxGoalTokens", "Maximum goal tokens")}
+          label={t("agentConfig.loopMode.maxGoalTokens", "Maximum goal 词元")}
         >
           <InputNumber min={1} style={{ width: 220 }} />
         </Form.Item>
@@ -725,7 +725,7 @@ function PerToolLimits({
 const GATE_DEFINITIONS: GateDefinition[] = [
   {
     type: "iteration",
-    title: "Iteration limit",
+    title: "迭代限制",
     titleKey: "agentConfig.loopMode.iterationGateTitle",
     description: "Stop after a fixed number of loop iterations.",
     descriptionKey: "agentConfig.loopMode.iterationGateDescription",
@@ -734,7 +734,7 @@ const GATE_DEFINITIONS: GateDefinition[] = [
   },
   {
     type: "doom_loop",
-    title: "Repetition protection",
+    title: "重复保护",
     titleKey: "agentConfig.loopMode.doomGateTitle",
     description: "Detect repeated tool calls and change strategy.",
     descriptionKey: "agentConfig.loopMode.doomGateDescription",
@@ -758,7 +758,7 @@ const GATE_DEFINITIONS: GateDefinition[] = [
   },
   {
     type: "token_budget",
-    title: "Token budget",
+    title: "词元预算",
     titleKey: "agentConfig.loopMode.tokenGateTitle",
     description: "Limit prompt and completion token usage.",
     descriptionKey: "agentConfig.loopMode.tokenGateDescription",
@@ -767,7 +767,7 @@ const GATE_DEFINITIONS: GateDefinition[] = [
   },
   {
     type: "timeout",
-    title: "Loop time limit",
+    title: "循环时间限制",
     titleKey: "agentConfig.loopMode.timeoutGateTitle",
     description: "Stop at the next loop boundary after elapsed time.",
     descriptionKey: "agentConfig.loopMode.timeoutGateDescription",
@@ -785,7 +785,7 @@ const GATE_DEFINITIONS: GateDefinition[] = [
   },
   {
     type: "qualitative_rubric",
-    title: "Qualitative completion check",
+    title: "定性完成检查",
     titleKey: "agentConfig.loopMode.qualitativeRubricTitle",
     description: "Check text responses without tool calls before ending.",
     descriptionKey: "agentConfig.loopMode.qualitativeRubricDescription",
@@ -798,7 +798,7 @@ const GATE_DEFINITIONS: GateDefinition[] = [
   },
   {
     type: "completion_rubric",
-    title: "Completion signal check",
+    title: "完成信号检查",
     titleKey: "agentConfig.loopMode.completionRubricTitle",
     description:
       "Check text responses without tool calls for a completion signal.",
@@ -979,7 +979,7 @@ function GateParamsEditor({
             name={[...base, "max_total_tokens"]}
             label={t(
               "agentConfig.loopMode.totalTokens",
-              "Maximum total tokens",
+              "Maximum total 词元",
             )}
             tooltip={t(
               "agentConfig.loopMode.totalTokensHelp",
@@ -992,7 +992,7 @@ function GateParamsEditor({
             name={[...base, "max_prompt_tokens"]}
             label={t(
               "agentConfig.loopMode.promptTokens",
-              "Maximum input tokens",
+              "Maximum input 词元",
             )}
             tooltip={t(
               "agentConfig.loopMode.promptTokensHelp",
@@ -1006,7 +1006,7 @@ function GateParamsEditor({
           name={[...base, "max_completion_tokens"]}
           label={t(
             "agentConfig.loopMode.completionTokens",
-            "Maximum output tokens",
+            "Maximum output 词元",
           )}
           tooltip={t(
             "agentConfig.loopMode.completionTokensHelp",

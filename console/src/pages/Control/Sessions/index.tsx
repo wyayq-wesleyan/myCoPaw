@@ -336,9 +336,9 @@ function SessionsPage() {
                 </span>
               </div>
               <div className={styles.mobileSessionMeta}>
-                <span>ID: {session.id}</span>
-                {session.user_id && <span>User: {session.user_id}</span>}
-                <span>Created: {formatTime(session.created_at)}</span>
+                <span>编号: {session.id}</span>
+                {session.user_id && <span>用户: {session.user_id}</span>}
+                <span>创建: {formatTime(session.created_at)}</span>
               </div>
               <div className={styles.mobileSessionActions}>
                 {isArchivedTab ? (

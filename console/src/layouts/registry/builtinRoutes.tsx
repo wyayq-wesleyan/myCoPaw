@@ -58,6 +58,7 @@ const UserManagementPage = lazyImportWithRetry(
 const AppCenterPage = lazyImportWithRetry("../../pages/AppCenter");
 const FilesPage = lazyImportWithRetry("../../pages/Files");
 const KnowledgePage = lazyImportWithRetry("../../pages/Knowledge");
+const DataAnalysisPage = lazyImportWithRetry("../../pages/DataAnalysis");
 
 /**
  * "/" always lands on the canonical Chat workspace.
@@ -76,6 +77,7 @@ export const BUILTIN_ROUTES: Route[] = [
   { id: "core.chat", path: "/chat/*", component: Chat },
   { id: "core.files", path: "/files", component: FilesPage },
   { id: "core.knowledge", path: "/knowledge", component: KnowledgePage },
+  { id: "core.data-analysis", path: "/data-analysis", component: DataAnalysisPage },
   { id: "core.channels", path: "/channels", component: ChannelsPage },
   { id: "core.sessions", path: "/sessions", component: SessionsPage },
   { id: "core.inbox", path: "/inbox", component: InboxPage },

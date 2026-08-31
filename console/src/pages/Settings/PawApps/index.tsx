@@ -101,7 +101,7 @@ export default function PawAppsPage() {
                       style={{ margin: 0, fontSize: 12 }}
                       ellipsis={{ rows: 2 }}
                     >
-                      {app.description || "No description"}
+                      {app.description || "暂无描述"}
                     </Paragraph>
                     {app.category && (
                       <Tag style={{ marginTop: 4 }}>{app.category}</Tag>

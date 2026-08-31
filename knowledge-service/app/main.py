@@ -144,7 +144,7 @@ async def upload_document(
     except Exception:
         target_path.unlink(missing_ok=True)
         raise
-    created = await asyncio.to_thread(store.create_document, space_id, owner_id, filename, str(target_path), file.content_type, document_id=document_id)
+    created = await asyncio.to_thread(store.create_document, space_id, owner_id, filename, str(target_path), file.content_type, document_id=document_id, size=size)
     return {**created, "size": size}
 
 
@@ -155,6 +155,15 @@ async def get_document(document_id: str, scope: tuple[str, bool] = Depends(reque
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
+
+
+@app.get("/v1/documents/{document_id}/stats", dependencies=[Depends(require_api_key)])
+async def get_document_stats(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    owner_id, is_admin = scope
+    stats = await asyncio.to_thread(store.get_document_stats, document_id, owner_id, is_admin)
+    if not stats:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return stats
 
 
 @app.post("/v1/documents/{document_id}/reprocess", dependencies=[Depends(require_api_key)])
@@ -291,13 +300,13 @@ async def get_job(job_id: str, scope: tuple[str, bool] = Depends(request_scope))
 async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     """融合检索：PostgreSQL 全文/字面/向量 + 实体上下文 + LightRAG 图检索。
 
-    本地证据优先，LightRAG 结果作为补充信号（source=lightrag）。
+    每条 evidence 附带 match_reasons（多路命中来源列表）、confidence（归一化置信度）、
+    source（主来源 = 最高权重路径）。
     返回 (evidence, relations, semantic_enabled)。
     """
     local_evidence = await asyncio.to_thread(store.entity_context, space_id, query, top_k)
     direct = await asyncio.to_thread(store.search, space_id, query, top_k)
     vector = await asyncio.to_thread(ModelClient(settings).embed, [query])
-    # 语义检索设置相关性地板：实测分布 相关查询 0.45+，无关查询 <=0.36
     semantic = (
         await asyncio.to_thread(
             store.search_by_embedding, space_id, vector[0], top_k, SEMANTIC_MIN_SCORE
@@ -305,24 +314,50 @@ async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[di
         if vector
         else []
     )
+
+    # 聚合多路命中：按 chunk id 收集所有命中来源
     merged: dict[str, dict[str, Any]] = {}
     for item in [*local_evidence, *direct, *semantic]:
         key = item.get("id") or f"{item.get('document_id')}:{item.get('page')}:{item.get('location')}"
-        merged[key] = item
+        source = item.pop("source", "unknown")
+        if key in merged:
+            existing = merged[key]
+            if source not in existing["match_reasons"]:
+                existing["match_reasons"].append(source)
+            existing_score = existing.get("score") or 0
+            new_score = item.get("score") or 0
+            if new_score > existing_score:
+                existing["score"] = new_score
+        else:
+            item["match_reasons"] = [source]
+            merged[key] = item
+
+    # 归一化置信度：多路命中 = 高置信；单路按来源权重分档
+    SOURCE_WEIGHT = {"fulltext": 1.0, "literal": 0.9, "semantic": 0.8, "entity": 0.7}
+    for item in merged.values():
+        reasons = item.get("match_reasons", [])
+        if len(reasons) >= 2:
+            item["confidence"] = "high"
+        else:
+            weight = SOURCE_WEIGHT.get(reasons[0], 0.5)
+            item["confidence"] = "high" if weight >= 0.9 else "medium" if weight >= 0.7 else "low"
+        item["source"] = max(reasons, key=lambda r: SOURCE_WEIGHT.get(r, 0))
 
     # LightRAG 图检索：本地关键词匹配对语义改写和跨文档关联较弱，
     # 为图谱证据保留约 1/3 配额，避免被低质量字面匹配挤占。
-    # 但字面与语义两路全空时视为整库无关，图谱结果一并丢弃——
-    # 图检索本身无相关性分数，宁可回答"未找到"也不返回噪声。
     graph_results = []
     if merged:
         graph_results = await lightrag.search(query, space_id, top_k)
     if graph_results:
+        for g in graph_results:
+            g["match_reasons"] = [g.get("source", "lightrag")]
+            g["confidence"] = "medium"
         reserved = min(len(graph_results), max(2, top_k // 3))
         local_items = list(merged.values())
-        evidence = [*local_items[: max(0, top_k - reserved)], *graph_results[:reserved]]
+        evidence = [*local_items[:max(0, top_k - reserved)], *graph_results[:reserved]]
     else:
         evidence = list(merged.values())[:top_k]
+
     relations = await asyncio.to_thread(store.relation_context, space_id, query, top_k)
     return evidence, relations, bool(vector)
 
@@ -417,11 +452,15 @@ async def search(body: SearchRequest, scope: tuple[str, bool] = Depends(request_
                 "filename": item.get("filename") or ("LightRAG 图检索" if doc_id == "lightrag-graph" else None),
                 "snippet_count": 0,
                 "pages": [],
+                "sources": [],
             }
         doc_groups[doc_id]["snippet_count"] += 1
         page = item.get("page")
         if page and page not in doc_groups[doc_id]["pages"]:
             doc_groups[doc_id]["pages"].append(page)
+        source = item.get("source", "unknown")
+        if source not in doc_groups[doc_id]["sources"]:
+            doc_groups[doc_id]["sources"].append(source)
 
     return {
         "query": body.query,

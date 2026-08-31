@@ -125,7 +125,7 @@ const VirtualRow = React.memo(function VirtualRow({
       <SessionItem
         variant="drawer"
         sessionId={session.id!}
-        name={session.name || "New Chat"}
+        name={session.name || "新对话"}
         time={formatCreatedAtCached(
           session.updatedAt ?? session.createdAt ?? null,
         )}
@@ -618,7 +618,7 @@ const ChatSessionDrawer: React.FC<ChatSessionDrawerProps> = (props) => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return sortedSessions;
     return sortedSessions.filter((session) =>
-      ((session as ExtendedChatSession).name || "New Chat")
+      ((session as ExtendedChatSession).name || "新对话")
         .toLowerCase()
         .includes(query),
     );

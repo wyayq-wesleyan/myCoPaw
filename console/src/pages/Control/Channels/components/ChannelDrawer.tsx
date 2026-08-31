@@ -236,38 +236,38 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="homeserver"
-              label="Homeserver URL"
+              label="服务器地址"
               rules={[{ required: true }]}
             >
               <Input placeholder="https://matrix.org" />
             </Form.Item>
             <Form.Item
               name="user_id"
-              label="User ID"
-              tooltip="Accepts a full MXID (e.g. @bot:matrix.org) or just the localpart (e.g. bot)."
-              rules={[{ required: true, message: "Please enter User ID" }]}
+              label="用户ID"
+              tooltip="接受完整MXID（如 @bot:matrix.org）或仅本地部分（如 bot）。"
+              rules={[{ required: true, message: "请输入用户ID" }]}
             >
               <Input placeholder="@bot:matrix.org" />
             </Form.Item>
             <Form.Item
               name="auth_method"
-              label="Auth Method"
+              label="认证方式"
               initialValue="token"
             >
               <Select
                 options={[
-                  { value: "token", label: "Token" },
-                  { value: "password", label: "Password" },
+                  { value: "token", label: "令牌" },
+                  { value: "password", label: "密码" },
                 ]}
               />
             </Form.Item>
             <Form.Item
               name="access_token"
-              label="Access Token"
+              label="访问令牌"
               rules={[
                 {
                   required: !isMatrixPasswordAuth,
-                  message: "Please enter access token",
+                  message: "请输入访问令牌",
                 },
               ]}
               hidden={isMatrixPasswordAuth}
@@ -276,21 +276,21 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="password"
-              label="Password"
+              label="密码"
               rules={[
                 {
                   required: isMatrixPasswordAuth,
-                  message: "Please enter password",
+                  message: "请输入密码",
                 },
               ]}
               hidden={!isMatrixPasswordAuth}
             >
-              <Input.Password placeholder="Account password for login" />
+              <Input.Password placeholder="登录密码" />
             </Form.Item>
             <Form.Item
               name="encryption"
-              label="Enable End-to-End Encryption"
-              tooltip="After enabling, you must verify the device in a Matrix client (e.g. Element). E2EE requires manually installing matrix-nio[e2e] (pip install matrix-nio[e2e])."
+              label="启用端到端加密"
+              tooltip="启用后，您必须在Matrix客户端（如Element）中验证设备。端到端加密需要手动安装matrix-nio[e2e]（pip install matrix-nio[e2e]）。"
               valuePropName="checked"
               hidden={!isMatrixPasswordAuth}
             >
@@ -298,8 +298,8 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="device_name"
-              label="Device Name"
-              tooltip="A stable device identity for the Matrix client. Defaults to 'qwenpaw-worker' if left empty."
+              label="设备名称"
+              tooltip="Matrix客户端的稳定设备标识。留空则默认为'qwenpaw-worker'。"
             >
               <Input placeholder="qwenpaw-worker" />
             </Form.Item>
@@ -327,16 +327,16 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="db_path"
-              label="DB Path"
-              rules={[{ required: true, message: "Please input DB path" }]}
+              label="数据库路径"
+              rules={[{ required: true, message: "请输入数据库路径" }]}
             >
               <Input placeholder="~/Library/Messages/chat.db" />
             </Form.Item>
             <Form.Item
               name="poll_sec"
-              label="Poll Interval (sec)"
+              label="轮询间隔(秒)"
               rules={[
-                { required: true, message: "Please input poll interval" },
+                { required: true, message: "请输入轮询间隔" },
               ]}
             >
               <InputNumber min={0.1} step={0.1} style={{ width: "100%" }} />
@@ -349,15 +349,15 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="bot_token"
-              label="Bot Token"
+              label="机器人令牌"
               rules={[{ required: true }]}
             >
-              <Input.Password placeholder="Discord bot token" />
+              <Input.Password placeholder="Discord机器人令牌" />
             </Form.Item>
-            <Form.Item name="http_proxy" label="HTTP Proxy">
+            <Form.Item name="http_proxy" label="HTTP代理">
               <Input placeholder="http://127.0.0.1:18118" />
             </Form.Item>
-            <Form.Item name="http_proxy_auth" label="HTTP Proxy Auth">
+            <Form.Item name="http_proxy_auth" label="HTTP代理认证">
               <Input placeholder="user:password" />
             </Form.Item>
             <Form.Item
@@ -388,7 +388,7 @@ export function ChannelDrawer({
             <QrcodeAuthBlock
               label={t("channels.dingtalkScanAuth")}
               buttonText={t("channels.dingtalkGetQrcode")}
-              imageAlt="DingTalk QR Code"
+              imageAlt="钉钉二维码"
               hintText={t("channels.dingtalkScanHint")}
               channel="dingtalk"
               successStatus="success"
@@ -411,22 +411,22 @@ export function ChannelDrawer({
             />
             <Form.Item
               name="client_id"
-              label="Client ID"
+              label="应用ID"
               rules={[{ required: true }]}
             >
               <Input placeholder="dingxxxxx" />
             </Form.Item>
             <Form.Item
               name="client_secret"
-              label="Client Secret"
+              label="应用密钥"
               rules={[{ required: true }]}
             >
               <Input.Password />
             </Form.Item>
             <Form.Item
               name="message_type"
-              label="Message Type"
-              tooltip="markdown: regular messages; card: AI interactive card"
+              label="消息类型"
+              tooltip="markdown: 普通消息; card: AI互动卡片"
             >
               <Select
                 options={[
@@ -437,8 +437,8 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="cron_message_type"
-              label="Cron Message Type"
-              tooltip="Message type for cron/scheduled task sends. Independent from the chat message type above."
+              label="定时消息类型"
+              tooltip="定时/计划任务发送的消息类型。与上方聊天消息类型独立。"
             >
               <Select
                 options={[
@@ -463,12 +463,12 @@ export function ChannelDrawer({
                   <>
                     <Form.Item
                       name="card_template_id"
-                      label="Card Template ID"
+                      label="卡片模板ID"
                       rules={[
                         {
                           required: true,
                           message:
-                            "Please input card template id when message_type=card",
+                            "消息类型为卡片时请输入卡片模板ID",
                         },
                       ]}
                     >
@@ -476,15 +476,15 @@ export function ChannelDrawer({
                     </Form.Item>
                     <Form.Item
                       name="card_template_key"
-                      label="Card Template Key"
-                      tooltip="Must exactly match the template variable name"
+                      label="卡片模板密钥"
+                      tooltip="必须与模板变量名完全匹配"
                     >
                       <Input placeholder="content" />
                     </Form.Item>
                     <Form.Item
                       name="robot_code"
-                      label="Robot Code"
-                      tooltip="Recommended to configure explicitly for group chats"
+                      label="机器人编码"
+                      tooltip="建议为群聊明确配置"
                     >
                       <Input placeholder="robot code (default client_id)" />
                     </Form.Item>
@@ -539,7 +539,7 @@ export function ChannelDrawer({
             <QrcodeAuthBlock
               label={t("channels.feishuScanLogin")}
               buttonText={t("channels.feishuGetQrcode")}
-              imageAlt="Feishu QR Code"
+              imageAlt="飞书二维码"
               hintText={t("channels.feishuScanHint")}
               channel="feishu"
               successStatus="success"
@@ -563,23 +563,23 @@ export function ChannelDrawer({
             />
             <Form.Item
               name="app_id"
-              label="App ID"
+              label="应用ID"
               rules={[{ required: true }]}
             >
               <Input placeholder="cli_xxx" />
             </Form.Item>
             <Form.Item
               name="app_secret"
-              label="App Secret"
+              label="应用密钥"
               rules={[{ required: true }]}
             >
-              <Input.Password placeholder="App Secret" />
+              <Input.Password placeholder="应用密钥" />
             </Form.Item>
-            <Form.Item name="encrypt_key" label="Encrypt Key">
-              <Input placeholder="Optional, for event encryption" />
+            <Form.Item name="encrypt_key" label="加密密钥">
+              <Input placeholder="可选，用于事件加密" />
             </Form.Item>
-            <Form.Item name="verification_token" label="Verification Token">
-              <Input placeholder="Optional" />
+            <Form.Item name="verification_token" label="验证令牌">
+              <Input placeholder="可选" />
             </Form.Item>
             <Form.Item name="media_dir" label={t("channels.wechatMediaDir")}>
               <Input placeholder={defaultMediaDir} />
@@ -609,7 +609,7 @@ export function ChannelDrawer({
             <QrcodeAuthBlock
               label={t("channels.qqScanAuth")}
               buttonText={t("channels.qqGetQrcode")}
-              imageAlt="QQ QR Code"
+              imageAlt="QQ二维码"
               hintText={t("channels.qqScanHint")}
               channel="qq"
               successStatus="success"
@@ -635,14 +635,14 @@ export function ChannelDrawer({
             />
             <Form.Item
               name="app_id"
-              label="App ID"
+              label="应用ID"
               rules={[{ required: true }]}
             >
               <Input />
             </Form.Item>
             <Form.Item
               name="client_secret"
-              label="Client Secret"
+              label="应用密钥"
               rules={[{ required: true }]}
             >
               <Input.Password />
@@ -665,23 +665,23 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="bot_token"
-              label="Bot Token"
+              label="机器人令牌"
               rules={[{ required: true }]}
             >
-              <Input.Password placeholder="Telegram bot token from BotFather" />
+              <Input.Password placeholder="从BotFather获取的Telegram机器人令牌" />
             </Form.Item>
-            <Form.Item name="base_url" label="API Base URL">
+            <Form.Item name="base_url" label="API基础地址">
               <Input placeholder="https://tg-api.yourdomain.com" />
             </Form.Item>
-            <Form.Item name="http_proxy" label="HTTP Proxy">
+            <Form.Item name="http_proxy" label="HTTP代理">
               <Input placeholder="http://127.0.0.1:18118" />
             </Form.Item>
-            <Form.Item name="http_proxy_auth" label="HTTP Proxy Auth">
+            <Form.Item name="http_proxy_auth" label="HTTP代理认证">
               <Input placeholder="user:password" />
             </Form.Item>
             <Form.Item
               name="show_typing"
-              label="Show Typing"
+              label="显示输入状态"
               valuePropName="checked"
             >
               <Switch />
@@ -694,7 +694,7 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="bot_token"
-              label="Bot Token"
+              label="机器人令牌"
               rules={[{ required: true }]}
               tooltip={t("channels.slackBotTokenTooltip")}
             >
@@ -702,7 +702,7 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="app_token"
-              label="App Token"
+              label="应用令牌"
               rules={[{ required: true }]}
               tooltip={t("channels.slackAppTokenTooltip")}
             >
@@ -710,7 +710,7 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="proxy"
-              label="HTTP Proxy"
+              label="HTTP代理"
               tooltip={t("channels.slackProxyTooltip")}
             >
               <Input placeholder="http://127.0.0.1:18118" />
@@ -723,21 +723,21 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="host"
-              label="MQTT Host"
+              label="MQTT主机"
               rules={[{ required: true }]}
             >
               <Input placeholder="127.0.0.1" />
             </Form.Item>
             <Form.Item
               name="port"
-              label="MQTT Port"
+              label="MQTT端口"
               rules={[
                 { required: true },
                 {
                   type: "number",
                   min: 1,
                   max: 65535,
-                  message: "Port must be between 1 and 65535",
+                  message: "端口必须在1-65535之间",
                 },
               ]}
             >
@@ -750,7 +750,7 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="transport"
-              label="Transport"
+              label="传输协议"
               initialValue="tcp"
               rules={[{ required: true }]}
             >
@@ -763,7 +763,7 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="clean_session"
-              label="Clean Session"
+              label="清除会话"
               valuePropName="checked"
             >
               <Switch defaultChecked />
@@ -775,46 +775,46 @@ export function ChannelDrawer({
               rules={[{ required: true }]}
             >
               <Select>
-                <Select.Option value="0">At Most Once (0)</Select.Option>
-                <Select.Option value="1">At Least Once (1)</Select.Option>
-                <Select.Option value="2">Exactly Once (2)</Select.Option>
+                <Select.Option value="0">至多一次(0)</Select.Option>
+                <Select.Option value="1">至少一次(1)</Select.Option>
+                <Select.Option value="2">恰好一次(2)</Select.Option>
               </Select>
             </Form.Item>
-            <Form.Item name="username" label="MQTT Username">
-              <Input placeholder="Leave blank to disable / not use" />
+            <Form.Item name="username" label="MQTT用户名">
+              <Input placeholder="留空表示不使用" />
             </Form.Item>
-            <Form.Item name="password" label="MQTT Password">
-              <Input.Password placeholder="Leave blank to disable / not use" />
+            <Form.Item name="password" label="MQTT密码">
+              <Input.Password placeholder="留空表示不使用" />
             </Form.Item>
             <Form.Item
               name="subscribe_topic"
-              label="Subscribe Topic"
+              label="订阅主题"
               rules={[{ required: true }]}
             >
               <Input placeholder="server/+/up" />
             </Form.Item>
             <Form.Item
               name="publish_topic"
-              label="Publish Topic"
+              label="发布主题"
               rules={[{ required: true }]}
             >
               <Input placeholder="client/{client_id}/down" />
             </Form.Item>
             <Form.Item
               name="tls_enabled"
-              label="TLS Enabled"
+              label="启用TLS"
               valuePropName="checked"
             >
               <Switch />
             </Form.Item>
-            <Form.Item name="tls_ca_certs" label="TLS CA Certs">
-              <Input placeholder="Path to CA certificates file" />
+            <Form.Item name="tls_ca_certs" label="TLS CA证书">
+              <Input placeholder="CA证书文件路径" />
             </Form.Item>
-            <Form.Item name="tls_certfile" label="TLS Certfile">
-              <Input placeholder="Path to client certificate file" />
+            <Form.Item name="tls_certfile" label="TLS客户端证书">
+              <Input placeholder="客户端证书文件路径" />
             </Form.Item>
-            <Form.Item name="tls_keyfile" label="TLS Keyfile">
-              <Input placeholder="Path to client private key file" />
+            <Form.Item name="tls_keyfile" label="TLS私钥">
+              <Input placeholder="客户端私钥文件路径" />
             </Form.Item>
           </>
         );
@@ -824,31 +824,31 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="url"
-              label="Mattermost URL"
+              label="Mattermost地址"
               rules={[{ required: true }]}
             >
               <Input placeholder="https://mattermost.example.com" />
             </Form.Item>
             <Form.Item
               name="bot_token"
-              label="Bot Token"
+              label="机器人令牌"
               rules={[{ required: true }]}
             >
-              <Input.Password placeholder="Mattermost bot token" />
+              <Input.Password placeholder="Mattermost机器人令牌" />
             </Form.Item>
             <Form.Item name="media_dir" label={t("channels.wechatMediaDir")}>
               <Input placeholder={defaultMediaDir} />
             </Form.Item>
             <Form.Item
               name="show_typing"
-              label="Show Typing"
+              label="显示输入状态"
               valuePropName="checked"
             >
               <Switch />
             </Form.Item>
             <Form.Item
               name="thread_follow_without_mention"
-              label="Thread Follow Without Mention"
+              label="线程跟随无需@提及"
               valuePropName="checked"
             >
               <Switch />
@@ -1084,7 +1084,7 @@ export function ChannelDrawer({
             <QrcodeAuthBlock
               label={t("channels.wecomScanAuth")}
               buttonText={t("channels.loginWeCom")}
-              imageAlt="WeCom QR Code"
+              imageAlt="企业微信二维码"
               hintText={t("channels.wecomAuthHint")}
               channel="wecom"
               successStatus="success"
@@ -1103,17 +1103,17 @@ export function ChannelDrawer({
             />
             <Form.Item
               name="bot_id"
-              label="Bot ID"
-              rules={[{ required: true, message: "Please input Bot ID" }]}
+              label="机器人ID"
+              rules={[{ required: true, message: "请输入机器人ID" }]}
             >
-              <Input placeholder="Bot ID from WeCom backend" />
+              <Input placeholder="从企业微信后台获取的机器人ID" />
             </Form.Item>
             <Form.Item
               name="secret"
-              label="Secret"
-              rules={[{ required: true, message: "Please input Secret" }]}
+              label="密钥"
+              rules={[{ required: true, message: "请输入密钥" }]}
             >
-              <Input.Password placeholder="Secret from WeCom backend" />
+              <Input.Password placeholder="从企业微信后台获取的密钥" />
             </Form.Item>
             <Form.Item name="media_dir" label={t("channels.wechatMediaDir")}>
               <Input placeholder={defaultMediaDir} />
@@ -1149,24 +1149,24 @@ export function ChannelDrawer({
             </ConfigProvider>
             <Form.Item
               name="ak"
-              label="Access Key (AK)"
-              rules={[{ required: true, message: "Please input Access Key" }]}
+              label="访问密钥(AK)"
+              rules={[{ required: true, message: "请输入访问密钥" }]}
             >
-              <Input placeholder="Access Key from Huawei Developer Platform" />
+              <Input placeholder="从华为开发者平台获取的访问密钥" />
             </Form.Item>
             <Form.Item
               name="sk"
-              label="Secret Key (SK)"
-              rules={[{ required: true, message: "Please input Secret Key" }]}
+              label="密钥(SK)"
+              rules={[{ required: true, message: "请输入密钥" }]}
             >
-              <Input.Password placeholder="Secret Key from Huawei Developer Platform" />
+              <Input.Password placeholder="从华为开发者平台获取的密钥" />
             </Form.Item>
             <Form.Item
               name="agent_id"
-              label="Agent ID"
-              rules={[{ required: true, message: "Please input Agent ID" }]}
+              label="智能体ID"
+              rules={[{ required: true, message: "请输入智能体ID" }]}
             >
-              <Input placeholder="Agent ID from XiaoYi platform" />
+              <Input placeholder="从小翼平台获取的智能体ID" />
             </Form.Item>
           </>
         );
@@ -1191,7 +1191,7 @@ export function ChannelDrawer({
             <QrcodeAuthBlock
               label={t("channels.wechatScanLogin")}
               buttonText={t("channels.wechatGetQrcode")}
-              imageAlt="WeChat QR Code"
+              imageAlt="微信二维码"
               hintText={t("channels.wechatScanHint")}
               channel="wechat"
               successStatus="confirmed"
@@ -1292,22 +1292,22 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="app_id"
-              label="App ID"
-              rules={[{ required: true, message: "Please input App ID" }]}
+              label="应用ID"
+              rules={[{ required: true, message: "请输入应用ID" }]}
             >
-              <Input placeholder="App ID from Yuanbao platform" />
+              <Input placeholder="从元宝平台获取的应用ID" />
             </Form.Item>
             <Form.Item
               name="app_secret"
-              label="App Secret"
-              rules={[{ required: true, message: "Please input App Secret" }]}
+              label="应用密钥"
+              rules={[{ required: true, message: "请输入应用密钥" }]}
             >
-              <Input.Password placeholder="App Secret from Yuanbao platform" />
+              <Input.Password placeholder="从元宝平台获取的应用密钥" />
             </Form.Item>
             <Form.Item
               name="api_domain"
-              label="API Domain"
-              tooltip="REST API domain for sign-token auth (default: bot.yuanbao.tencent.com)"
+              label="API域名"
+              tooltip="用于签名令牌认证的REST API域名（默认：bot.yuanbao.tencent.com）"
             >
               <Input placeholder="bot.yuanbao.tencent.com" />
             </Form.Item>
@@ -1330,21 +1330,21 @@ export function ChannelDrawer({
           <>
             <Form.Item
               name="ws_host"
-              label="WebSocket Host"
+              label="WebSocket主机"
               tooltip={t("channels.onebotWsHostTooltip")}
             >
               <Input placeholder="127.0.0.1" />
             </Form.Item>
             <Form.Item
               name="ws_port"
-              label="WebSocket Port"
+              label="WebSocket端口"
               rules={[
                 { required: true },
                 {
                   type: "number",
                   min: 1,
                   max: 65535,
-                  message: "Port must be between 1 and 65535",
+                  message: "端口必须在1-65535之间",
                 },
               ]}
             >
@@ -1357,7 +1357,7 @@ export function ChannelDrawer({
             </Form.Item>
             <Form.Item
               name="access_token"
-              label="Access Token"
+              label="访问令牌"
               tooltip={t("channels.onebotAccessTokenTooltip")}
               rules={
                 onebotTokenRequired
@@ -1371,7 +1371,7 @@ export function ChannelDrawer({
                   : []
               }
             >
-              <Input.Password placeholder="Access token for authentication" />
+              <Input.Password placeholder="用于认证的访问令牌" />
             </Form.Item>
             <Form.Item
               name="media_base64"
@@ -1445,7 +1445,7 @@ export function ChannelDrawer({
               i18n.language,
             );
             const rules = field.required
-              ? [{ required: true, message: `Please enter ${fieldLabel}` }]
+              ? [{ required: true, message: `请输入${fieldLabel}` }]
               : undefined;
 
             switch (field.type) {
@@ -1538,7 +1538,7 @@ export function ChannelDrawer({
 
     return (
       <>
-        <div style={{ marginBottom: 8, fontWeight: 500 }}>Custom Fields</div>
+        <div style={{ marginBottom: 8, fontWeight: 500 }}>自定义字段</div>
         {extraKeys.map((fieldKey) => {
           const value = values[fieldKey];
           return (
@@ -1589,7 +1589,7 @@ export function ChannelDrawer({
             className={styles.dingtalkDocBtn}
             style={{ color: "#2A63AD" }}
           >
-            {label} Doc
+            {label} 文档
           </Button>
         )}
       {/* Plugin channels: doc button driven by schema.doc_url.
@@ -1610,7 +1610,7 @@ export function ChannelDrawer({
             className={styles.dingtalkDocBtn}
             style={{ color: "#2A63AD" }}
           >
-            {label} Doc
+            {label} 文档
           </Button>
         );
       })()}
@@ -1678,7 +1678,7 @@ export function ChannelDrawer({
           </Form.Item>
 
           {activeKey !== "voice" && (
-            <Form.Item name="bot_prefix" label="Bot Prefix">
+            <Form.Item name="bot_prefix" label="机器人前缀">
               <Input placeholder="@bot" />
             </Form.Item>
           )}

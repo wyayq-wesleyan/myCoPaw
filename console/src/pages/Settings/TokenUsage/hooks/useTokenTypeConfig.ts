@@ -17,9 +17,9 @@ interface UseTokenTypeConfigProps {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  "Prompt Tokens": "#1677ff",
-  "Completion Tokens": "#52c41a",
-  "Total Tokens": "#fa8c16",
+  "提示词元": "#1677ff",
+  "补全词元": "#52c41a",
+  "总词元": "#fa8c16",
 };
 
 export function useTokenTypeConfig({
@@ -41,9 +41,9 @@ export function useTokenTypeConfig({
     }
 
     const allTypes = [
-      "Prompt Tokens",
-      "Completion Tokens",
-      "Total Tokens",
+      "提示词元",
+      "补全词元",
+      "总词元",
     ] as const;
     const colors = allTypes.map((type) => TYPE_COLORS[type]);
 
@@ -61,9 +61,9 @@ export function useTokenTypeConfig({
       };
 
       const typeValues: Record<string, number> = {
-        "Prompt Tokens": dayStats.prompt_tokens,
-        "Completion Tokens": dayStats.completion_tokens,
-        "Total Tokens": dayStats.prompt_tokens + dayStats.completion_tokens,
+        "提示词元": dayStats.prompt_tokens,
+        "补全词元": dayStats.completion_tokens,
+        "总词元": dayStats.prompt_tokens + dayStats.completion_tokens,
       };
 
       allTypes.forEach((type) => {
