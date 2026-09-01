@@ -186,6 +186,60 @@
 
 ---
 
+## 八、Prompt 路由修复（2026-09-01 第二轮）
+
+### 问题背景
+
+用户说"使用数据分析功能，分析一下财务报表表中的数据"时，agent 完全不调用数据分析工具（`list_data_tables` / `query_data_table`），而是去知识库搜索文档并用文档内容回答。
+
+### 根因分析（逐层排查）
+
+1. **工具注册**：✅ 31 个工具全部注册，数据分析工具 `enabled=True`
+2. **模型 function calling**：✅ Gemma 4 支持 tool calling（curl 直接测试验证）
+3. **系统提示词**：✅ DataAnalysisContributor 有触发规则
+4. **自动知识注入**：🔴 `_inject_auto_knowledge_context()` 在模型调用前自动搜索知识库并注入上下文，模型看到已注入的知识内容后直接用它回答
+5. **工具列表竞争**：🔴 系统提示词里 `Local Knowledge` 段落告诉模型"当用户询问 business materials 时使用知识检索工具"，模型把"财务报表"理解为 business material，选择 `query_knowledge` 而非 `list_data_tables`
+
+### 修复方案（三重保障）
+
+| 修复 | 文件 | 提交 | 说明 |
+|------|------|------|------|
+| 统一触发话术 | `prompt_contributors.py` | `ffb2fb58` | 唯一触发条件：用户消息包含「通过数据分析」 |
+| 跳过自动知识注入 | `react_agent.py` | `420eabd5` | 触发词出现时跳过 `_inject_auto_knowledge_context()` |
+| 移除知识库工具 | `react_agent.py` | `e6180de3` | 触发时从 tools 列表移除 `query_knowledge` / `get_document_detail` |
+| 更新 AGENTS.md | 容器内 | `ffb2fb58` | 同步触发规则 |
+
+### 触发规则
+
+**唯一触发条件：用户消息中包含「通过数据分析」这四个字。** 其余任何表述都不触发数据分析工具。
+
+### 验证方法
+
+- ✅ "通过数据分析功能进行数据分析，分析财务报表表" → 应调 `list_data_tables` → `query_data_table`
+- ✅ "财务报表数据怎么样" → 不触发数据分析，正常回答
+- ✅ "查一下体育相关的资料" → 走知识库
+
+---
+
+## 九、Inbox 通知修复（2026-09-01）
+
+### 问题
+
+admin 信箱收到 zhaowy 的 `auto_memory` 通知（"Auto-memory result: financial-analysis-summary-2025-report"）。
+
+### 根因
+
+`_append_reme_job_result_to_inbox` 调用 `append_inbox_event` 时没有传 `recipient_username`，inbox 查询逻辑里 admin 会看到所有 `recipient_username` 为空的事件。
+
+### 修复
+
+| 修复 | 文件 | 提交 | 说明 |
+|------|------|------|------|
+| 指定接收人 | `reme_light_memory_manager.py` | `92051e19` | 从 `agent_id`（`user_{username}_{workspace}`）提取用户名作为 `recipient_username` |
+| 关闭通知 | `config.py` | `74de12e7` | `auto_memory_inbox_push_enabled` 默认值改为 `False` |
+
+---
+
 ## 附：执行环境命令（复现）
 
 ```bash
