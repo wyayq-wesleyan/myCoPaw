@@ -12,9 +12,11 @@ npm -C console run -s build
 
 rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/console"
+mkdir -p "${APP_DIR}/plugins/bundle"
 
 cp -R src "${APP_DIR}/src"
 cp -R console/dist "${APP_DIR}/console/dist"
+cp -R plugins/bundle/omp_workflows "${APP_DIR}/plugins/bundle/"
 
 # Keep the packaged Python fallback console assets in sync with the latest
 # frontend build so source/code-mount deployments never serve stale bundles.
