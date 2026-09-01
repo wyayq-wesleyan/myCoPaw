@@ -541,6 +541,12 @@ class ReMeLightMemoryManager(BaseMemoryManager):
                         payload[key] = response_metadata[key]
 
         try:
+            # Extract recipient username from agent_id (pattern: user_{username}_{workspace})
+            _recipient = None
+            _parts = self.agent_id.split("_")
+            if len(_parts) >= 3 and _parts[0] == "user":
+                _recipient = _parts[1]
+
             event = await append_inbox_event(
                 agent_id=self.agent_id,
                 source_type="memory",
@@ -551,6 +557,7 @@ class ReMeLightMemoryManager(BaseMemoryManager):
                 title=title,
                 body=body,
                 payload=payload,
+                recipient_username=_recipient,
             )
             if isinstance(response_metadata, dict):
                 response_metadata[INBOX_EMITTED_METADATA_KEY] = True
