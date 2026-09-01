@@ -994,6 +994,13 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 if isinstance(text, str):
                     parts.append(text)
         query = "\n".join(parts).strip()
+
+        # Skip auto-knowledge injection when the user explicitly requests
+        # data analysis — the model should call data analysis tools instead.
+        _DA_TRIGGERS = ("数据分析", "用数据", "通过数据", "数据表", "SQL", "sql")
+        if any(t in query for t in _DA_TRIGGERS):
+            return
+
         knowledge_key = f"{id(user_msg)}:{query}"
         if len(query) < 2 or knowledge_key == self._knowledge_auto_context_key:
             return
