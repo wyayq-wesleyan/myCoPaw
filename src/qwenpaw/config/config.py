@@ -795,7 +795,7 @@ class ReMeLightMemoryConfig(BaseModel):
         description="Deprecated shared inbox notification switch",
     )
     auto_memory_inbox_push_enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether to push auto-memory results to the inbox",
     )
     auto_dream_inbox_push_enabled: bool = Field(
