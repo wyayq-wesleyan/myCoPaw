@@ -559,7 +559,40 @@ class QwenPawAgent(CodingModeMixin, Agent):
     async def _prepare_model_input(self) -> dict[str, Any]:
         """Freeze local images before they enter a provider request."""
         await freeze_local_images_async(self.state.context)
-        return await super()._prepare_model_input()
+
+        result = await super()._prepare_model_input()
+
+        # When the user explicitly requests data analysis via the unified
+        # trigger, strip knowledge tools from the tool list so the model
+        # cannot fall back to query_knowledge / get_document_detail.
+        context = list(getattr(self.state, "context", []) or [])
+        last_user = next(
+            (m for m in reversed(context)
+             if getattr(m, "role", "") == "user"
+             and getattr(m, "name", "") not in {
+                 "knowledge_auto_context", "visual_context", "visual_history",
+             }),
+            None,
+        )
+        if last_user is not None:
+            raw = getattr(last_user, "content", []) or []
+            texts = []
+            if isinstance(raw, str):
+                texts.append(raw)
+            else:
+                for blk in raw:
+                    t = getattr(blk, "text", None)
+                    if isinstance(t, str):
+                        texts.append(t)
+            user_text = "\n".join(texts)
+            if "通过数据分析" in user_text:
+                _KNOWLEDGE_TOOLS = {"query_knowledge", "get_document_detail"}
+                result["tools"] = [
+                    t for t in result.get("tools", [])
+                    if t.get("function", {}).get("name") not in _KNOWLEDGE_TOOLS
+                ]
+
+        return result
 
     @staticmethod
     def _is_context_overflow_error(exc: Exception) -> bool:
