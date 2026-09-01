@@ -190,7 +190,10 @@ def _create_real_table(hg_conn, table_name: str, col_names: list[str], df: pd.Da
 
 def _batch_insert(hg_conn, table_name: str, col_names: list[str], df: pd.DataFrame, types: list[str], batch_size: int = 1000) -> tuple[int, list[dict]]:
     placeholders = ", ".join(["%s"] * len(col_names))
-    insert_sql = f'INSERT INTO "{table_name}" ({", ".join(f"{c}" for c in col_names)}) VALUES ({placeholders})'
+    # 必须对列名逐一双引号，否则 PG 会把 订单ID 这样的混合大小写列名
+    # 折叠成小写 订单id，导致查询不到列。_create_real_table 里建表时已加引号。
+    quoted_cols = ", ".join('"' + c + '"' for c in col_names)
+    insert_sql = f'INSERT INTO "{table_name}" ({quoted_cols}) VALUES ({placeholders})'
     success = 0
     errors: list[dict] = []
     for start in range(0, len(df), batch_size):
