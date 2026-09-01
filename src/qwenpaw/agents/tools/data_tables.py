@@ -22,18 +22,42 @@ def _sanitize_sql(sql: str) -> str:
 
 
 def _is_read_only(sql: str) -> bool:
+    """判断一条 SQL 是否为安全的只读查询。
+
+    仅允许单一的 SELECT / WITH 语句。拒绝：
+    - 以 INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/GRANT/REVOKE 开头
+    - 包含分号的多语句（堆叠查询），例如
+      ``SELECT * FROM t; DROP TABLE t`` —— psycopg2 默认会执行整个字符串，
+      若不拦截会造成真实破坏。
+    - 以非 SELECT/WITH 开头或为空
+    """
     sanitized = _sanitize_sql(sql)
+    if not sanitized:
+        return False
     if _DANGEROUS_SQL_RE.match(sanitized):
         return False
-    first_word = sanitized.split()[0].upper() if sanitized.split() else ""
+    # 拒绝堆叠/多条语句：分号后仍有多余内容即视为危险，防止 DROP 等混入。
+    stripped = sanitized.rstrip(";").strip()
+    if ";" in stripped:
+        return False
+    first_word = stripped.split()[0].upper() if stripped.split() else ""
     return first_word in ("SELECT", "WITH")
 
 
 def _ensure_limit(sql: str, max_rows: int = 100) -> str:
+    """给查询追加 LIMIT 上限，防止单次查询拉取过多行。
+
+    注意：只应在"真正的查询语句末尾"追加 LIMIT。若用户已显式书写 LIMIT
+    或 OFFSET（无论大小写、是否出现在字符串里都难以区分），为稳妥起见仅
+    在语句末尾没有 LIMIT/OFFSET 关键字时追加。这里使用词边界匹配，避免
+    把字符串里的 "LIMIT" 误判为查询自身的 LIMIT。
+    """
     sanitized = _sanitize_sql(sql).rstrip(";")
-    if "LIMIT" not in sanitized.upper():
-        return f"{sanitized} LIMIT {max_rows}"
-    return sql
+    # 用词边界匹配真正的 LIMIT/OFFSET 关键字，而不是简单子串匹配，
+    # 避免 SELECT 'LIMIT' AS x 这类字符串内容误判。
+    if re.search(r"\b(LIMIT|OFFSET)\b", sanitized, re.IGNORECASE):
+        return sql
+    return f"{sanitized} LIMIT {max_rows}"
 
 
 def _resolve_username() -> str:
