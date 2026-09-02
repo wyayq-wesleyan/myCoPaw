@@ -421,3 +421,30 @@ def _convert_to_pdf(path: Path) -> Path:
         target = path.parent / f"{path.stem}.pdf"
         shutil.move(str(pdf_files[0]), str(target))
         return target
+
+
+def extract_text_from_file(path: Path, backend: str, mineru_command: str) -> dict[str, Any]:
+    """Parse a file and return plain text with metadata."""
+    used_backend, chunks = parse_document(path, backend, mineru_command)
+    pages = set()
+    parts = []
+    for chunk in chunks:
+        text = (chunk.get("content") or "").strip()
+        if not text:
+            continue
+        page = chunk.get("page")
+        if page is not None:
+            pages.add(page)
+        source_type = chunk.get("source_type", "text")
+        if source_type == "table":
+            parts.append(f"[表格]\n{text}")
+        elif source_type == "image":
+            parts.append(f"[图片] {text}")
+        else:
+            parts.append(text)
+    return {
+        "content": "\n\n".join(parts),
+        "backend": used_backend,
+        "pages": len(pages) if pages else None,
+        "truncated": False,
+    }

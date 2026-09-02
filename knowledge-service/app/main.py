@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import re
+import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .lightrag_bridge import LightRAGBridge
+from .parsers import extract_text_from_file
 from .providers import ModelClient
 from .store import Store
 
@@ -176,13 +178,36 @@ async def reprocess_document(document_id: str, scope: tuple[str, bool] = Depends
     return queued
 
 
+@app.post("/v1/documents/parse", dependencies=[Depends(require_api_key)])
+async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Parse an uploaded file and return extracted text."""
+    suffix = Path(file.filename or "").suffix.lower()
+    supported = {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".xls", ".json"}
+    if suffix not in supported:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
+    data = await file.read()
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 50MB)")
+    with tempfile.TemporaryDirectory(prefix="huizhi-parse-") as tmp_dir:
+        tmp_path = Path(tmp_dir) / (file.filename or f"upload{suffix}")
+        tmp_path.write_bytes(data)
+        try:
+            result = extract_text_from_file(tmp_path, settings.parser_backend, settings.mineru_command)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Parse failed: {exc}")
+    return result
+
+
 @app.delete("/v1/documents/{document_id}", dependencies=[Depends(require_api_key)])
 async def delete_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """Delete a document and all its related data."""
     owner_id, is_admin = scope
-    deleted = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
-    if not deleted:
+    result = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
+    if result == "not_found":
         raise HTTPException(status_code=404, detail="Document not found")
+    if result == "processing":
+        raise HTTPException(status_code=409, detail="Document is being processed, please try again later")
+    asyncio.create_task(lightrag.delete_document(document_id))
     return {"deleted": True}
 
 
