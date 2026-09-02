@@ -23,6 +23,44 @@ from .image_freezing import freeze_local_images_async
 logger = logging.getLogger(__name__)
 
 
+_KNOWLEDGE_PARSE_URL = ""
+_KNOWLEDGE_PARSE_KEY = ""
+
+
+def _get_knowledge_parse_config():
+    global _KNOWLEDGE_PARSE_URL, _KNOWLEDGE_PARSE_KEY
+    if not _KNOWLEDGE_PARSE_URL:
+        _KNOWLEDGE_PARSE_URL = os.environ.get("QWENPAW_KNOWLEDGE_URL", "")
+        _KNOWLEDGE_PARSE_KEY = os.environ.get(
+            "QWENPAW_KNOWLEDGE_API_KEY", "huizhi-local-knowledge-dev"
+        )
+    return _KNOWLEDGE_PARSE_URL, _KNOWLEDGE_PARSE_KEY
+
+
+async def _parse_file_via_knowledge(file_path: str, filename: str) -> str | None:
+    """Call knowledge service parse API. Returns parsed text or None on failure."""
+    import httpx
+
+    url, key = _get_knowledge_parse_config()
+    if not url:
+        return None
+    parse_url = f"{url.rstrip('/')}/v1/documents/parse"
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            with open(file_path, "rb") as f:
+                response = await client.post(
+                    parse_url,
+                    headers={"X-Knowledge-Key": key},
+                    files={"file": (filename, f)},
+                )
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            return data.get("content")
+    except Exception:
+        return None
+
+
 def _audio_text_block(block, text: str):
     """Build a text replacement matching the input block representation."""
     if isinstance(block, dict):
@@ -536,11 +574,41 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
         if downloaded_files:
             lang = load_config().agents.language
             for i, local_path in reversed(downloaded_files):
-                text = (
-                    f"用户上传文件，已经下载到 {local_path}"
-                    if lang == "zh"
-                    else f"User uploaded a file, downloaded to {local_path}"
-                )
+                non_media_exts = {
+                    ".pdf",
+                    ".doc",
+                    ".docx",
+                    ".txt",
+                    ".md",
+                    ".csv",
+                    ".xlsx",
+                    ".xls",
+                    ".json",
+                }
+                suffix = Path(local_path).suffix.lower()
+                if suffix in non_media_exts:
+                    parsed_text = await _parse_file_via_knowledge(
+                        str(local_path), Path(local_path).name
+                    )
+                    if parsed_text:
+                        text = (
+                            f"用户上传了文件：{Path(local_path).name}\n\n"
+                            f"--- 文件内容开始 ---\n"
+                            f"{parsed_text}\n"
+                            f"--- 文件内容结束 ---"
+                        )
+                    else:
+                        text = (
+                            f"用户上传文件，已经下载到 {local_path}"
+                            if lang == "zh"
+                            else f"User uploaded a file, downloaded to {local_path}"
+                        )
+                else:
+                    text = (
+                        f"用户上传文件，已经下载到 {local_path}"
+                        if lang == "zh"
+                        else f"User uploaded a file, downloaded to {local_path}"
+                    )
                 message.content.insert(
                     i + 1,
                     TextBlock(type="text", text=text),
