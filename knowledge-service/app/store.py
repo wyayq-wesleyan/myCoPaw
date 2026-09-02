@@ -77,7 +77,8 @@ class Store:
               error TEXT,
               size BIGINT DEFAULT 0,
               created_at TIMESTAMPTZ NOT NULL,
-              updated_at TIMESTAMPTZ NOT NULL
+              updated_at TIMESTAMPTZ NOT NULL,
+              started_at TIMESTAMPTZ
             )
             """,
             """
@@ -160,6 +161,11 @@ class Store:
                 db.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS size BIGINT DEFAULT 0")
             except Exception:
                 pass  # column already exists or DB doesn't support IF NOT EXISTS
+            # Migration: add started_at column to documents if missing
+            try:
+                db.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ")
+            except Exception:
+                pass
 
     def create_space(self, name: str, owner_id: str) -> dict[str, Any]:
         space_id = str(uuid.uuid4())
@@ -251,10 +257,19 @@ class Store:
             "document_id": document_id,
             "filename": document["filename"],
             "status": document["status"],
+            "error": document.get("error"),
             "size": document.get("size", 0),
             "chunk_count": chunks_row["cnt"] if chunks_row else 0,
             "entity_count": entities_row["cnt"] if entities_row else 0,
             "relation_count": relations_row["cnt"] if relations_row else 0,
+            "created_at": document["created_at"].isoformat() if document.get("created_at") else None,
+            "started_at": document["started_at"].isoformat() if document.get("started_at") else None,
+            "completed_at": document["updated_at"].isoformat() if document.get("status") == "completed" else None,
+            "processing_duration": (
+                (document["updated_at"] - document["started_at"]).total_seconds()
+                if document.get("started_at") and document.get("status") in ("completed", "failed")
+                else None
+            ),
         }
 
     def delete_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> bool:
@@ -341,8 +356,8 @@ class Store:
                 (timestamp, row["id"]),
             )
             db.execute(
-                "UPDATE documents SET status = 'processing', updated_at = %s WHERE id = %s",
-                (timestamp, row["document_id"]),
+                "UPDATE documents SET status = 'processing', started_at = COALESCE(started_at, %s), updated_at = %s WHERE id = %s",
+                (timestamp, timestamp, row["document_id"]),
             )
         return dict(row)
 

@@ -202,12 +202,9 @@ async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
 async def delete_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """Delete a document and all its related data."""
     owner_id, is_admin = scope
-    result = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
-    if result == "not_found":
+    deleted = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Document not found")
-    if result == "processing":
-        raise HTTPException(status_code=409, detail="Document is being processed, please try again later")
-    asyncio.create_task(lightrag.delete_document(document_id))
     return {"deleted": True}
 
 
