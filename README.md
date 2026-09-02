@@ -127,6 +127,9 @@
 - 知识空间菜单图标改为书本图标（`BookOpen`），与数据分析图标区分。
 - 文档解析优先使用 MinerU（PDF/DOCX 布局解析），MinerU 不可用时降级到 python-docx / pdfplumber。
 - 知识服务 Worker 容器已安装 MinerU + torch，支持高质量文档解析。
+- **文档级联删除清理**：删除文档时同时清理关联的实体、关系和 LightRAG 图谱数据，避免残留。
+- **处理时间追踪**：文档上传和处理时间记录 `started_at`，前端显示处理时长。
+- **错误信息展示**：失败文档的错误详情在详情面板中显示（红色高亮）。
 
 ### 2.6C 聊天界面优化
 
@@ -136,6 +139,8 @@
 - 移除聊天右上角的「打开工作区」和「正常/宽屏切换」按钮。
 - 新对话默认名称改为中文「新对话」。
 - Token 消耗页面图表图例改为中文（提示词元/补全词元/总词元）。
+- **聊天文件自动解析**：上传文档文件（PDF/DOCX/TXT/MD/CSV/XLSX/XLS/JSON）时，自动调用知识服务解析，将提取的文本内容注入到消息中，无需手动操作。
+- **DOCX 生成工具**：新增 `generate_docx` 工具，将 Markdown 内容转换为 DOCX 文件，返回 `file://` 链接供下载。
 
 ### 2.6D 智能体管理改进
 
@@ -774,6 +779,93 @@ Embedding 单次全量调用 214 块（易超时）。向量检索用 Python 循
 - 改动：标题追加 "INTERNAL QWENPAW CONTEXT SNAPSHOTS — NOT USER-UPLOADED IMAGES"。
 - 涉及文件：`src/qwenpaw/agents/context/visual_compression/pipeline/static_context.py`
 
+### 9.7 聊天文件自动解析与 DOCX 生成
+
+**背景**：用户在聊天中上传文档（PDF/DOCX/TXT/MD/CSV 等）时，文件仅存储在磁盘，模型通过工具读取。大文档或格式复杂的文档（如含表格、公式的 PDF）直接读取效果差，且无法利用知识服务的 MinerU 解析能力。
+
+**改动 1：知识服务 Parse API**
+- 新增 `POST /v1/documents/parse` 接口，接受文件上传，返回解析后的纯文本。
+- 支持格式：PDF、DOC、DOCX、TXT、MD、CSV、XLSX、XLS、JSON。
+- 内部复用知识服务的 `extract_text_from_file()` 解析管线（MinerU + LibreOffice + SimpleReader）。
+- 安全限制：单文件最大 50MB，超时 60 秒。
+
+涉及文件：
+- `knowledge-service/app/main.py`：新增 `POST /v1/documents/parse` 端点
+- `knowledge-service/app/parsers.py`：新增 `extract_text_from_file()` 公共函数
+
+**改动 2：MediaProcessHook 集成**
+- 修改 `process_file_and_media_blocks_in_message()`，对文档类文件（非图片/音频/视频）自动调用 Parse API。
+- 解析成功后将文本内容注入到消息中，格式为：
+  ```
+  用户上传了文件：example.pdf
+  --- 文件内容开始 ---
+  [解析后的文本]
+  --- 文件内容结束 ---
+  ```
+- 解析失败时降级到原有逻辑（仅记录文件路径）。
+- 支持语言感知的分隔符（中文/英文）。
+
+涉及文件：
+- `src/qwenpaw/agents/utils/message_processing.py`：新增 `_parse_file_via_knowledge()` 函数，修改 `process_file_and_media_blocks_in_message()`
+
+**改动 3：DOCX 生成工具**
+- 新增 `generate_docx` 工具，将 Markdown 内容转换为 DOCX 文件。
+- 支持：标题（H1-H4）、列表（有序/无序）、表格、水平分割线。
+- 字体回退链：Microsoft YaHei → DejaVu Sans → Noto Sans CJK SC → Arial Unicode MS（跨平台 CJK 支持）。
+- 保存到聊天媒体目录，返回 `file://` 链接，复用现有 `send_file` 工具投递。
+- 前端零改动：复用现有 `<Files>` 下载卡片。
+
+涉及文件：
+- `src/qwenpaw/agents/tools/generate_docx.py`：新增工具
+- `src/qwenpaw/agents/tools/__init__.py`：注册工具
+
+**工作流程**：
+```
+用户上传 PDF → MediaProcessHook 检测文件类型
+    ↓
+调用知识服务 POST /v1/documents/parse
+    ↓
+MinerU 解析 PDF → 返回纯文本
+    ↓
+文本注入到消息 → 模型阅读解析后的内容
+    ↓
+模型回答问题或生成 DOCX 报告
+```
+
+### 9.8 知识文档级联删除清理
+
+**背景**：删除文档时仅删除了 documents 表记录，关联的实体（entities）、关系（relations）和 LightRAG 图谱数据未清理，导致数据库残留和图谱噪声。
+
+**改动**：
+- `delete_document()` 返回值从 `bool` 改为 `str`（`"deleted"/"not_found"/"processing"`），区分处理中状态避免并发冲突。
+- 新增实体清理：删除文档后检查 mention 计数，零 mention 的孤立实体自动删除。
+- 新增关系清理：删除孤立的 evidence 为 NULL 的关系，以及引用已删除实体的关系。
+- 新增 LightRAG 清理：调用 `DELETE /documents/delete_document` 删除图谱数据，409 冲突（忙碌）时跳过。
+- 新增 `started_at` 字段：文档上传时记录开始处理时间，前端可显示处理时长。
+- 并发保护：拒绝删除 `processing` 状态的文档（返回 409），避免竞态条件。
+
+涉及文件：
+- `knowledge-service/app/store.py`：`delete_document()` 重写，新增 `started_at` 迁移
+- `knowledge-service/app/lightrag_bridge.py`：新增 `delete_document()` 方法
+- `knowledge-service/app/main.py`：删除端点增加 409 处理和 LightRAG 清理
+
+### 9.9 知识空间与数据分析 UI 统一
+
+**背景**：知识空间和数据分析页面的状态展示、时间信息、排序和筛选功能不一致，用户体验割裂。
+
+**改动**：
+- 两个页面都新增 `started_at` 时间字段，显示上传/处理/完成时间。
+- 所有列支持排序（点击表头切换升序/降序），状态列默认升序（pending 在前）。
+- 数据分析页面新增状态筛选下拉框（全部/处理中/已完成/失败/部分失败）。
+- 失败文档的错误详情在详情面板中显示（红色 `<pre>` 块）。
+- 处理时长自动计算：`completed_at - started_at`，显示为秒数。
+
+涉及文件：
+- `console/src/api/modules/knowledge.ts`：`KnowledgeDocumentStats` 类型新增 `started_at`、`error`
+- `console/src/api/modules/dataAnalysis.ts`：`DataImportJob` 类型新增 `started_at`
+- `console/src/pages/Knowledge/index.tsx`：StatsDrawer 时间展示、排序、错误详情
+- `console/src/pages/DataAnalysis/index.tsx`：状态列、筛选、排序、错误详情
+
 ## 10. 当前状态摘要
 
 | 项目 | 状态 |
@@ -809,6 +901,11 @@ Embedding 单次全量调用 214 块（易超时）。向量检索用 Python 循
 | 语义相关性过滤 | 已完成，阈值 0.40 |
 | 实体抽取并行化 | 已完成，3 线程 2.4x 提速 |
 | 长会话性能 | 以官方 Scroll Context 为基础，需继续验证 |
+| 聊天文件自动解析 | 已完成，支持 PDF/DOCX/TXT/MD/CSV/XLSX/XLS/JSON |
+| DOCX 生成工具 | 已完成，Markdown → DOCX，复用 send_file 投递 |
+| 知识文档级联删除 | 已完成，清理实体/关系/LightRAG 图谱 |
+| 处理时间追踪 | 已完成，started_at + completed_at + processing_duration |
+| 知识/数据分析 UI 统一 | 已完成，排序/筛选/错误详情 |
 
 ## 11. 维护原则
 
@@ -873,8 +970,10 @@ POST /v1/query/stream                 流式 RAG 查询
 GET  /v1/documents/{id}/chunks        获取文档分块
 GET  /v1/documents/{id}/file          获取原始文件
 POST /v1/documents/upload             上传文档
+POST /v1/documents/parse              解析文档（返回纯文本）
 GET  /v1/spaces                       列出知识空间
 GET  /v1/spaces/{id}/documents        列出空间文档
+DELETE /v1/documents/{id}             删除文档（级联清理）
 ```
 
 ### 11.5 已知问题

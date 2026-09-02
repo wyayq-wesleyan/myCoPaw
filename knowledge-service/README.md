@@ -62,7 +62,10 @@ POST /v1/spaces
 GET  /v1/spaces
 GET  /v1/spaces/{space_id}/documents
 POST /v1/documents/upload
+POST /v1/documents/parse              解析文档（返回纯文本，支持 PDF/DOCX/TXT/MD/CSV/XLSX/XLS/JSON）
 GET  /v1/documents/{document_id}
+GET  /v1/documents/{document_id}/stats  获取文档统计（含 started_at、error）
+DELETE /v1/documents/{document_id}     删除文档（级联清理实体/关系/LightRAG）
 GET  /v1/jobs/{job_id}
 POST /v1/query
 GET  /v1/evidence/{evidence_id}
