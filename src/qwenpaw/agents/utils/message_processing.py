@@ -13,6 +13,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
 from agentscope.message import Msg, TextBlock, URLSource
 
 from ...app.channels.utils import file_url_to_local_path
@@ -25,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 _KNOWLEDGE_PARSE_URL = ""
 _KNOWLEDGE_PARSE_KEY = ""
+
+# Document extensions that should be parsed via Knowledge Service
+_NON_MEDIA_EXTS = {
+    ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".xls", ".json"
+}
 
 
 def _get_knowledge_parse_config():
@@ -39,8 +46,6 @@ def _get_knowledge_parse_config():
 
 async def _parse_file_via_knowledge(file_path: str, filename: str) -> str | None:
     """Call knowledge service parse API. Returns parsed text or None on failure."""
-    import httpx
-
     url, key = _get_knowledge_parse_config()
     if not url:
         return None
@@ -574,29 +579,26 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
         if downloaded_files:
             lang = load_config().agents.language
             for i, local_path in reversed(downloaded_files):
-                non_media_exts = {
-                    ".pdf",
-                    ".doc",
-                    ".docx",
-                    ".txt",
-                    ".md",
-                    ".csv",
-                    ".xlsx",
-                    ".xls",
-                    ".json",
-                }
                 suffix = Path(local_path).suffix.lower()
-                if suffix in non_media_exts:
+                if suffix in _NON_MEDIA_EXTS:
                     parsed_text = await _parse_file_via_knowledge(
                         str(local_path), Path(local_path).name
                     )
                     if parsed_text:
-                        text = (
-                            f"用户上传了文件：{Path(local_path).name}\n\n"
-                            f"--- 文件内容开始 ---\n"
-                            f"{parsed_text}\n"
-                            f"--- 文件内容结束 ---"
-                        )
+                        if lang == "zh":
+                            text = (
+                                f"用户上传了文件：{Path(local_path).name}\n\n"
+                                f"--- 文件内容开始 ---\n"
+                                f"{parsed_text}\n"
+                                f"--- 文件内容结束 ---"
+                            )
+                        else:
+                            text = (
+                                f"User uploaded file: {Path(local_path).name}\n\n"
+                                f"--- FILE CONTENT START ---\n"
+                                f"{parsed_text}\n"
+                                f"--- FILE CONTENT END ---"
+                            )
                     else:
                         text = (
                             f"用户上传文件，已经下载到 {local_path}"

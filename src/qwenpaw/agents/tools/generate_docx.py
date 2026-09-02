@@ -13,6 +13,15 @@ from agentscope.tool import ToolChunk
 from ...runtime.tool_registry import tool_descriptor
 
 
+# Module-level constants
+_NON_MEDIA_EXTS = {
+    ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".xls", ".json"
+}
+
+# Font fallback for cross-platform compatibility
+_DOCX_FONTS = ["Microsoft YaHei", "DejaVu Sans", "Noto Sans CJK SC", "Arial Unicode MS"]
+
+
 def _resolve_media_dir() -> Path:
     """Resolve the same media directory used by chat uploads.
 
@@ -38,10 +47,15 @@ def _markdown_to_docx(content: str, output_path: Path) -> None:
 
     doc = Document()
 
-    # Set default font
+    # Set default font with fallback chain for cross-platform CJK support
     style = doc.styles["Normal"]
     font = style.font
-    font.name = "Microsoft YaHei"
+    for font_name in _DOCX_FONTS:
+        try:
+            font.name = font_name
+            break
+        except Exception:
+            continue
     font.size = Pt(11)
 
     lines = content.split("\n")
@@ -69,26 +83,27 @@ def _markdown_to_docx(content: str, output_path: Path) -> None:
         # Table (detect | delimiter)
         elif line.startswith("|") and "|" in line[1:]:
             table_lines = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                table_lines.append(lines[i].strip())
-                i += 1
-            i -= 1  # Will be incremented at end of loop
-            if len(table_lines) >= 2:
-                rows = []
-                for tl in table_lines:
-                    cells = [c.strip() for c in tl.strip("|").split("|")]
-                    # Skip separator row (---|---|---)
-                    if all(re.match(r"^[-:]+$", c) for c in cells):
-                        continue
-                    rows.append(cells)
-                if rows:
-                    num_cols = max(len(r) for r in rows)
-                    table = doc.add_table(rows=len(rows), cols=num_cols)
-                    table.style = "Table Grid"
-                    for ri, row_data in enumerate(rows):
-                        for ci, cell_text in enumerate(row_data):
-                            if ci < num_cols:
-                                table.rows[ri].cells[ci].text = cell_text
+            j = i
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                table_lines.append(lines[j].strip())
+                j += 1
+            # Skip separator row (---|---|---) and build rows
+            rows = []
+            for tl in table_lines:
+                cells = [c.strip() for c in tl.strip("|").split("|")]
+                # Skip separator row (---|---|---)
+                if all(re.match(r"^[-:]+$", c) for c in cells):
+                    continue
+                rows.append(cells)
+            if rows:
+                num_cols = max(len(r) for r in rows)
+                table = doc.add_table(rows=len(rows), cols=num_cols)
+                table.style = "Table Grid"
+                for ri, row_data in enumerate(rows):
+                    for ci, cell_text in enumerate(row_data):
+                        if ci < num_cols:
+                            table.rows[ri].cells[ci].text = cell_text
+            i = j - 1  # Will be incremented at end of loop
         # Horizontal rule
         elif re.match(r"^[-*_]{3,}\s*$", line):
             doc.add_paragraph("─" * 50)
