@@ -6,6 +6,7 @@ vi.mock("./config", () => ({
   getApiUrl: (path: string) => `/api${path}`,
   getApiToken: vi.fn(() => ""),
   clearAuthToken: vi.fn(),
+  clearAuthUser: vi.fn(),
 }));
 
 vi.mock("./authHeaders", () => ({

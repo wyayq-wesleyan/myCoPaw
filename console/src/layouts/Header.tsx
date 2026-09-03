@@ -5,7 +5,7 @@ import { useNavigate } from "react-router-dom";
 import styles from "./index.module.less";
 import { Slot } from "../plugins/registry/Slot";
 import { authApi, type ManagedUser } from "../api/modules/auth";
-import { clearAuthToken } from "../api/config";
+import { clearAuthToken, clearAuthUser } from "../api/config";
 
 const { Header: AntHeader } = Layout;
 
@@ -40,6 +40,7 @@ export default function Header() {
       label: "退出登录",
       onClick: () => {
         clearAuthToken();
+        clearAuthUser();
         window.location.href = "/login";
       },
     },

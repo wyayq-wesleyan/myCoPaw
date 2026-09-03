@@ -2,6 +2,7 @@ declare const VITE_API_BASE_URL: string;
 declare const TOKEN: string;
 
 const AUTH_TOKEN_KEY = "qwenpaw_auth_token";
+const AUTH_USER_KEY = "qwenpaw_auth_user";
 
 /**
  * Get the full API URL with /api prefix
@@ -31,6 +32,33 @@ export function getApiToken(): string {
  */
 export function setAuthToken(token: string): void {
   localStorage.setItem(AUTH_TOKEN_KEY, token);
+}
+
+/**
+ * Record the logged-in username (used to namespace per-user storage keys,
+ * e.g. last-used agent selection must not leak between accounts).
+ */
+export function setAuthUser(username: string): void {
+  localStorage.setItem(AUTH_USER_KEY, username);
+}
+
+/**
+ * Get the logged-in username recorded at login. Empty when not logged in
+ * or when upgrading from a build that did not record the username.
+ */
+export function getAuthUser(): string {
+  try {
+    return localStorage.getItem(AUTH_USER_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Remove the recorded username (logout / 401).
+ */
+export function clearAuthUser(): void {
+  localStorage.removeItem(AUTH_USER_KEY);
 }
 
 /**

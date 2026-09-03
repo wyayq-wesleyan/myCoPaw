@@ -5,7 +5,8 @@ import { Button, Form, Input } from "antd";
 import { useAppMessage } from "../../hooks/useAppMessage";
 import { LockOutlined, UserOutlined } from "@ant-design/icons";
 import { authApi } from "../../api/modules/auth";
-import { setAuthToken } from "../../api/config";
+import { setAuthToken, setAuthUser } from "../../api/config";
+import { useAgentStore } from "../../stores/agentStore";
 import { useTheme } from "../../contexts/ThemeContext";
 import { getPostLoginHref } from "../../utils/navigationMode";
 
@@ -26,6 +27,9 @@ export default function LoginPage() {
 
   const finishNavigation = useCallback(
     (target: string) => {
+      // The agent store was created before the username was known — re-read
+      // the per-user last-selected agent now that login has recorded it.
+      useAgentStore.getState().hydrateFromStorage();
       const osHref = getPostLoginHref(window.location.pathname, target);
       if (osHref) {
         window.location.replace(osHref);
@@ -55,17 +59,20 @@ export default function LoginPage() {
   const onFinish = async (values: { username: string; password: string }) => {
     setLoading(true);
     try {
+      const username = values.username.trim();
       if (isRegister) {
-        const res = await authApi.register(values.username.trim(), values.password);
+        const res = await authApi.register(username, values.password);
         if (res.token) {
           setAuthToken(res.token);
+          setAuthUser(username);
           message.success(t("login.registerSuccess"));
           finishNavigation(redirect);
         }
       } else {
-        const res = await authApi.login(values.username.trim(), values.password);
+        const res = await authApi.login(username, values.password);
         if (res.token) {
           setAuthToken(res.token);
+          setAuthUser(username);
           finishNavigation(redirect);
         } else {
           message.info(t("login.authNotEnabled"));

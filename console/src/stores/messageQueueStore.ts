@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { createClientMessageId } from "../utils/clientMessageId";
+import { agentStorageKey } from "../utils/agentStorageKey";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -355,9 +356,9 @@ export const useMessageQueueStore = create<MessageQueueStore>((set, get) => ({
     // background sending uses the correct X-Agent-Id even after switch.
     let agentId: string | undefined;
     try {
+      const storageKey = agentStorageKey();
       const agentStorage =
-        sessionStorage.getItem("qwenpaw-agent-storage") ||
-        localStorage.getItem("qwenpaw-agent-storage");
+        sessionStorage.getItem(storageKey) || localStorage.getItem(storageKey);
       if (agentStorage) {
         const parsed = JSON.parse(agentStorage);
         agentId = parsed?.state?.selectedAgent || undefined;

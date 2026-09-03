@@ -26,7 +26,7 @@ import {
 const LoginPage = lazyImportWithRetry("./pages/Login/index");
 import { authApi } from "./api/modules/auth";
 import { useUploadLimitStore } from "./stores/uploadLimitStore";
-import { getApiUrl, getApiToken, clearAuthToken } from "./api/config";
+import { getApiUrl, getApiToken, clearAuthToken, clearAuthUser } from "./api/config";
 import CloseWindowPrompt from "./tauri/CloseWindowPrompt";
 import { isTauri } from "@tauri-apps/api/core";
 import { isDesktopTauriRuntime } from "./utils/openExternalLink";
@@ -75,11 +75,13 @@ function AuthGuard({
           if (r.ok) {
             setStatus("ok");
           } else {
+            clearAuthUser();
             clearAuthToken();
             setStatus("auth-required");
           }
         } catch {
           if (!cancelled) {
+            clearAuthUser();
             clearAuthToken();
             setStatus("auth-required");
           }

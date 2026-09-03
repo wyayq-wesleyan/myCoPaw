@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ save: vi.fn() }));
 vi.mock("../request", () => ({ request: vi.fn() }));
 vi.mock("../config", () => ({
   getApiUrl: (path: string) => `/api${path}`,
+  getAuthUser: vi.fn(() => ""),
 }));
 vi.mock("../authHeaders", () => ({
   buildAuthHeaders: vi.fn(() => ({})),

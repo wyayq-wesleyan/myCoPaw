@@ -3,18 +3,15 @@ import { persist } from "zustand/middleware";
 import type { AgentSummary } from "../api/types/agents";
 import { agentsApi } from "../api/modules/agents";
 import { menuRegistry } from "../plugins/registry/store";
+import { agentStorageKey, lastUsedAgentKey } from "../utils/agentStorageKey";
 
 /**
- * Storage key used by both sessionStorage (per-tab state) and localStorage
- * (cross-tab shared state).
+ * Base storage key. The active key is suffixed with the logged-in username
+ * (see agentStorageKey()) so agent selection never leaks between accounts
+ * on the same browser. The last-used-agent base key lives in
+ * utils/agentStorageKey.ts.
  */
 const STORAGE_KEY = "qwenpaw-agent-storage";
-
-/**
- * localStorage key that remembers the last-used agent across browser sessions.
- * New tabs read this to set their initial selectedAgent.
- */
-const LAST_USED_AGENT_KEY = "qwenpaw-last-used-agent";
 
 /** Returns true for temporary local session ids like 1785114733908-0l0jmai. */
 const isLocalTimestamp = (id: string): boolean => /^\d+-[a-z0-9]+$/.test(id);
@@ -27,6 +24,12 @@ interface AgentStore {
   /** Per-agent last active chat ID for restoring on agent switch */
   lastChatIdByAgent: Record<string, string>;
   setSelectedAgent: (agentId: string) => void;
+  /**
+   * Re-read the selected agent from per-user storage. Called after login:
+   * the store is created on the login page before the username is known,
+   * so the initial value cannot come from the user's own namespace.
+   */
+  hydrateFromStorage: () => void;
   setAgents: (agents: AgentSummary[]) => void;
   refreshAgents: () => Promise<void>;
   addAgent: (agent: AgentSummary) => void;
@@ -46,9 +49,11 @@ interface AgentStore {
  *  3. "default"
  */
 function getInitialSelectedAgent(): string {
+  const storageKey = agentStorageKey();
+  const lastUsedKey = lastUsedAgentKey();
   // 1. sessionStorage: returning to a tab that already picked an agent
   try {
-    const sessionValue = sessionStorage.getItem(STORAGE_KEY);
+    const sessionValue = sessionStorage.getItem(storageKey);
     if (sessionValue) {
       const parsed = JSON.parse(sessionValue);
       const agent = parsed?.state?.selectedAgent;
@@ -59,14 +64,14 @@ function getInitialSelectedAgent(): string {
   }
   // 2. Dedicated localStorage key (written by setSelectedAgent)
   try {
-    const lastUsed = localStorage.getItem(LAST_USED_AGENT_KEY);
+    const lastUsed = localStorage.getItem(lastUsedKey);
     if (lastUsed) return lastUsed;
   } catch {
     /* ignore */
   }
   // 3. Shared localStorage state (written by persist middleware)
   try {
-    const shared = localStorage.getItem(STORAGE_KEY);
+    const shared = localStorage.getItem(storageKey);
     if (shared) {
       const parsed = JSON.parse(shared);
       const agent = parsed?.state?.selectedAgent;
@@ -90,10 +95,18 @@ export const useAgentStore = create<AgentStore>()(
         menuRegistry.refresh();
         // Persist to localStorage so new tabs inherit this choice
         try {
-          localStorage.setItem(LAST_USED_AGENT_KEY, agentId);
+          localStorage.setItem(lastUsedAgentKey(), agentId);
         } catch {
           /* ignore */
         }
+      },
+
+      hydrateFromStorage: () => {
+        const stored = getInitialSelectedAgent();
+        if (stored && stored !== get().selectedAgent) {
+          set({ selectedAgent: stored });
+        }
+        menuRegistry.refresh();
       },
 
       setAgents: (agents) => set({ agents }),
@@ -115,7 +128,7 @@ export const useAgentStore = create<AgentStore>()(
           if (!currentAgent && fallbackAgent) {
             set({ agents: nextAgents, selectedAgent: fallbackAgent.id });
             try {
-              localStorage.setItem(LAST_USED_AGENT_KEY, fallbackAgent.id);
+              localStorage.setItem(lastUsedAgentKey(), fallbackAgent.id);
             } catch {
               /* ignore */
             }
@@ -189,40 +202,46 @@ export const useAgentStore = create<AgentStore>()(
       name: STORAGE_KEY,
       storage: {
         getItem: (name) => {
+          // Keys are suffixed with the logged-in username so state never
+          // leaks between accounts on the same browser.
+          const key = agentStorageKey();
           try {
             // Read per-tab state from sessionStorage
-            const value = sessionStorage.getItem(name);
+            const value = sessionStorage.getItem(key);
             if (value) return JSON.parse(value);
           } catch {
             /* ignore */
           }
           // Fall back to localStorage for shared data (agents list, etc.)
           try {
-            const shared = localStorage.getItem(name);
+            const shared = localStorage.getItem(key);
             return shared ? JSON.parse(shared) : null;
           } catch (error) {
             console.error(`Failed to parse agent storage "${name}":`, error);
-            localStorage.removeItem(name);
+            localStorage.removeItem(key);
             return null;
           }
         },
         setItem: (name, value) => {
+          const key = agentStorageKey();
           try {
             // Per-tab state (includes selectedAgent)
-            sessionStorage.setItem(name, JSON.stringify(value));
+            sessionStorage.setItem(key, JSON.stringify(value));
           } catch {
             /* ignore */
           }
           try {
             // Shared state (agents list, lastChatIdByAgent)
-            localStorage.setItem(name, JSON.stringify(value));
+            localStorage.setItem(key, JSON.stringify(value));
           } catch (error) {
             console.error(`Failed to save agent storage "${name}":`, error);
           }
         },
         removeItem: (name) => {
-          sessionStorage.removeItem(name);
-          localStorage.removeItem(name);
+          void name;
+          const key = agentStorageKey();
+          sessionStorage.removeItem(key);
+          localStorage.removeItem(key);
         },
       },
     },

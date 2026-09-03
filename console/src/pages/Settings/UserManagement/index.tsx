@@ -28,7 +28,7 @@ import {
   type ModelPermission,
 } from "../../../api/modules/auth";
 import { request } from "../../../api/request";
-import { clearAuthToken } from "../../../api/config";
+import { clearAuthToken, clearAuthUser } from "../../../api/config";
 
 type ResourceOptions = {
   models: string[];
@@ -399,6 +399,7 @@ export default function UserManagementPage() {
         values.newPassword,
       );
       message.success("密码已修改，请使用新密码重新登录");
+      clearAuthUser();
       clearAuthToken();
       window.location.href = "/login";
     } catch (error) {

@@ -1,4 +1,4 @@
-import { getApiUrl, clearAuthToken } from "./config";
+import { getApiUrl, clearAuthToken, clearAuthUser } from "./config";
 import { buildAuthHeaders } from "./authHeaders";
 import { getLoginHref, isLoginPath } from "../utils/navigationMode";
 
@@ -122,6 +122,7 @@ export async function request<T = unknown>(
 
       if (!response.ok) {
         if (response.status === 401) {
+          clearAuthUser();
           clearAuthToken();
           if (!isLoginPath(window.location.pathname)) {
             window.location.href = getLoginHref(window.location);
