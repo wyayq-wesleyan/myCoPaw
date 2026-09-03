@@ -6,7 +6,7 @@ import type { ProviderInfo, ActiveModelsInfo } from "@/api/types/provider";
 import { getAgentDisplayName } from "@/utils/agentDisplayName";
 import { providerApi } from "@/api/modules/provider";
 import { authApi } from "@/api/modules/auth";
-import { providerIcon } from "../../Models/components/providerIcon";
+import { ProviderIcon } from "../../Models/components/ProviderIconComponent";
 import { AgentBackendFields } from "./AgentBackendFields";
 
 interface EligibleProvider {
@@ -203,11 +203,7 @@ export function AgentModal({
                 if (!p) return value;
                 return (
                   <Space size={6}>
-                    <img
-                      src={providerIcon(p.id)}
-                      alt=""
-                      style={{ width: 16, height: 16 }}
-                    />
+                    <ProviderIcon providerId={p.id} size={16} />
                     <span>{p.name}</span>
                   </Space>
                 );

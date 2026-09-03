@@ -45,6 +45,9 @@ export type PreviewType =
   | "markdown"
   | "html"
   | "csv"
+  | "docx"
+  | "xlsx"
+  | "json"
   | "none";
 
 export function getPreviewType(filePath: string): PreviewType {
@@ -54,6 +57,9 @@ export function getPreviewType(filePath: string): PreviewType {
   if (ext === "md" || ext === "mdx") return "markdown";
   if (ext === "html" || ext === "htm") return "html";
   if (ext === "csv") return "csv";
+  if (ext === "docx") return "docx";
+  if (ext === "xlsx" || ext === "xlsm") return "xlsx";
+  if (ext === "json") return "json";
   return "none";
 }
 
@@ -444,6 +450,245 @@ function CsvPreview({ content }: { content: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// DOCX preview – mammoth converts the blob to HTML (no external requests).
+// ---------------------------------------------------------------------------
+
+function DocxPreview({
+  filePath,
+  chatId,
+  binaryUrl,
+  root,
+}: {
+  filePath: string;
+  chatId?: string;
+  binaryUrl?: string;
+  root?: WorkspaceRoot;
+}) {
+  const { t } = useTranslation();
+  const { blobUrl, loading, failed } = useAuthBlobUrl(
+    filePath,
+    chatId,
+    binaryUrl,
+    root,
+  );
+  const [html, setHtml] = useState<string | null>(null);
+  const [convertFailed, setConvertFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHtml(null);
+    setConvertFailed(false);
+    if (!blobUrl) return;
+    (async () => {
+      try {
+        const mammoth = await import("mammoth");
+        const res = await fetch(blobUrl);
+        const arrayBuffer = await res.arrayBuffer();
+        const result = await mammoth.convertToHtml(
+          { arrayBuffer },
+          { convertImage: mammoth.images.imgElement(async (image) => {
+              const buf = await image.readAsBase64String();
+              return { src: `data:${image.contentType};base64,${buf}` };
+            }),
+          },
+        );
+        if (!cancelled) setHtml(result.value);
+      } catch {
+        if (!cancelled) setConvertFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [blobUrl]);
+
+  if (loading) {
+    return (
+      <PreviewStatus icon={<LoaderCircle size={18} />} spinning>
+        {t("common.loading")}
+      </PreviewStatus>
+    );
+  }
+  if (failed || convertFailed || !html) {
+    return (
+      <PreviewStatus icon={<FileWarning size={18} />}>
+        {t("files.loadFailed")}
+      </PreviewStatus>
+    );
+  }
+  return (
+    <iframe
+      className={styles.htmlFrame}
+      srcDoc={buildReadOnlyHtml(wrapDocxBody(html))}
+      sandbox=""
+      tabIndex={-1}
+      title={filePath.split("/").pop()}
+    />
+  );
+}
+
+/** Wrap mammoth HTML fragment in a minimal styled document for the iframe. */
+function wrapDocxBody(fragment: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+           margin: 24px; color: #24292f; line-height: 1.7; }
+    h1,h2,h3,h4,h5,h6 { margin: 0.8em 0 0.4em; line-height: 1.35; }
+    table { border-collapse: collapse; margin: 0.8em 0; max-width: 100%; }
+    th, td { border: 1px solid rgba(128,128,128,.4); padding: 6px 10px; font-size: 13px; }
+    img { max-width: 100%; height: auto; }
+    a { pointer-events: none; color: inherit; }
+  </style></head><body>${fragment}</body></html>`;
+}
+
+// ---------------------------------------------------------------------------
+// XLSX preview – SheetJS renders sheets as tables (no external requests).
+// ---------------------------------------------------------------------------
+
+const MAX_XLSX_ROWS = 500;
+const MAX_XLSX_COLS = 60;
+
+function XlsxPreview({
+  filePath,
+  chatId,
+  binaryUrl,
+  root,
+}: {
+  filePath: string;
+  chatId?: string;
+  binaryUrl?: string;
+  root?: WorkspaceRoot;
+}) {
+  const { t } = useTranslation();
+  const { blobUrl, loading, failed } = useAuthBlobUrl(
+    filePath,
+    chatId,
+    binaryUrl,
+    root,
+  );
+  const [sheets, setSheets] = useState<
+    { name: string; rows: string[][] }[] | null
+  >(null);
+  const [active, setActive] = useState(0);
+  const [convertFailed, setConvertFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSheets(null);
+    setConvertFailed(false);
+    if (!blobUrl) return;
+    (async () => {
+      try {
+        const XLSX = await import("xlsx");
+        const res = await fetch(blobUrl);
+        const arrayBuffer = await res.arrayBuffer();
+        const wb = XLSX.read(arrayBuffer, { type: "array" });
+        const parsed = wb.SheetNames.map((name) => {
+          const sheet = wb.Sheets[name];
+          const rows = XLSX.utils.sheet_to_json<string[]>(sheet, {
+            header: 1,
+            raw: false,
+            defval: "",
+          });
+          return {
+            name,
+            rows: rows.map((row) => row.map((cell) => String(cell ?? ""))),
+          };
+        });
+        if (!cancelled) setSheets(parsed);
+      } catch {
+        if (!cancelled) setConvertFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [blobUrl]);
+
+  if (loading) {
+    return (
+      <PreviewStatus icon={<LoaderCircle size={18} />} spinning>
+        {t("common.loading")}
+      </PreviewStatus>
+    );
+  }
+  if (failed || convertFailed || !sheets) {
+    return (
+      <PreviewStatus icon={<FileWarning size={18} />}>
+        {t("files.loadFailed")}
+      </PreviewStatus>
+    );
+  }
+  const sheet = sheets[active] ?? sheets[0];
+  const header = sheet.rows[0] ?? [];
+  const body = sheet.rows.slice(1, MAX_XLSX_ROWS + 1);
+  const truncated =
+    sheet.rows.length - 1 > MAX_XLSX_ROWS || header.length > MAX_XLSX_COLS;
+
+  return (
+    <div className={styles.csvWrap}>
+      {sheets.length > 1 && (
+        <div className={styles.csvNote}>
+          {sheets.map((s, i) => (
+            <button
+              key={s.name}
+              type="button"
+              onClick={() => setActive(i)}
+              style={{
+                marginRight: 8,
+                fontWeight: i === active ? 600 : 400,
+                cursor: "pointer",
+              }}
+            >
+              {s.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {truncated && (
+        <div className={styles.csvNote}>
+          {`Showing first ${MAX_XLSX_ROWS} rows / ${MAX_XLSX_COLS} columns.`}
+        </div>
+      )}
+      <div className={styles.csvScroll}>
+        <table className={styles.csvTable}>
+          <thead>
+            <tr>
+              {header.slice(0, MAX_XLSX_COLS).map((h, i) => (
+                <th key={`${i}:${h}`}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {body.map((row, ri) => (
+              <tr key={`${ri}:${row.join("\u0000")}`}>
+                {row.slice(0, MAX_XLSX_COLS).map((cell, ci) => (
+                  <td key={`${ci}:${cell}`}>{cell}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JSON preview – pretty-printed read-only text.
+// ---------------------------------------------------------------------------
+
+function JsonPreview({ content }: { content: string }) {
+  const pretty = useMemo(() => {
+    try {
+      return JSON.stringify(JSON.parse(content), null, 2);
+    } catch {
+      return content;
+    }
+  }, [content]);
+  return <pre className={styles.textPreview}>{pretty}</pre>;
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -503,5 +748,26 @@ export default function FilePreview({
     );
   }
   if (type === "csv") return <CsvPreview content={content} />;
+  if (type === "docx") {
+    return (
+      <DocxPreview
+        filePath={filePath}
+        chatId={chatId}
+        binaryUrl={binaryUrl}
+        root={root}
+      />
+    );
+  }
+  if (type === "xlsx") {
+    return (
+      <XlsxPreview
+        filePath={filePath}
+        chatId={chatId}
+        binaryUrl={binaryUrl}
+        root={root}
+      />
+    );
+  }
+  if (type === "json") return <JsonPreview content={content} />;
   return null;
 }

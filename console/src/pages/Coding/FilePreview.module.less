@@ -429,3 +429,54 @@
     }
   }
 }
+
+.textPreview {
+  margin: 0;
+  padding: 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow: auto;
+  height: 100%;
+}
+
+.docxWrap {
+  height: 100%;
+  overflow: auto;
+  padding: 24px 32px;
+
+  :global {
+    h1, h2, h3, h4, h5, h6 {
+      margin: 0.8em 0 0.4em;
+      line-height: 1.35;
+    }
+    p {
+      margin: 0.5em 0;
+      line-height: 1.7;
+    }
+    table {
+      border-collapse: collapse;
+      margin: 0.8em 0;
+      max-width: 100%;
+    }
+    th, td {
+      border: 1px solid rgba(128, 128, 128, 0.4);
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    img {
+      max-width: 100%;
+      height: auto;
+    }
+    ul, ol {
+      padding-left: 1.6em;
+      line-height: 1.7;
+    }
+    a {
+      pointer-events: none;
+      color: inherit;
+    }
+  }
+}

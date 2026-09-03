@@ -18,11 +18,12 @@
     "preview:test": "vite preview --mode test",
     "test": "vitest",
     "test:run": "node --max-old-space-size=4096 ./node_modules/vitest/vitest.mjs run",
-    "test:coverage": "node --max-old-space-size=4096 ./node_modules/vitest/vitest.mjs run --coverage"
+    "test:coverage": "node --max-old-space-size=4096 ./node_modules/vitest/vitest.mjs run --coverage",
+    "prebuild": "node scripts/patch-intranet.mjs"
   },
   "dependencies": {
-    "@agentscope-ai/chat": "^1.1.73-beta.1786415183789",
-    "@agentscope-ai/design": "^1.0.14",
+    "@agentscope-ai/chat": "1.1.73-beta.1786415183789",
+    "@agentscope-ai/design": "1.0.32",
     "@agentscope-ai/icons": "^1.0.67",
     "@ant-design/icons": "^5.0.1",
     "@ant-design/plots": "^2.6.8",
@@ -63,6 +64,7 @@
     "remark-gfm": "^4.0.1",
     "three": "0.185.1",
     "three-spritetext": "1.10.0",
+    "xlsx": "^0.18.5",
     "zustand": "^5.0.3"
   },
   "devDependencies": {

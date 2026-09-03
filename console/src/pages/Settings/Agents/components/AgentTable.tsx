@@ -32,7 +32,7 @@ import type { AgentSummary } from "../../../../api/types/agents";
 import { useTheme } from "../../../../contexts/ThemeContext";
 import { getAgentDisplayName } from "../../../../utils/agentDisplayName";
 import { SortableAgentRow, DragHandle } from "./SortableAgentRow";
-import { providerIcon } from "../../Models/components/providerIcon";
+import { ProviderIcon } from "../../Models/components/ProviderIconComponent";
 import { AgentStatusIndicator } from "@/components/AgentStatusIndicator";
 import styles from "../index.module.less";
 
@@ -229,11 +229,7 @@ export function AgentTable({
         }
         return (
           <Space size={6}>
-            <img
-              src={providerIcon(record.active_model.provider_id)}
-              alt=""
-              style={{ width: 16, height: 16 }}
-            />
+            <ProviderIcon providerId={record.active_model.provider_id} size={16} />
             <Tooltip title={record.active_model.model}>
               <span>{record.active_model.model}</span>
             </Tooltip>
