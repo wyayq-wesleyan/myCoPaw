@@ -118,6 +118,9 @@
 - 智能体工具集成：`list_data_tables`、`describe_data_table`、`query_data_table` 三个工具，支持自然语言查询数据。
 - 文件名保留中文字符，自动跳过表头行智能识别。
 - 每个数据表记录解析方式（`backend` 字段），便于排查问题。
+- **多租户隔离**：每个用户独立 PG 数据库（用户名映射持久化），数据互不可见。
+- **大文件支持**：单文件最大 10GB，上传和导入全程流式处理，不占满内存。
+- 导入任务支持处理时长展示和失败原因行展开查看。
 
 ### 2.6B 知识空间改进
 
@@ -126,9 +129,12 @@
 - 支持文档预览（PDF、DOCX 等格式）。
 - 知识空间菜单图标改为书本图标（`BookOpen`），与数据分析图标区分。
 - 文档解析优先使用 MinerU（PDF/DOCX 布局解析），MinerU 不可用时降级到 python-docx / pdfplumber。
-- 知识服务 Worker 容器已安装 MinerU + torch，支持高质量文档解析。
+- 知识服务 Worker 容器已安装 MinerU + torch，支持高质量文档解析；离线镜像可预置 MinerU 全量模型（`PRELOAD_MINERU_MODELS=1`）。
 - **文档级联删除清理**：删除文档时同时清理关联的实体、关系和 LightRAG 图谱数据，避免残留。
 - **处理时间追踪**：文档上传和处理时间记录 `started_at`，前端显示处理时长。
+- **上传就绪检查**：视觉/Embedding 模型未就绪时禁止上传并提示原因；同文件秒传去重（SHA-256）。
+- **服务端分页**：文档列表支持分页（20/50/100）、状态筛选和全列排序。
+- **账号严格隔离**：知识空间按账号私有，admin 也只能查看自己的空间和文档。
 - **错误信息展示**：失败文档的错误详情在详情面板中显示（红色高亮）。
 
 ### 2.6C 聊天界面优化
@@ -866,6 +872,95 @@ MinerU 解析 PDF → 返回纯文本
 - `console/src/pages/Knowledge/index.tsx`：StatsDrawer 时间展示、排序、错误详情
 - `console/src/pages/DataAnalysis/index.tsx`：状态列、筛选、排序、错误详情
 
+### 9.10 第二轮集中改造：离线部署加固、LLM 流稳定性、多租户隔离与部署工程化
+
+本节汇总知识服务、主应用后端、前端和部署脚本的大批量改动（71 文件，+2500 行）。
+
+#### 9.10.1 知识服务：离线可用与大文件能力
+
+**离线部署加固**（生产服务器无外网）：
+- Dockerfile 新增 `PRELOAD_MINERU_MODELS=1` 构建参数：构建时把 MinerU pipeline+VLM 全量模型打入镜像，运行时 `MINERU_MODEL_SOURCE=local` 本地加载。
+- 新增 `KNOWLEDGE_OFFLINE` 配置项；`auto` 模式下 MinerU 失败自动回退 pdfplumber/python-docx（旧版直接整单失败）；扫描版 PDF / 离线 .doc 给出明确中文报错。
+
+**模型配置拆分与上传就绪检查**：
+- Embedding 模型不再自动猜测，必须显式配置 `EMBEDDING_BASE_URL` + `EMBEDDING_MODEL`；`.env` 拆分为 `CHAT_*` / `EMBEDDING_*` 两组（`PROVIDER_*` 向后兼容）。
+- 新增 `supports_vision()`：用 1×1 PNG 实际发多模态请求探测模型能否看图，结果缓存 5 分钟。
+- 新增 `upload_ready` 健康检查：视觉模型或 embedding 未就绪时 `/v1/documents/upload` 直接 409 并说明缺什么，前端同步禁用上传按钮。
+
+**大文件与图片**：
+- `KNOWLEDGE_MAX_FILE_MB` 默认提到 10240（10GB）。
+- 轻量解析路径下提取 DOCX（zip word/media/）和 PDF（PyMuPDF）内嵌图片，转 base64 data URI 随解析结果返回。
+
+**去重与分页**：
+- 上传流式计算 SHA-256，`documents` 表新增 `content_hash`；同账号同空间相同文件直接返回已有文档（`duplicate: true`），不落盘不建任务。
+- 文档列表按 `(owner, space, filename, hash)` 去重只显示最新一条。
+- 新增 `list_user_documents_page`：按状态过滤 + 分页（`{items, total, page, page_size}`），`/v1/documents` 响应结构相应调整。
+
+**级联删除与账号隔离收紧**：
+- `processing` 状态文档拒绝删除（409），防止与 worker 竞争。
+- 删除后清理 space 内孤儿 relations/entities；LightRAG 图数据删除改为异步 best-effort。
+- 知识空间查询移除 `OR is_admin` 写法：**admin 也只能看自己的空间和文档**，严格按账号私有。
+- 修复 LightRAG 启动命令：`lightrag.server` → `lightrag.api.lightrag_server`（lightrag-hku 1.5.6 正确路径）。
+
+#### 9.10.2 主应用后端：LLM 流稳定性与工具可靠性
+
+**LLM 流式看门狗**（`retry_chat_model.py`，+502 行，解决流卡死请求永久挂起）：
+- 双阶段空闲超时：首内容超时（`LLM_STREAM_FIRST_CONTENT_TIMEOUT`）+ 稳态空闲超时（`LLM_STREAM_IDLE_TIMEOUT`），每个有内容 chunk 重置预算；空的控制帧不算进展（语义判断在新增的 `providers/stream_progress.py`）。
+- 刻意不用 `asyncio.wait_for`（AgentScope 会吞 CancelledError），改为独立 task + `asyncio.wait` 强制超时。
+- 有界清理：stream `aclose` 1 秒上限，不配合的转后台任务并按 `model_key` 登记；清理期间该模型新请求直接拒绝（`StreamCleanupPendingError`），避免新旧请求互相污染。
+- `generate_structured_output` 补齐重试+限流路径；自定义 OpenAI 兼容端点发现模型失败改为直接抛错（不再静默返回空列表）。
+- 内联媒体上限 2MB → 20MB，对齐聊天附件。
+
+**上下文压缩新增 think-fold 阶段**（scroll manager 第 8 步）：
+- 持续压力下，把"已被成功请求读取过"的 ThinkingBlock 在请求期省略（不动 history.db 原文），折叠后精确重算 token，无效则回滚；通过 formatter 的 `set_thinking_omit_ids` 实现。
+
+**工具调用输入类型修复**（新模块 `agents/utils/tool_call_coerce.py`）：
+- 模型对声明为 `type: string` 的参数输出裸数字/布尔（如 `"assetInfo": 1.000001`）导致 schema 校验失败、工具必败——按 schema 遍历强转，`_FloatLiteral` 保留原始字面文本（`1.000000` 不会变 `"1.0"`），合法值永不改动。
+- 顺带修复 `_execute_tool_call` 签名 bug（缺 `kept_rules` 参数，并发路径每次 TypeError）。
+
+**数据分析多租户隔离与大文件导入**：
+- 每用户独立 PG 数据库：`ensure_user_database()` 按用户名建库（非规范化用户名加 sha256 短哈希防碰撞），映射持久化在 `tb_hzxzh_user_database`；不再读外部数据源连接。
+- 导入流式化：CSV `chunksize=10000` 分块、XLSX read-only 按批产出；上传 8MB chunk 落盘、单文件上限 10GB，失败清理临时文件——多 GB 导入不再占满内存。
+- 元数据表统一 `tb_hzxzh_*` 常量命名；建表主键改 `BIGSERIAL`（去掉 pgcrypto 依赖）。
+
+**Agent 归属权限收紧**：
+- 新增 `user_agent_ids` / `require_owned_agent_id`：admin 也只能操作自己名下的 agent（访问他人 agent 返回 404），配套单元测试 `test_user_space_agent_ownership.py`。
+
+**其他**：
+- `generate_chart` 工具（bar/pie/line/scatter/area/horizontal_bar，matplotlib 出 PNG，配合 send_file 投递）。
+- 流式事件累积从字符串 `+=` 改为分段列表 join（`runtime/envelope.py`），消除 O(n²) 拼接。
+- 文件读取对"单行超长"给出 artifact 支撑的有界预览（旧逻辑会死循环或静默跳过）。
+- 技能 frontmatter 清洗 C0 控制字符；secret 解密失败日志按密文指纹去重；`QWENPAW_LOG_DIR` 可重定向日志目录。
+
+#### 9.10.3 前端
+
+- **工具调用卡死修复**（useToolCallControl）：新建会话 session 尚不存在时 `getInfo` 404 → 置 missing 标志停止重试/轮询/卸载注册；`request.ts` 给错误对象附加 `status` 字段。
+- **流式解析容错**（Chat responseParser）：缺 `msg_id` 的心跳帧/`turn_usage`/限流帧统一转 heartbeat，修复发送框转圈卡死。
+- **附件限制改为累计 20MB**：按已选附件总大小判断（原来只限单文件），6 语言文案同步。
+- **知识库页面**：服务端分页（20/50/100）；上传放宽到 10GB + `upload_ready` 就绪检查；修复多选文件重复上传 30 次的 bug（`uploadBatchGuard`）；新增解析分块预览（DOCX 失败降级、.doc 直接用分块预览）。
+- **数据分析页面**：全列排序、导入任务处理时长列、失败任务行展开看错误详情。
+- Agent 运行配置 API 改为按 agent 作用域路径（`/agents/{id}/workspace/running-config`）。
+
+#### 9.10.4 部署与打包体系
+
+**代码挂载（code-mount）模式成为主部署方式**——基座镜像不变，代码 volume 只读挂载，更新=替换目录+重启：
+
+| 脚本 | 用途 |
+|------|------|
+| `scripts/package_code_update.sh` | 主应用代码包（src + console/dist + 插件） |
+| `scripts/package_knowledge_code_update.sh` | 知识服务代码包 |
+| `scripts/package_assistant_update.sh` | 主应用组合包（代码 + deploy 层） |
+| `scripts/package_merge_updates.sh` | **合并包**：主应用 + 知识服务 + deploy 一次打包，单包双服务更新 |
+| `scripts/docker_build_knowledge.sh` | 构建 arm64 知识服务镜像（可选预装 MinerU 模型），全新部署用 |
+
+**日志直通 Docker stdout**：
+- supervisord 所有程序日志改为 `/dev/fd/1`、`/dev/fd/2`（不再写 /var/log），`docker logs` 直接可看；`QWENPAW_LOG_LEVEL`/`QWENPAW_LOG_DIR` 可配。
+- 老基座镜像没有新模板，`code-mount-entrypoint.sh` 启动时用正则运行时改写 supervisor 配置兜底。
+
+**Compose 拆分**：
+- `docker-compose.code-mount.arm64.yml`：ARM64 生产部署（不含 PG，数据库外部化或与 postgres compose 合并），api/worker 只读挂载宿主机 `./app`。
+- `knowledge-service/docker-compose.postgres.yml`：独立 PG17 容器（仅绑定 127.0.0.1），可与 code-mount compose 一条命令合并启动。
+
 ## 10. 当前状态摘要
 
 | 项目 | 状态 |
@@ -906,6 +1001,18 @@ MinerU 解析 PDF → 返回纯文本
 | 知识文档级联删除 | 已完成，清理实体/关系/LightRAG 图谱 |
 | 处理时间追踪 | 已完成，started_at + completed_at + processing_duration |
 | 知识/数据分析 UI 统一 | 已完成，排序/筛选/错误详情 |
+| 聊天内网化 | 已完成，文件图标/插画/供应商图标全部本地化，alicdn 引用清零 |
+| 文件预览增强 | 已完成，docx/xlsx/json 预览 + 解析分块预览 |
+| 智能体选择按用户隔离 | 已完成，存储键按用户名加后缀，登录后 hydrate |
+| LLM 流式看门狗 | 已完成，首内容+空闲双阶段超时，清理期模型级隔离 |
+| think-fold 上下文压缩 | 已完成，请求期折叠已读 ThinkingBlock |
+| 工具调用类型修复 | 已完成，schema 引导强转 + 并发签名 bug |
+| 数据分析多租户隔离 | 已完成，每用户独立 PG 库 + agent 归属校验 |
+| 大文件导入 | 已完成，10GB 流式上传 + 分块导入 |
+| 知识服务离线部署 | 已完成，MinerU 模型预置 + auto 降级 + upload_ready 检查 |
+| 知识文档去重 | 已完成，SHA-256 秒传 + 列表去重 |
+| 代码挂载部署体系 | 已完成，合并更新包脚本 + 日志直通 stdout |
+| 图表生成工具 | 已完成，generate_chart 六种图型，配合 send_file 投递 |
 
 ## 11. 维护原则
 
