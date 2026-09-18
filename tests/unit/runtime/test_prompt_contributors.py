@@ -7,6 +7,7 @@ import pytest
 
 from qwenpaw.runtime.prompt_contributors import (
     ConversationScopeContributor,
+    FileDeliveryContributor,
     WorkspacePromptFilesContributor,
     build_default_prompt_manager,
 )
@@ -119,3 +120,13 @@ def test_conversation_scope_distinguishes_internal_visual_history():
     assert fragment is not None
     assert "not images uploaded or shown by the user" in fragment
     assert "Previous assistant answers are not evidence" in fragment
+
+
+def test_file_delivery_requires_chat_attachment_for_user_files():
+    fragment = FileDeliveryContributor().contribute_sync(
+        SimpleNamespace(extras={"language": "zh"}),
+    )
+
+    assert fragment is not None
+    assert "send_file_to_user" in fragment
+    assert "服务器路径" in fragment

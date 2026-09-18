@@ -233,9 +233,11 @@ async def test_context_overflow_with_other_manager_does_not_retry(monkeypatch):
         ("<400> input length should be between 1 and 983616", False),
         ("Error code: 400 - image_url is unsupported", False),
         ("Error code: 500 - context length exceeded", False),
+        ("413 Request Entity Too Large", True),
+        ("413 request rejected", False),
     ],
 )
-def test_context_overflow_classifier_requires_400_and_specific_marker(
+def test_context_overflow_classifier_requires_size_status_and_specific_marker(
     message,
     expected,
 ):

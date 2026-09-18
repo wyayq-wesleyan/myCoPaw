@@ -19,6 +19,10 @@ from agentscope.message import (
 from PIL import Image
 
 from qwenpaw.agents.utils.message_processing import (
+    _CHAT_FILE_MAX_CHARS,
+    _CHAT_TOTAL_FILE_MAX_CHARS,
+    _CHAT_TOTAL_IMAGE_MAX_CHARS,
+    _truncate_chat_text,
     _process_audio_block,
     is_first_user_interaction,
     prepend_to_message_content,
@@ -305,3 +309,82 @@ class TestProcessLocalImageDataBlock:
         assert isinstance(second_msg.content[0].source, Base64Source)
         assert first_msg.content[0].source.data == first_source.data
         assert second_msg.content[0].source.data != first_source.data
+
+
+class TestChatAttachmentLimits:
+    """Chat-only attachment bounds prevent oversized model requests."""
+
+    def _config(self):
+        config = MagicMock()
+        config.agents.language = "zh"
+        return config
+
+    def test_truncate_preserves_edges(self):
+        value, truncated = _truncate_chat_text(
+            "A" * 100 + "Z" * 100,
+            50,
+            "...TRUNCATED...",
+        )
+        assert truncated is True
+        assert len(value) == 50
+        assert value.startswith("A")
+        assert value.endswith("Z")
+        assert "TRUNCATED" in value
+
+    @pytest.mark.asyncio
+    async def test_single_large_file_is_bounded(self, tmp_path):
+        path = tmp_path / "large.txt"
+        path.write_text("x" * (_CHAT_FILE_MAX_CHARS * 2))
+        msg = Msg(
+            name="user",
+            role="user",
+            content=[
+                {"type": "file", "source": {"type": "url", "url": "ignored"}}
+            ],
+        )
+        with (
+            patch("qwenpaw.agents.utils.message_processing.load_config", return_value=self._config()),
+            patch("qwenpaw.agents.utils.message_processing._process_single_block", new=AsyncMock(return_value=str(path))),
+            patch("qwenpaw.agents.utils.message_processing._parse_file_via_knowledge", new=AsyncMock(return_value={"content": "y" * (_CHAT_FILE_MAX_CHARS * 2)})),
+            patch("qwenpaw.agents.utils.message_processing.freeze_local_images_async", new=AsyncMock()),
+        ):
+            await process_file_and_media_blocks_in_message(msg)
+
+        inserted = msg.content[1]
+        assert isinstance(inserted, TextBlock)
+        assert "文件内容过长" in inserted.text
+        assert "y" * 100 in inserted.text
+
+    @pytest.mark.asyncio
+    async def test_total_text_and_image_limits_apply_across_files(self, tmp_path):
+        paths = [tmp_path / "one.txt", tmp_path / "two.txt"]
+        for path in paths:
+            path.write_text("placeholder")
+        msg = Msg(
+            name="user",
+            role="user",
+            content=[
+                {"type": "file", "source": {"type": "url", "url": "one"}},
+                {"type": "file", "source": {"type": "url", "url": "two"}},
+            ],
+        )
+        image = "data:image/png;base64," + ("a" * (_CHAT_TOTAL_IMAGE_MAX_CHARS // 2 + 1))
+        parse = AsyncMock(
+            side_effect=[
+                {"content": "a" * _CHAT_TOTAL_FILE_MAX_CHARS, "images": [image]},
+                {"content": "b" * _CHAT_TOTAL_FILE_MAX_CHARS, "images": [image]},
+            ]
+        )
+        with (
+            patch("qwenpaw.agents.utils.message_processing.load_config", return_value=self._config()),
+            patch("qwenpaw.agents.utils.message_processing._process_single_block", new=AsyncMock(side_effect=[str(paths[0]), str(paths[1])])),
+            patch("qwenpaw.agents.utils.message_processing._parse_file_via_knowledge", new=parse),
+            patch("qwenpaw.agents.utils.message_processing.freeze_local_images_async", new=AsyncMock()),
+        ):
+            await process_file_and_media_blocks_in_message(msg)
+
+        text_blocks = [block for block in msg.content if isinstance(block, TextBlock)]
+        assert len(text_blocks) == 2
+        assert sum(len(block.text) for block in text_blocks) < _CHAT_TOTAL_FILE_MAX_CHARS + 2_000
+        data_blocks = [block for block in msg.content if isinstance(block, DataBlock)]
+        assert len(data_blocks) == 1

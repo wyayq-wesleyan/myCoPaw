@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 import json
 
 import pytest
@@ -126,9 +127,18 @@ async def test_attach_or_start_streams_events_and_marks_completion():
     assert [a, b] == events
     assert sentinel is None
 
-    # After completion the tracker cleans up the run.
+    # Completion becomes idle but remains briefly replayable.
     assert await tracker.get_status("run-1") == "idle"
-    assert "run-1" not in tracker._runs
+    assert "run-1" in tracker._runs
+
+    replay = await tracker.attach("run-1")
+    assert replay is not None
+    assert await _drain(replay, 4) == [
+        "data: a\n\n",
+        "data: b\n\n",
+        'data: {"type": "replay_end"}\n\n',
+        None,
+    ]
 
 
 @pytest.mark.asyncio
@@ -307,6 +317,30 @@ async def test_stream_from_queue_yields_until_sentinel_and_detaches():
     assert collected == events
     # After streaming, run is cleaned up, so detach should be a no-op.
     assert await tracker.get_status("run-stream") == "idle"
+
+
+@pytest.mark.asyncio
+async def test_stream_from_queue_emits_heartbeat_while_run_is_silent():
+    tracker = TaskTracker()
+    release = asyncio.Event()
+
+    async def producer(_payload):
+        await release.wait()
+        yield "data: done\n\n"
+
+    queue, _ = await tracker.attach_or_start(
+        "run-heartbeat",
+        payload=None,
+        stream_fn=producer,
+    )
+
+    with patch("qwenpaw.app.task_tracker._SSE_HEARTBEAT_SECONDS", 0.01):
+        stream = tracker.stream_from_queue(queue, "run-heartbeat")
+        heartbeat = await anext(stream)
+        assert heartbeat == 'data: {"type": "heartbeat"}\n\n'
+        release.set()
+        assert await anext(stream) == "data: done\n\n"
+        await stream.aclose()
 
 
 # ---------------------------------------------------------------------------
