@@ -65,6 +65,7 @@ const ADMIN_ONLY_MENU_IDS = new Set([
   "core.models",
   "core.agent-config",
   "core.user-management",
+  "core.account-usage",
 ]);
 const ALWAYS_USER_MENU_IDS = new Set(["core.knowledge", "core.data-analysis"]);
 

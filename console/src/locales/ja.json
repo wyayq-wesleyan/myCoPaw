@@ -90,7 +90,8 @@
     "plugins": "プラグイン",
     "acp": "ACP",
     "backups": "バックアップ",
-    "pluginManager": "プラグインマネージャー"
+    "pluginManager": "プラグインマネージャー",
+    "accountUsage": "アカウント別使用量"
   },
   "os": {
     "console": "コンソール",
@@ -404,7 +405,9 @@
       "safety": "安全",
       "commit": "コミット"
     },
-    "summary": { "total": "件" },
+    "summary": {
+      "total": "件"
+    },
     "snapshotDialog": {
       "title": "スナップショットを作成",
       "session": "セッション",
@@ -3418,6 +3421,22 @@
         "name": "ミッション",
         "description": "構造化された複数ステップのタスクを継続的に実行します。"
       }
+    }
+  },
+  "accountUsage": {
+    "title": "アカウント別使用量",
+    "chartTitle": "アカウント別トークン使用量",
+    "account": "アカウント",
+    "allAccounts": "すべてのアカウント",
+    "unattributed": "未帰属（過去データ）",
+    "noData": "選択期間に使用量がありません",
+    "loadFailed": "アカウント使用量の取得に失敗しました",
+    "metric": {
+      "total": "合計トークン",
+      "prompt": "プロンプト",
+      "completion": "補完",
+      "calls": "呼び出し回数",
+      "promptCompletion": "プロンプト／補完"
     }
   }
 }

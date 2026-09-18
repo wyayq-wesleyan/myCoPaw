@@ -142,7 +142,8 @@
     "debug": "Debug",
     "plugins": "Plugins",
     "backups": "Backups",
-    "pluginManager": "Plugin Manager"
+    "pluginManager": "Plugin Manager",
+    "accountUsage": "Account Usage"
   },
   "os": {
     "console": "Console",
@@ -610,7 +611,9 @@
       "safety": "Safety",
       "commit": "Commit"
     },
-    "summary": { "total": "checkpoints" },
+    "summary": {
+      "total": "checkpoints"
+    },
     "snapshotDialog": {
       "title": "Create snapshot",
       "session": "Session",
@@ -3803,6 +3806,22 @@
         "name": "Mission",
         "description": "Run a structured, persistent multi-step task."
       }
+    }
+  },
+  "accountUsage": {
+    "title": "Account Usage",
+    "chartTitle": "Token usage by account",
+    "account": "Account",
+    "allAccounts": "All accounts",
+    "unattributed": "Unattributed (historical)",
+    "noData": "No usage in the selected range",
+    "loadFailed": "Failed to load account usage",
+    "metric": {
+      "total": "Total tokens",
+      "prompt": "Prompt tokens",
+      "completion": "Completion tokens",
+      "calls": "Calls",
+      "promptCompletion": "Prompt / completion"
     }
   }
 }

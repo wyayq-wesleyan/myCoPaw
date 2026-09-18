@@ -42,6 +42,9 @@ const OffloadPolicyPage = lazyImportWithRetry(
 );
 const SecurityPage = lazyImportWithRetry("../../pages/Settings/Security");
 const TokenUsagePage = lazyImportWithRetry("../../pages/Settings/TokenUsage");
+const AccountUsagePage = lazyImportWithRetry(
+  "../../pages/Settings/AccountUsage",
+);
 const AgentStatsPage = lazyImportWithRetry("../../pages/Settings/AgentStats");
 const VoiceTranscriptionPage = lazyImportWithRetry(
   "../../pages/Settings/VoiceTranscription",
@@ -113,6 +116,11 @@ export const BUILTIN_ROUTES: Route[] = [
   },
   { id: "core.security", path: "/security", component: SecurityPage },
   { id: "core.token-usage", path: "/token-usage", component: TokenUsagePage },
+  {
+    id: "core.account-usage",
+    path: "/account-usage",
+    component: AccountUsagePage,
+  },
   { id: "core.agent-stats", path: "/agent-stats", component: AgentStatsPage },
   {
     id: "core.voice-transcription",

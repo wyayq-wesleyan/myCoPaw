@@ -143,7 +143,8 @@
     "debug": "调试",
     "plugins": "插件",
     "backups": "备份",
-    "pluginManager": "插件管理"
+    "pluginManager": "插件管理",
+    "accountUsage": "账号用量统计"
   },
   "os": {
     "console": "控制台",
@@ -393,7 +394,9 @@
       "safety": "安全快照",
       "commit": "提交"
     },
-    "summary": { "total": "个检查点" },
+    "summary": {
+      "total": "个检查点"
+    },
     "snapshotDialog": {
       "title": "创建快照",
       "session": "会话",
@@ -3822,6 +3825,22 @@
         "name": "任务",
         "description": "运行结构化、可持续的多步骤任务。"
       }
+    }
+  },
+  "accountUsage": {
+    "title": "账号用量统计",
+    "chartTitle": "各账号词元消耗对比",
+    "account": "账号",
+    "allAccounts": "全部账号",
+    "unattributed": "未归属（历史数据）",
+    "noData": "所选范围内没有用量数据",
+    "loadFailed": "加载账号用量失败",
+    "metric": {
+      "total": "总词元",
+      "prompt": "提示词元",
+      "completion": "补全词元",
+      "calls": "调用次数",
+      "promptCompletion": "提示/补全词元"
     }
   }
 }

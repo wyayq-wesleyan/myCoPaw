@@ -56,3 +56,56 @@ describe("tokenUsageApi", () => {
     );
   });
 });
+
+describe("tokenUsageApi.getAccountUsage", () => {
+  beforeEach(() => {
+    vi.mocked(request).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("builds the accounts endpoint with the date range only", async () => {
+    const payload = { by_user: {} } as any;
+    vi.mocked(request).mockResolvedValue(payload);
+
+    const result = await tokenUsageApi.getAccountUsage({
+      start_date: "2026-09-01",
+      end_date: "2026-09-18",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "/token-usage/accounts?start_date=2026-09-01&end_date=2026-09-18",
+    );
+    expect(result).toEqual(payload);
+  });
+
+  it("passes an account allowlist as a comma-separated list", async () => {
+    vi.mocked(request).mockResolvedValue(undefined);
+
+    await tokenUsageApi.getAccountUsage({
+      start_date: "2026-09-01",
+      end_date: "2026-09-18",
+      accounts: ["alice", "bob"],
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "/token-usage/accounts?start_date=2026-09-01&end_date=2026-09-18&accounts=alice%2Cbob",
+    );
+  });
+
+  it("omits the accounts param when the list is empty", async () => {
+    vi.mocked(request).mockResolvedValue(undefined);
+
+    await tokenUsageApi.getAccountUsage({
+      start_date: "2026-09-01",
+      end_date: "2026-09-18",
+      accounts: [],
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "/token-usage/accounts?start_date=2026-09-01&end_date=2026-09-18",
+    );
+  });
+});

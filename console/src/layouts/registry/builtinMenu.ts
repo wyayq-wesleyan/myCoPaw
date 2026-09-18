@@ -288,6 +288,15 @@ export const BUILTIN_MENU: MenuItem[] = [
     order: 70,
   },
   {
+    id: "core.account-usage",
+    location: "primary.settings",
+    parentId: "core.settings-group",
+    label: navLabel("nav.accountUsage", "账号用量统计"),
+    icon: SparkUserGroupLine,
+    route: "core.account-usage",
+    order: 75,
+  },
+  {
     id: "core.backups",
     location: "primary.settings",
     parentId: "core.settings-group",

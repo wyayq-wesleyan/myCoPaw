@@ -92,7 +92,8 @@
     "debug": "Depuracao",
     "plugins": "Plugins",
     "backups": "Backups",
-    "pluginManager": "Gerenciador de Plugins"
+    "pluginManager": "Gerenciador de Plugins",
+    "accountUsage": "Uso por conta"
   },
   "os": {
     "console": "Console",
@@ -438,7 +439,9 @@
       "safety": "Segurança",
       "commit": "Commit"
     },
-    "summary": { "total": "pontos" },
+    "summary": {
+      "total": "pontos"
+    },
     "snapshotDialog": {
       "title": "Criar snapshot",
       "session": "Sessão",
@@ -3473,6 +3476,22 @@
         "name": "Missão",
         "description": "Execute uma tarefa estruturada e persistente em várias etapas."
       }
+    }
+  },
+  "accountUsage": {
+    "title": "Uso por conta",
+    "chartTitle": "Consumo de tokens por conta",
+    "account": "Conta",
+    "allAccounts": "Todas as contas",
+    "unattributed": "Não atribuído (histórico)",
+    "noData": "Sem uso no período selecionado",
+    "loadFailed": "Falha ao carregar o uso por conta",
+    "metric": {
+      "total": "Total de tokens",
+      "prompt": "Tokens de prompt",
+      "completion": "Tokens de resposta",
+      "calls": "Chamadas",
+      "promptCompletion": "Prompt / resposta"
     }
   }
 }

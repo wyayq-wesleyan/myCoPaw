@@ -92,7 +92,8 @@
     "debug": "Debug",
     "plugins": "Plugin",
     "pluginManager": "Manajer Plugin",
-    "backups": "Cadangan"
+    "backups": "Cadangan",
+    "accountUsage": "Penggunaan per Akun"
   },
   "os": {
     "console": "Konsol",
@@ -895,7 +896,9 @@
       "safety": "Pengaman",
       "commit": "Commit"
     },
-    "summary": { "total": "checkpoint" },
+    "summary": {
+      "total": "checkpoint"
+    },
     "snapshotDialog": {
       "title": "Buat snapshot",
       "session": "Sesi",
@@ -2810,6 +2813,22 @@
         "name": "Misi",
         "description": "Jalankan tugas multi-langkah yang terstruktur dan berkelanjutan."
       }
+    }
+  },
+  "accountUsage": {
+    "title": "Penggunaan per Akun",
+    "chartTitle": "Pemakaian token per akun",
+    "account": "Akun",
+    "allAccounts": "Semua akun",
+    "unattributed": "Tidak teratribusi (data lama)",
+    "noData": "Tidak ada penggunaan pada rentang terpilih",
+    "loadFailed": "Gagal memuat penggunaan per akun",
+    "metric": {
+      "total": "Total token",
+      "prompt": "Token prompt",
+      "completion": "Token kompletasi",
+      "calls": "Panggilan",
+      "promptCompletion": "Prompt / kompletasi"
     }
   }
 }
