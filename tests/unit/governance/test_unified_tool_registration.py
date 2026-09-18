@@ -215,6 +215,37 @@ class TestBuiltinDescriptorGovernance:
         )
         assert target == "Asia/Shanghai"
 
+    def test_chat_write_tools_are_registered_with_distinct_policies(self):
+        """The chat-driven ingest tools must not collide at registration.
+
+        Approvals are forced OFF in this deployment, so `default_policy` is
+        only a seed for a future approval surface — but a missing type or a
+        duplicated policy name still breaks startup, which is what this pins.
+        """
+        expected = {
+            "create_data_table": ("CreateDataTable", "file"),
+            "import_data_table": ("ImportDataTable", "file"),
+            "create_knowledge_space": ("CreateKnowledgeSpace", "network"),
+            "upload_knowledge_document": (
+                "UploadKnowledgeDocument",
+                "network",
+            ),
+        }
+        for python_name, (policy_name, tool_type) in expected.items():
+            assert (
+                DEFAULT_REGISTRY.python_to_policy_name(python_name)
+                == policy_name
+            ), python_name
+            assert DEFAULT_REGISTRY.get_type(policy_name) == tool_type
+
+    def test_chat_ingest_tools_point_at_the_file_parameter(self):
+        """Path rules match on the target, so file tools must declare it."""
+        assert DEFAULT_REGISTRY.get_target_param("ImportDataTable") == "file"
+        assert (
+            DEFAULT_REGISTRY.get_target_param("UploadKnowledgeDocument")
+            == "file"
+        )
+
 
 class TestPluginGovernanceIssue6114:
     """Plugin tools must pass Phase 0 after register_tool_governance."""

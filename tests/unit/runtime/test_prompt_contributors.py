@@ -7,7 +7,9 @@ import pytest
 
 from qwenpaw.runtime.prompt_contributors import (
     ConversationScopeContributor,
+    DataAnalysisContributor,
     FileDeliveryContributor,
+    KnowledgeRetrievalContributor,
     WorkspacePromptFilesContributor,
     build_default_prompt_manager,
 )
@@ -130,3 +132,41 @@ def test_file_delivery_requires_chat_attachment_for_user_files():
     assert fragment is not None
     assert "send_file_to_user" in fragment
     assert "服务器路径" in fragment
+
+
+def test_data_analysis_keeps_the_exact_phrase_gate_for_queries():
+    """Query tools stay behind「通过数据分析」; the write tools must not loosen it."""
+    fragment = DataAnalysisContributor().contribute_sync(SimpleNamespace(extras={}))
+
+    assert fragment is not None
+    assert "「通过数据分析」" in fragment
+    assert "DO NOT invoke these" in fragment
+
+
+def test_data_analysis_describes_the_write_tools_and_their_both_conditions():
+    fragment = DataAnalysisContributor().contribute_sync(SimpleNamespace(extras={}))
+
+    assert fragment is not None
+    assert "create_data_table" in fragment
+    assert "import_data_table" in fragment
+    # Both conditions, and the explicit "do not create a table" rule.
+    assert "BOTH hold" in fragment
+    assert "Do NOT create a table" in fragment
+    assert "要不要我把它建成数据表" in fragment
+
+
+def test_knowledge_contributor_covers_saving_an_uploaded_file(monkeypatch):
+    monkeypatch.setenv("QWENPAW_KNOWLEDGE_URL", "http://127.0.0.1:18100")
+
+    fragment = KnowledgeRetrievalContributor().contribute_sync(SimpleNamespace(extras={}))
+
+    assert fragment is not None
+    assert "create_knowledge_space" in fragment
+    assert "upload_knowledge_document" in fragment
+    assert "Only upload when the user asks you to keep the file" in fragment
+
+
+def test_knowledge_contributor_is_absent_without_a_service(monkeypatch):
+    monkeypatch.delenv("QWENPAW_KNOWLEDGE_URL", raising=False)
+
+    assert KnowledgeRetrievalContributor().contribute_sync(SimpleNamespace(extras={})) is None

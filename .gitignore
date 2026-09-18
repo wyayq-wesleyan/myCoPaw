@@ -112,6 +112,9 @@ AGENTS.md
 openspec
 CLAUDE.md
 *.tmp
+# Local agent-tool state (permissions, plan artifacts); machine-specific.
+.qwen
+.zcode
 
 # Build cache
 .cache/  # Includes conda_unpack_wheels/ for Windows packaging workaround
