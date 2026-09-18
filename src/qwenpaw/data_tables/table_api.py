@@ -32,6 +32,95 @@ class CreateTableRequest(BaseModel):
     columns: list[str] = Field(default_factory=list)
 
 
+def create_table_record(
+    username: str,
+    display_name: str = "",
+    description: str = "",
+    columns: list[str] | None = None,
+) -> dict[str, str]:
+    """Create one account's table definition and return its id and table name.
+
+    The console API requires the user to describe every column meaning; the
+    agent tool may pass none, because the real column names and types are
+    inferred from the imported file's header row when the physical table is
+    created on first import.
+    """
+    description = (description or "").strip()
+    display_name = (display_name or "").strip()
+
+    # Always auto-generate table_name
+    table_name = generate_table_name("", description or display_name)
+    db_name = ensure_user_database(username)
+
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT 1 FROM {SYSTEM_TABLE_REGISTRY} WHERE owner_username=%s AND table_name=%s",
+                (username, table_name),
+            )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="表名已存在")
+    finally:
+        _put_conn(conn)
+
+    cols = [
+        {
+            "comment": str(c).strip(),
+            "column_name": None,
+            "type": None,
+            "nullable": True,
+            "is_primary_key": False,
+        }
+        for c in (columns or [])
+        if str(c).strip()
+    ]
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {SYSTEM_TABLE_REGISTRY} (owner_username, db_name, table_name, display_name, description, columns)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """,
+                (username, db_name, table_name, display_name, description, json.dumps(cols)),
+            )
+            row_id = cur.fetchone()[0]
+            conn.commit()
+        return {"id": str(row_id), "table_name": table_name}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _put_conn(conn)
+
+
+def find_owned_table(username: str, table_ref: str) -> dict | None:
+    """Resolve a table by id or name, scoped strictly to one account.
+
+    Unlike the console endpoints this never falls back to an admin override:
+    a chat tool must only ever reach the caller's own tables.
+    """
+    table_ref = (table_ref or "").strip()
+    if not table_ref:
+        return None
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT * FROM {SYSTEM_TABLE_REGISTRY}
+                WHERE owner_username = %s AND (table_name = %s OR id::text = %s)
+            """,
+                (username, table_ref, table_ref),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        _put_conn(conn)
+
+
 @router.get("", response_model=dict)
 async def list_tables(
     request: Request,
@@ -112,42 +201,12 @@ async def create_table(payload: CreateTableRequest, request: Request):
         if not col.strip():
             raise HTTPException(status_code=400, detail=f"第 {i} 列的含义不能为空，请填写后再提交")
 
-    # Always auto-generate table_name
-    table_name = generate_table_name("", payload.description or payload.display_name)
-    db_name = ensure_user_database(username)
-
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT 1 FROM {SYSTEM_TABLE_REGISTRY} WHERE owner_username=%s AND table_name=%s",
-                (username, table_name),
-            )
-            if cur.fetchone():
-                raise HTTPException(status_code=409, detail="表名已存在")
-    finally:
-        _put_conn(conn)
-
-    cols = [{"comment": c.strip(), "column_name": None, "type": None, "nullable": True, "is_primary_key": False} for c in payload.columns if c.strip()]
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                INSERT INTO {SYSTEM_TABLE_REGISTRY} (owner_username, db_name, table_name, display_name, description, columns)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """,
-                (username, db_name, table_name, payload.display_name.strip(), payload.description.strip(), json.dumps(cols)),
-            )
-            row_id = cur.fetchone()[0]
-            conn.commit()
-        return {"id": str(row_id), "table_name": table_name}
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        _put_conn(conn)
+    return create_table_record(
+        username,
+        display_name=payload.display_name,
+        description=payload.description,
+        columns=payload.columns,
+    )
 
 
 @router.get("/{table_id}")

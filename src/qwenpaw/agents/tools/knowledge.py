@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import mimetypes
 import os
+import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11,6 +15,17 @@ from agentscope.tool import ToolChunk
 
 from ...app.agent_context import get_current_agent_id, get_current_user_id
 from ...runtime.tool_registry import tool_descriptor
+from .user_files import resolve_user_file, user_facing_name
+
+# Mirrors the suffix allowlist enforced by the knowledge service.
+_KNOWLEDGE_EXTS = frozenset(
+    {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".csv", ".txt", ".md", ".json"},
+)
+# Parsing runs in the knowledge worker; wait a bounded time so small files
+# report completion and large ones hand back a document id instead of blocking.
+_UPLOAD_POLL_TIMEOUT = 45.0
+_UPLOAD_POLL_INTERVAL = 2.0
+_UPLOAD_TERMINAL_STATES = frozenset({"completed", "failed"})
 
 
 def _service_url() -> str:
@@ -250,3 +265,203 @@ async def get_document_detail(document_id: str, page_start: int = 0, page_end: i
         state=ToolResultState.SUCCESS,
         content=[TextBlock(type="text", text=text)],
     )
+
+
+def _space_chunk(text: str) -> ToolChunk:
+    return ToolChunk(
+        is_last=True,
+        state=ToolResultState.SUCCESS,
+        content=[TextBlock(type="text", text=text)],
+    )
+
+
+async def _known_spaces(url: str, username: str) -> list[dict[str, Any]]:
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.get(f"{url}/v1/spaces", headers=_headers(username))
+        response.raise_for_status()
+        return response.json() or []
+
+
+def _find_space(spaces: list[dict[str, Any]], space_name: str) -> dict[str, Any] | None:
+    wanted = space_name.strip().lower()
+    for space in spaces:
+        if str(space.get("name") or "").strip().lower() == wanted:
+            return space
+    for space in spaces:  # fall back to a substring match
+        if wanted and wanted in str(space.get("name") or "").strip().lower():
+            return space
+    return None
+
+
+@tool_descriptor(
+    name="create_knowledge_space",
+    async_execution=True,
+    tool_type="network",
+    policy_name="CreateKnowledgeSpace",
+    default_policy="ask",
+    policy_reason="Creates a knowledge space owned by the current account",
+    ui_description="为当前用户新建知识空间",
+    ui_icon="📁",
+)
+async def create_knowledge_space(name: str) -> ToolChunk:
+    """Create a knowledge space for the current account.
+
+    Args:
+        name: 知识空间名称，用能说明内容的短名称，例如"采购合同模板"。
+    """
+    url = _service_url()
+    username = _resolve_account_username()
+    name = (name or "").strip()
+    if not url:
+        return _space_chunk("知识服务尚未配置，无法新建知识空间。")
+    if not name:
+        return _space_chunk("请提供知识空间名称。")
+
+    try:
+        existing = _find_space(await _known_spaces(url, username), name)
+        if existing:
+            return _space_chunk(
+                f"已存在知识空间「{existing.get('name')}」（ID: {existing.get('id')}），"
+                f"直接使用即可，未重复创建。"
+            )
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                f"{url}/v1/spaces",
+                headers=_headers(username),
+                json={"name": name},
+            )
+            response.raise_for_status()
+            space = response.json()
+        return _space_chunk(
+            f"已创建知识空间「{space.get('name')}」（ID: {space.get('id')}）。"
+            f"接下来可用 upload_knowledge_document 把文件上传进去。"
+        )
+    except httpx.HTTPStatusError as exc:
+        return _space_chunk(f"新建知识空间失败：服务返回 {exc.response.status_code}。")
+    except httpx.HTTPError as exc:
+        return _space_chunk(f"知识服务暂时不可用：{exc}")
+    except Exception as exc:  # Keep tool failures readable to the model.
+        return _space_chunk(f"新建知识空间发生错误：{exc}")
+
+
+def _document_state(payload: dict[str, Any]) -> str:
+    status = payload.get("status") or "queued"
+    stage = payload.get("processing_stage")
+    if status == "failed":
+        return f"处理失败：{payload.get('error') or '解析失败'}"
+    if status == "completed":
+        return "已入库"
+    return f"处理中（{stage or status}）"
+
+
+async def _await_document(url: str, username: str, document_id: str, filename: str) -> str:
+    deadline = time.monotonic() + _UPLOAD_POLL_TIMEOUT
+    payload: dict[str, Any] = {}
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.get(
+                    f"{url}/v1/documents/{document_id}",
+                    headers=_headers(username),
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPError:
+            payload = {}
+        if payload.get("status") in _UPLOAD_TERMINAL_STATES:
+            break
+        if time.monotonic() >= deadline:
+            state = payload.get("status") or "queued"
+            return (
+                f"已上传 {filename}（文档ID: {document_id}），当前状态：{state}。"
+                "解析需要时间，稍后用 query_knowledge 检索即可。"
+            )
+        await asyncio.sleep(_UPLOAD_POLL_INTERVAL)
+
+    state = _document_state(payload)
+    if state.startswith("处理失败"):
+        return f"上传了 {filename}（文档ID: {document_id}），但{state}。"
+    return f"已上传并入库：{filename}（文档ID: {document_id}）。现在可用 query_knowledge 检索它。"
+
+
+@tool_descriptor(
+    name="upload_knowledge_document",
+    async_execution=True,
+    tool_type="network",
+    target_param="file",
+    policy_name="UploadKnowledgeDocument",
+    default_policy="ask",
+    policy_reason="Uploads a user file into the current account's knowledge space",
+    ui_description="把用户上传的文件上传到知识空间",
+    ui_icon="📤",
+)
+async def upload_knowledge_document(file: str, space_name: str = "") -> ToolChunk:
+    """Upload a user's file into a knowledge space so it can be searched later.
+
+    Args:
+        file: 要上传的文件名或路径，例如"采购合同.pdf"。聊天附件直接传文件名即可。
+        space_name: 目标知识空间名称；留空则上传到当前用户的默认知识空间。
+    """
+    url = _service_url()
+    username = _resolve_account_username()
+    if not url:
+        return _space_chunk("知识服务尚未配置，无法上传到知识空间。")
+
+    path, error = resolve_user_file(file, _KNOWLEDGE_EXTS)
+    if path is None:
+        return _space_chunk(error)
+
+    space_id = ""
+    if space_name.strip():
+        try:
+            space = _find_space(await _known_spaces(url, username), space_name)
+        except httpx.HTTPError as exc:
+            return _space_chunk(f"知识服务暂时不可用：{exc}")
+        if space is None:
+            return _space_chunk(
+                f"没有找到名为「{space_name}」的知识空间。"
+                f"可以先用 create_knowledge_space 新建，或留空 space_name 上传到默认空间。"
+            )
+        space_id = str(space.get("id") or "")
+
+    display_name = user_facing_name(path)
+    content_type = mimetypes.guess_type(display_name)[0] or "application/octet-stream"
+    try:
+        with path.open("rb") as handle:
+            files = {"file": (display_name, handle, content_type)}
+            data = {"space_id": space_id} if space_id else {}
+            async with httpx.AsyncClient(timeout=3600) as client:
+                response = await client.post(
+                    f"{url}/v1/documents/upload",
+                    headers=_headers(username),
+                    files=files,
+                    data=data,
+                )
+                if response.status_code == 409:
+                    # Embedding/vision models are not ready; the service says why.
+                    try:
+                        detail = str(response.json().get("detail") or "")
+                    except Exception:
+                        detail = ""
+                    return _space_chunk(
+                        f"暂时无法上传：{detail or '知识服务尚未就绪。'}",
+                    )
+                response.raise_for_status()
+                created = response.json()
+    except httpx.HTTPStatusError as exc:
+        return _space_chunk(f"上传失败：服务返回 {exc.response.status_code}。")
+    except httpx.HTTPError as exc:
+        return _space_chunk(f"知识服务暂时不可用：{exc}")
+    except Exception as exc:
+        return _space_chunk(f"上传发生错误：{exc}")
+
+    document_id = str(created.get("id") or "")
+    filename = str(created.get("filename") or display_name)
+    if created.get("duplicate"):
+        return _space_chunk(
+            f"知识空间里已有相同内容的文件 {filename}（文档ID: {document_id}），未重复上传。"
+        )
+    if not document_id:
+        return _space_chunk(f"上传返回异常，未取得文档ID：{created}")
+
+    return _space_chunk(await _await_document(url, username, document_id, filename))

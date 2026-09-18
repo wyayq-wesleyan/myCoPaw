@@ -11,16 +11,20 @@ from fastapi.responses import PlainTextResponse
 
 from ..app.user_space import get_request_username, is_admin_user
 from .importer import start_import_task
-from .store import SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
+from .store import (
+    ALLOWED_EXTENSIONS,
+    MAX_IMPORT_FILE_BYTES,
+    MAX_XLS_FILE_BYTES,
+    SYSTEM_TABLE_IMPORT_JOB,
+    SYSTEM_TABLE_REGISTRY,
+    UPLOAD_DIR,
+    _get_conn,
+    _put_conn,
+    init_data_tables_schema,
+)
 
 router = APIRouter(tags=["data-import"], dependencies=[Depends(init_data_tables_schema)])
 
-UPLOAD_DIR = "/app/working/data_uploads"
-ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
-MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024 * 1024
-# xlrd/pandas cannot stream legacy XLS files. Keep their limit materially
-# below the general limit so one upload cannot require several GB of RAM.
-MAX_XLS_FILE_BYTES = 512 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 
 

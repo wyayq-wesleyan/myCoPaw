@@ -26,6 +26,15 @@ SYSTEM_TABLE_REGISTRY = "tb_hzxzh_data_table_registry"
 SYSTEM_TABLE_IMPORT_JOB = "tb_hzxzh_data_import_job"
 SYSTEM_TABLE_USER_DATABASE = "tb_hzxzh_user_database"
 
+# Import staging and limits. They live here rather than in ``import_api`` so the
+# agent tools can read them without importing the pandas-backed importer.
+UPLOAD_DIR = "/app/working/data_uploads"
+ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
+MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024 * 1024
+# xlrd/pandas cannot stream legacy XLS files. Keep their limit materially
+# below the general limit so one upload cannot require several GB of RAM.
+MAX_XLS_FILE_BYTES = 512 * 1024 * 1024
+
 
 def _get_pool() -> ThreadedConnectionPool:
     global _pool

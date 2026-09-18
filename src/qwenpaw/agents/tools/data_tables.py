@@ -1,11 +1,26 @@
 """Agent tools for data table queries against HighGo."""
 
+import asyncio
 import re
 import logging
+import shutil
+import time
+import uuid
+
+from pathlib import Path
 
 from ...runtime.tool_registry import tool_descriptor
+from ...utils.io_utils import run_sync_io
+from .user_files import resolve_user_file, user_facing_name
 
 logger = logging.getLogger(__name__)
+
+# Import runs as a background task; wait a bounded time so small files report
+# their row count immediately and large ones hand back a job id instead of
+# blocking the conversation.
+_IMPORT_POLL_TIMEOUT = 45.0
+_IMPORT_POLL_INTERVAL = 1.5
+_IMPORT_TERMINAL_STATES = frozenset({"completed", "partial", "failed"})
 
 _DANGEROUS_SQL_RE = re.compile(
     r"^\s*(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE)\b",
@@ -268,3 +283,220 @@ def query_data_table(sql: str) -> str:
         return f"查询执行失败: {str(e)}"
     finally:
         put_target_connection(hg_conn, db_name)
+
+
+def _create_table_sync(username: str, description: str, display_name: str) -> dict:
+    from qwenpaw.data_tables.table_api import create_table_record
+
+    return create_table_record(
+        username,
+        display_name=display_name,
+        description=description,
+    )
+
+
+def _find_table_sync(username: str, table_ref: str) -> dict | None:
+    from qwenpaw.data_tables.table_api import find_owned_table
+
+    return find_owned_table(username, table_ref)
+
+
+def _job_status_sync(job_id: str) -> dict | None:
+    import psycopg2.extras
+
+    from qwenpaw.data_tables.store import (
+        SYSTEM_TABLE_IMPORT_JOB,
+        _get_conn,
+        _put_conn,
+    )
+
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT status, total_rows, success_rows, failed_rows, errors"
+                f" FROM {SYSTEM_TABLE_IMPORT_JOB} WHERE id::text = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        _put_conn(conn)
+
+
+def _stage_import_file(source: Path) -> Path:
+    """Copy an upload into the import staging area.
+
+    The importer deletes its source file once the import succeeds, so the chat
+    attachment has to be copied rather than handed over directly.
+    """
+    from qwenpaw.data_tables.store import UPLOAD_DIR
+
+    target_dir = Path(UPLOAD_DIR) / uuid.uuid4().hex
+    target_dir.mkdir(parents=True, exist_ok=True)
+    staged = target_dir / source.name
+    shutil.copy2(source, staged)
+    return staged
+
+
+def _describe_import_state(status: dict) -> str:
+    success = status.get("success_rows") or 0
+    failed = status.get("failed_rows") or 0
+    total = status.get("total_rows") or 0
+    if failed:
+        detail = _first_import_error(status.get("errors"))
+        lines = [f"导入完成但部分行失败：成功 {success} 行，失败 {failed} 行。"]
+        if detail:
+            lines.append(f"失败样例：{detail}")
+        return "\n".join(lines)
+    rows = f"成功 {success} 行"
+    if total:
+        rows += f"（共 {total} 行）"
+    return f"导入完成：{rows}。"
+
+
+def _first_import_error(errors: object) -> str:
+    if isinstance(errors, list) and errors:
+        first = errors[0]
+        if isinstance(first, dict):
+            return str(first.get("error") or first)[:300]
+        return str(first)[:300]
+    return ""
+
+
+async def _await_import(job_id: str, table_name: str, filename: str) -> str:
+    deadline = time.monotonic() + _IMPORT_POLL_TIMEOUT
+    status: dict = {}
+    while True:
+        status = await run_sync_io(_job_status_sync, job_id) or {}
+        if status.get("status") in _IMPORT_TERMINAL_STATES:
+            break
+        if time.monotonic() >= deadline:
+            return (
+                f"已开始导入：{filename} → {table_name}（任务 {job_id}）。\n"
+                f"当前状态：{status.get('status') or 'pending'}。"
+                "文件较大时导入需要时间，稍后用 describe_data_table 查看行数即可。"
+            )
+        await asyncio.sleep(_IMPORT_POLL_INTERVAL)
+
+    if status.get("status") == "failed":
+        detail = _first_import_error(status.get("errors"))
+        return (
+            f"导入失败：{filename} → {table_name}。"
+            + (f"原因：{detail}" if detail else "请检查文件内容是否符合表格格式。")
+        )
+    return f"{filename} → {table_name}，" + _describe_import_state(status)
+
+
+@tool_descriptor(
+    name="create_data_table",
+    description=(
+        "在当前用户的数据分析中新建一张数据表。仅在用户上传了表格文件且明确要求建表、"
+        "入库或以后能直接查询时使用。表名由描述自动生成，列名和类型会在导入文件时按文件"
+        "表头自动推断，所以这里不需要提供列定义。创建后用 import_data_table 导入数据。"
+    ),
+    async_execution=True,
+    tool_type="file",
+    policy_name="CreateDataTable",
+    default_policy="ask",
+    policy_reason="Creates a persistent data table in the current account",
+    ui_description="在当前用户的数据分析中新建数据表",
+    ui_icon="🗂️",
+)
+async def create_data_table(description: str, display_name: str = "") -> str:
+    """Create a data table definition for the current account.
+
+    Args:
+        description: 这张表的中文描述，用于生成表名并展示在数据分析页面，
+            例如"2024 年各区域销售明细"。写清楚数据来源和含义，便于以后查询。
+        display_name: 可选的展示名称，留空则与描述一致。
+    """
+    description = (description or "").strip()
+    display_name = (display_name or "").strip()
+    if not description:
+        return "请先说明这张表是做什么用的（表描述），表名会根据描述自动生成。"
+
+    username = _resolve_username()
+    try:
+        record = await run_sync_io(_create_table_sync, username, description, display_name)
+    except Exception as exc:  # Keep failures readable to the model.
+        detail = getattr(exc, "detail", None) or str(exc)
+        return f"新建数据表失败：{detail}"
+
+    return (
+        f"已创建数据表 {record['table_name']}：{description}\n"
+        f"接下来调用 import_data_table，table_name 传 \"{record['table_name']}\"，"
+        f"file 传用户的表格文件名，即可把数据导入这张表。"
+    )
+
+
+@tool_descriptor(
+    name="import_data_table",
+    description=(
+        "把用户上传的表格文件（CSV/XLSX/XLS）导入当前用户已有的数据表中。"
+        "文件必须属于当前用户的工作区，例如用户在聊天框里上传的附件。"
+        "需要先有数据表（用 create_data_table 新建或 list_data_tables 查看已有的表）。"
+    ),
+    async_execution=True,
+    tool_type="file",
+    target_param="file",
+    policy_name="ImportDataTable",
+    default_policy="ask",
+    policy_reason="Imports a user file into the current account's data table",
+    ui_description="把用户上传的表格文件导入数据表",
+    ui_icon="📥",
+)
+async def import_data_table(table_name: str, file: str) -> str:
+    """Import one tabular file into a table owned by the current account.
+
+    Args:
+        table_name: 目标数据表名称（list_data_tables 或 create_data_table 返回的表名）。
+        file: 要导入的文件名或路径，例如"销售数据.xlsx"。聊天附件直接传文件名即可。
+    """
+    username = _resolve_username()
+    table = await run_sync_io(_find_table_sync, username, table_name)
+    if not table:
+        return (
+            f"没有找到属于你的数据表 {table_name}。"
+            "请先用 list_data_tables 查看已有表，或先用 create_data_table 新建一张。"
+        )
+
+    # Kept lazy: the tools package must import without the deploy-only DB stack.
+    from qwenpaw.data_tables.store import (
+        ALLOWED_EXTENSIONS,
+        MAX_IMPORT_FILE_BYTES,
+        MAX_XLS_FILE_BYTES,
+    )
+
+    path, error = resolve_user_file(file, frozenset(ALLOWED_EXTENSIONS))
+    if path is None:
+        return error
+
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"读取文件失败：{exc}"
+    suffix = path.suffix.lower()
+    if suffix == ".xls" and size > MAX_XLS_FILE_BYTES:
+        return "传统 XLS 文件不能超过 512MB，请先转换为 CSV 或 XLSX 再导入。"
+    if size > MAX_IMPORT_FILE_BYTES:
+        return "单个文件不能超过 10GB。"
+
+    try:
+        staged = await run_sync_io(_stage_import_file, path)
+    except Exception as exc:
+        return f"准备导入文件失败：{exc}"
+
+    display_name = user_facing_name(path)
+    try:
+        from qwenpaw.data_tables.importer import start_import_task
+
+        job_id = await start_import_task(str(table["id"]), str(staged), display_name)
+    except Exception as exc:
+        return f"启动导入任务失败：{exc}"
+
+    return await _await_import(
+        job_id,
+        table.get("table_name") or table_name,
+        display_name,
+    )
