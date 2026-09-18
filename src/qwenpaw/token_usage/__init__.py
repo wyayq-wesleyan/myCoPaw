@@ -3,6 +3,8 @@
 
 from .buffer import _UsageEvent
 from .manager import (
+    AccountUsage,
+    AccountUsageSummary,
     TokenUsageByModel,
     TokenUsageRecord,
     TokenUsageStats,
@@ -17,6 +19,8 @@ from .turn_usage import (
 )
 
 __all__ = [
+    "AccountUsage",
+    "AccountUsageSummary",
     "TokenUsageByModel",
     "TokenUsageRecord",
     "TokenUsageStats",

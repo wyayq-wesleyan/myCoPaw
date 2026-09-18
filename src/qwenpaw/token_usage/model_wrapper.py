@@ -12,6 +12,36 @@ from .buffer import _UsageEvent
 from .manager import get_token_usage_manager
 
 
+def _resolve_usage_user_id() -> str:
+    """Resolve the account a usage event belongs to.
+
+    ContextVars are populated per request, so interactive turns resolve
+    directly. Scheduled and background runs have no request context, so fall
+    back to the owning account of the agent that produced the call — otherwise
+    every cron job's consumption would be reported as unattributed.
+    """
+    try:
+        from ..app.agent_context import get_current_user_id
+
+        username = get_current_user_id()
+        if username and username != "default":
+            return str(username)
+    except Exception:
+        pass
+
+    try:
+        from ..app.agent_context import get_current_agent_id
+        from ..config import load_config
+
+        profile = load_config().agents.profiles.get(get_current_agent_id())
+        owner = getattr(profile, "owner_username", None) if profile else None
+        if isinstance(owner, str) and owner.strip():
+            return owner.strip()
+    except Exception:
+        pass
+    return ""
+
+
 class TokenRecordingModelWrapper(ChatModelBase):
     """Wraps a ChatModelBase to record token usage on each call."""
 
@@ -58,6 +88,7 @@ class TokenRecordingModelWrapper(ChatModelBase):
             now_iso=datetime.now(tz=timezone.utc).isoformat(
                 timespec="seconds",
             ),
+            user_id=_resolve_usage_user_id(),
         )
         # Fire-and-forget: synchronous put_nowait, ~100 ns, no await needed.
         get_token_usage_manager().enqueue(event)

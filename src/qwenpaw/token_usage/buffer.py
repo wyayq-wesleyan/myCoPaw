@@ -24,6 +24,7 @@ class _UsageEvent(NamedTuple):
     completion_tokens: int
     date_str: str  # YYYY-MM-DD, pre-computed by producer
     now_iso: str  # ISO-8601 timestamp, pre-computed by producer
+    user_id: str = ""  # owning account; "" when it cannot be resolved
 
 
 class TokenUsageBuffer:
@@ -190,7 +191,18 @@ class TokenUsageBuffer:
 def _apply_event(cache: dict, ev: _UsageEvent) -> None:
     """Accumulate a single usage event into *cache* in-place.
 
-    Cache format: { "2026-04-23": { "provider:model": {...} } }
+    Cache format::
+
+        { "2026-04-23": { "provider:model": {
+              "provider_id": ..., "model_name": ...,
+              "prompt_tokens": ..., "completion_tokens": ..., "call_count": ...,
+              "by_user": {"alice": {"prompt_tokens": ...}},
+        } } }
+
+    The top-level counters are the global totals every reader already uses.
+    The per-account breakdown lives in ``by_user`` beside them, so adding the
+    account dimension cannot change existing global numbers or produce
+    duplicate rows for a shared model.
     """
     composite_key = f"{ev.provider_id}:{ev.model_name}"
 
@@ -213,6 +225,19 @@ def _apply_event(cache: dict, ev: _UsageEvent) -> None:
     entry["prompt_tokens"] += ev.prompt_tokens
     entry["completion_tokens"] += ev.completion_tokens
     entry["call_count"] += 1
+
+    if not ev.user_id:
+        # Pre-upgrade events carry no account; they stay in the global totals
+        # only, and the per-account view reports them as unattributed.
+        return
+    by_user = entry.setdefault("by_user", {})
+    user_entry = by_user.setdefault(
+        ev.user_id,
+        {"prompt_tokens": 0, "completion_tokens": 0, "call_count": 0},
+    )
+    user_entry["prompt_tokens"] += ev.prompt_tokens
+    user_entry["completion_tokens"] += ev.completion_tokens
+    user_entry["call_count"] += 1
 
 
 __all__ = ["TokenUsageBuffer", "_UsageEvent"]

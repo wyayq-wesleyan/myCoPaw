@@ -62,6 +62,55 @@ class TokenUsageSummary(BaseModel):
     )
 
 
+class AccountUsage(TokenUsageStats):
+    """One account's usage inside the administrator view."""
+
+    user_id: str = Field(..., description="Account username")
+    by_date: dict[str, TokenUsageStats] = Field(
+        default_factory=dict,
+        description="Per date (YYYY-MM-DD) breakdown for this account",
+    )
+    by_model: dict[str, TokenUsageStats] = Field(
+        default_factory=dict,
+        description="Per model breakdown for this account",
+    )
+
+
+class AccountUsageSummary(BaseModel):
+    """Per-account token usage summary for administrators."""
+
+    total_prompt_tokens: int = Field(0, ge=0)
+    total_completion_tokens: int = Field(0, ge=0)
+    total_calls: int = Field(0, ge=0)
+    by_user: dict[str, AccountUsage] = Field(
+        default_factory=dict,
+        description="Per account aggregation",
+    )
+    by_date: dict[str, TokenUsageStats] = Field(
+        default_factory=dict,
+        description="Per date totals across every account",
+    )
+    unattributed: TokenUsageStats = Field(
+        default_factory=TokenUsageStats,
+        description=(
+            "Usage recorded before the account dimension existed, or that "
+            "could not be attributed to an account"
+        ),
+    )
+
+
+def _sum_user_entries(by_user: dict) -> dict:
+    """Total the per-account breakdown of one provider:model entry."""
+    totals = {"prompt_tokens": 0, "completion_tokens": 0, "call_count": 0}
+    for user_entry in by_user.values():
+        if not isinstance(user_entry, dict):
+            continue
+        totals["prompt_tokens"] += user_entry.get("prompt_tokens", 0) or 0
+        totals["completion_tokens"] += user_entry.get("completion_tokens", 0) or 0
+        totals["call_count"] += user_entry.get("call_count", 0) or 0
+    return totals
+
+
 class TokenUsageManager:
     """Orchestrator for token usage recording and querying."""
 
@@ -305,6 +354,152 @@ class TokenUsageManager:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
+
+    async def get_account_usage(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        users: Optional[list[str]] = None,
+    ) -> "AccountUsageSummary":
+        """Aggregate token usage per account for the administrator view.
+
+        Reads the ``by_user`` breakdown stored beside each global counter.
+        Events recorded before the account dimension existed carry no
+        ``by_user``; they are reported separately as ``unattributed`` instead
+        of being silently dropped, so the totals still reconcile.
+
+        Args:
+            start_date: Start of date range (inclusive). Default: 30 days ago.
+            end_date: End of date range (inclusive). Default: today.
+            users: Optional account allowlist; when given, only these accounts
+                are returned in ``by_user`` (unattributed counts stay visible
+                so the figures remain auditable).
+        """
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            start_date = end_date - timedelta(days=30)
+
+        merged = await self._buffer.get_merged_data()
+        wanted = set(users) if users else None
+
+        by_user_raw: dict[str, dict] = {}
+        by_date_raw: dict[str, dict] = {}
+        unattributed: dict = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "call_count": 0,
+        }
+        total_prompt = 0
+        total_completion = 0
+        total_calls = 0
+
+        current = start_date
+        while current <= end_date:
+            date_str = current.isoformat()
+            for _key, entry in (merged.get(date_str) or {}).items():
+                if not isinstance(entry, dict):
+                    continue
+                day_prompt = entry.get("prompt_tokens", 0) or 0
+                day_completion = entry.get("completion_tokens", 0) or 0
+                day_calls = entry.get("call_count", 0) or 0
+                total_prompt += day_prompt
+                total_completion += day_completion
+                total_calls += day_calls
+                # by_date can legitimately exceed the sum of person-days when
+                # some calls predate account attribution.
+                bucket = by_date_raw.setdefault(
+                    date_str,
+                    {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "call_count": 0,
+                    },
+                )
+                bucket["prompt_tokens"] += day_prompt
+                bucket["completion_tokens"] += day_completion
+                bucket["call_count"] += day_calls
+
+                by_user = entry.get("by_user") or {}
+                # An entry can mix attributed and pre-upgrade usage (a model
+                # used both before and after the account dimension existed),
+                # so derive the unattributed part per entry instead of
+                # treating "has by_user" as "fully attributed".
+                attributed = _sum_user_entries(by_user)
+                unattributed["prompt_tokens"] += max(
+                    0, day_prompt - attributed["prompt_tokens"],
+                )
+                unattributed["completion_tokens"] += max(
+                    0, day_completion - attributed["completion_tokens"],
+                )
+                unattributed["call_count"] += max(
+                    0, day_calls - attributed["call_count"],
+                )
+
+                for user_id, user_entry in by_user.items():
+                    if wanted is not None and user_id not in wanted:
+                        continue
+                    record = by_user_raw.setdefault(
+                        user_id,
+                        {
+                            "user_id": user_id,
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "call_count": 0,
+                            "by_date": {},
+                            "by_model": {},
+                        },
+                    )
+                    record["prompt_tokens"] += user_entry.get("prompt_tokens", 0) or 0
+                    record["completion_tokens"] += (
+                        user_entry.get("completion_tokens", 0) or 0
+                    )
+                    record["call_count"] += user_entry.get("call_count", 0) or 0
+
+                    user_day = record["by_date"].setdefault(
+                        date_str,
+                        {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "call_count": 0,
+                        },
+                    )
+                    user_day["prompt_tokens"] += user_entry.get("prompt_tokens", 0) or 0
+                    user_day["completion_tokens"] += (
+                        user_entry.get("completion_tokens", 0) or 0
+                    )
+                    user_day["call_count"] += user_entry.get("call_count", 0) or 0
+
+                    model_key = entry.get("model_name") or _key
+                    model_entry = record["by_model"].setdefault(
+                        model_key,
+                        {
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "call_count": 0,
+                        },
+                    )
+                    model_entry["prompt_tokens"] += user_entry.get("prompt_tokens", 0) or 0
+                    model_entry["completion_tokens"] += (
+                        user_entry.get("completion_tokens", 0) or 0
+                    )
+                    model_entry["call_count"] += user_entry.get("call_count", 0) or 0
+            current += timedelta(days=1)
+
+        return AccountUsageSummary(
+            total_prompt_tokens=total_prompt,
+            total_completion_tokens=total_completion,
+            total_calls=total_calls,
+            by_user={
+                user_id: AccountUsage.model_validate(record)
+                for user_id, record in by_user_raw.items()
+            },
+            by_date={
+                date_str: TokenUsageStats.model_validate(stats)
+                for date_str, stats in by_date_raw.items()
+            },
+            unattributed=TokenUsageStats.model_validate(unattributed),
+        )
 
 
 def get_token_usage_manager() -> TokenUsageManager:
