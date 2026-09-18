@@ -47,6 +47,7 @@ from ..utils.tool_call_extra import (
     collect_transient_tool_call_extras,
     persist_tool_call_extras,
 )
+from .utils.tool_call_coerce import _coerce_tool_input
 
 if TYPE_CHECKING:
     from ..config.config import AgentProfileConfig
@@ -195,6 +196,11 @@ class QwenPawAgent(CodingModeMixin, Agent):
 
         self._governor = governor
         self._gate_pending_stop = None
+
+        # Tool name -> parameter schema index for tool-call input
+        # coercion (issue #6839); rebuilt by ``_call_model`` from exactly
+        # the tool list the model sees on every call.
+        self._tool_schema_index: dict[str, dict[str, Any]] = {}
 
         init_kwargs: dict[str, Any] = {
             "name": name,
@@ -544,6 +550,17 @@ class QwenPawAgent(CodingModeMixin, Agent):
             return
         setattr(formatter, "_qwenpaw_force_strip_media", enabled)
 
+    def _set_formatter_thinking_omit_ids(self, block_ids: set[str]) -> bool:
+        """Apply request-time omission of already-consumed thinking blocks."""
+        formatter = self._get_active_formatter()
+        if formatter is None:
+            return False
+        setter = getattr(formatter, "set_thinking_omit_ids", None)
+        if callable(setter):
+            return bool(setter(set(block_ids)))
+        setattr(formatter, "_qwenpaw_omit_thinking_ids", set(block_ids))
+        return True
+
     def _last_wire_request_had_media(self) -> bool:
         """Return whether the last completed formatting emitted media."""
         formatter = self._get_active_formatter()
@@ -596,9 +613,9 @@ class QwenPawAgent(CodingModeMixin, Agent):
 
     @staticmethod
     def _is_context_overflow_error(exc: Exception) -> bool:
-        """Return whether *exc* is a provider 400 for an oversized input.
+        """Return whether *exc* is a provider size rejection.
 
-        A bare 400 is deliberately insufficient: malformed tool schemas,
+        A bare 400/413 is deliberately insufficient: malformed tool schemas,
         unsupported parameters, and media errors must keep their existing
         handling.  Prefer the structured status code when the SDK exposes it,
         with the rendered exception as a compatibility fallback for gateways
@@ -606,7 +623,10 @@ class QwenPawAgent(CodingModeMixin, Agent):
         """
         status = extract_status_code(exc)
         error_str = str(exc).lower()
-        if status != 400 and "error code: 400" not in error_str:
+        if status not in (400, 413) and not any(
+            marker in error_str
+            for marker in ("error code: 400", "413 request entity")
+        ):
             return False
 
         overflow_markers = (
@@ -621,6 +641,9 @@ class QwenPawAgent(CodingModeMixin, Agent):
             "prompt is too long",
             "prompt too long",
             "too many input tokens",
+            "request entity too large",
+            "request body too large",
+            "payload too large",
         )
         if any(marker in error_str for marker in overflow_markers):
             return True
@@ -653,6 +676,7 @@ class QwenPawAgent(CodingModeMixin, Agent):
         recovery changed the model input. The retry calls AgentScope directly,
         so a second overflow propagates instead of entering a recovery loop.
         """
+        self._index_tool_schemas(tools)
         try:
             return await super()._call_model(
                 messages=messages,
@@ -689,6 +713,7 @@ class QwenPawAgent(CodingModeMixin, Agent):
             refreshed = await self._prepare_model_input()
             refreshed_messages = refreshed["messages"]
             refreshed_tools = refreshed.get("tools", [])
+            self._index_tool_schemas(refreshed_tools)
             logger.info(
                 "Context-overflow recovery rebuilt model input "
                 "(messages %d -> %d).",
@@ -700,6 +725,93 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 tools=refreshed_tools,
                 tool_choice=tool_choice,
             )
+
+    def _index_tool_schemas(self, tools: list[dict] | None) -> None:
+        """Index ``tool name -> parameter schema`` for input coercion.
+
+        Built in :meth:`_call_model` from exactly the tool list handed to
+        the model (issue #6839), so the coercion schema always matches
+        what the model saw.  Looking schemas up through
+        ``toolkit.check_tool_available`` at tool-call time instead would
+        issue ``list_tools`` against every registered MCP client on
+        every tool call.
+        """
+        index: dict[str, dict[str, Any]] = {}
+        for tool in tools or []:
+            func = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(func, dict):
+                continue
+            name = func.get("name")
+            params = func.get("parameters")
+            if isinstance(name, str) and isinstance(params, dict):
+                index[name] = params
+        self._tool_schema_index = index
+
+    def _coerce_tool_call_input(self, tool_call: Any) -> None:
+        """Coerce ``tool_call.input`` in place against the indexed schema.
+
+        Models sometimes emit unquoted numbers/booleans for string-typed
+        tool parameters (issue #6839); agentscope's shared validation
+        rejects those values and every such tool call fails.  The
+        rewrite happens on the block stored in the message, so the
+        repaired input travels with the persisted context, and it runs
+        before the permission check, so a call paused for user
+        confirmation resumes already repaired.  No-op when the tool name
+        is not indexed.
+        """
+        index = getattr(self, "_tool_schema_index", None)
+        if not index:
+            return
+        if isinstance(tool_call, dict):
+            name = tool_call.get("name")
+        else:
+            name = getattr(tool_call, "name", None)
+        if not isinstance(name, str):
+            return
+        schema = index.get(name)
+        if not isinstance(schema, dict):
+            return
+        if isinstance(tool_call, dict):
+            raw_input = tool_call.get("input")
+        else:
+            raw_input = getattr(tool_call, "input", None)
+        if not isinstance(raw_input, str):
+            return
+        coerced = _coerce_tool_input(raw_input, schema)
+        if coerced == raw_input:
+            return
+        if isinstance(tool_call, dict):
+            tool_call["input"] = coerced
+        else:
+            tool_call.input = coerced
+        logger.info(
+            "Coerced tool %r input to match string-typed schema fields "
+            "(#6839)",
+            name,
+        )
+
+    async def _execute_tool_call(
+        self,
+        tool_call: Any,
+    ):
+        """Coerce the tool input, then delegate to the base funnel.
+
+        ``Agent._execute_tool_call`` is the single funnel for tool-call
+        execution — both the sequential and the concurrent paths reach
+        it — and it runs immediately before agentscope parses and
+        validates the input, which is where the #6839 failure happens.
+        Coercing here covers every provider, not just OpenAI.
+
+        The pinned AgentScope base implementation accepts exactly one
+        ``tool_call`` argument. Keeping this override aligned is essential:
+        a signature mismatch makes every Skill or tool call fail before the
+        selected tool is even entered.
+        """
+        self._coerce_tool_call_input(tool_call)
+        # agentscope 2.0.4.post1 accepts only ``tool_call``.  Do not pass the
+        # optional accumulator to the pinned base implementation.
+        async for evt in super()._execute_tool_call(tool_call):
+            yield evt
 
     # pylint: disable=too-many-branches,too-many-statements
     async def _reasoning(
@@ -771,6 +883,7 @@ class QwenPawAgent(CodingModeMixin, Agent):
         final_msg: Msg | None = None
         context_manager = self._context_manager
         pending_seen_ids: set[str] = set()
+        pending_seen_thinking_ids: set[str] = set()
         if context_manager is not None and hasattr(
             context_manager,
             "model_input_tool_result_ids",
@@ -778,6 +891,10 @@ class QwenPawAgent(CodingModeMixin, Agent):
             pending_seen_ids = context_manager.model_input_tool_result_ids(
                 self,
             )
+        if context_manager is not None and hasattr(
+            context_manager, "model_input_thinking_block_ids",
+        ):
+            pending_seen_thinking_ids = context_manager.model_input_thinking_block_ids(self)
 
         def acknowledge_seen_results(evt: Any) -> None:
             """Acknowledge inputs only after a completed model request."""
@@ -793,6 +910,10 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 context_manager.acknowledge_model_input_tool_results(
                     pending_seen_ids,
                 )
+                if hasattr(context_manager, "acknowledge_model_input_thinking_blocks"):
+                    context_manager.acknowledge_model_input_thinking_blocks(
+                        pending_seen_thinking_ids,
+                    )
 
         try:
             async for evt in super()._reasoning(tool_choice=tool_choice):

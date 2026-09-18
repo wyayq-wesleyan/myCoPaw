@@ -672,6 +672,8 @@ async def _ask_user_approval(
             **(
                 {"_spawn_subagent": True} if ctx.get("_spawn_subagent") else {}
             ),
+            "requester_username": str(ctx.get("account_username") or ""),
+            "approver_username": str(ctx.get("account_username") or ""),
         },
     )
 

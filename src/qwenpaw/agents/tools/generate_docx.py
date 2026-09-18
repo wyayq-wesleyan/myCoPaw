@@ -7,7 +7,7 @@ import re
 import uuid
 from pathlib import Path
 
-from agentscope.message import TextBlock, ToolResultState
+from agentscope.message import DataBlock, TextBlock, ToolResultState, URLSource
 from agentscope.tool import ToolChunk
 
 from ...runtime.tool_registry import tool_descriptor
@@ -135,12 +135,11 @@ def _path_to_file_url(path: Path) -> str:
     policy_name="GenerateDocx",
     default_policy="allow",
     policy_reason="Generates a DOCX file for user download",
-    ui_description="将 Markdown 内容转换为 DOCX 文件，随后必须调用 send_file 发送给用户",
+    ui_description="将 Markdown 内容转换为可直接下载的 DOCX 文件",
     ui_icon="📄",
 )
 def generate_docx(content: str, filename: str = "document") -> ToolChunk:
-    """Generate a DOCX file from markdown content. Returns the file path —
-    call ``send_file`` with the returned path to deliver the file to the user.
+    """Generate a DOCX file and attach it to the current chat response.
 
     Args:
         content: Markdown format document content
@@ -179,8 +178,17 @@ def generate_docx(content: str, filename: str = "document") -> ToolChunk:
     return ToolChunk(
         is_last=True,
         state=ToolResultState.SUCCESS,
-        content=[TextBlock(
-            type="text",
-            text=f"DOCX 文件已生成：{safe_name}.docx\n路径：{file_url}\n请调用 send_file 工具，参数 file_path 填上述路径，将文件发送给用户。",
-        )],
+        content=[
+            DataBlock(
+                source=URLSource(
+                    url=file_url,
+                    media_type=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                ),
+                name=f"{safe_name}.docx",
+            ),
+            TextBlock(type="text", text=f"DOCX 文件已生成：{safe_name}.docx"),
+        ],
     )

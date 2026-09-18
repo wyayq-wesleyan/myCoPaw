@@ -247,9 +247,13 @@ class OpenAIProvider(Provider):
             payload = await client.models.list(timeout=timeout)
             models = self._normalize_models_payload(payload)
             return models
-        except APIError:
-            return []
         except Exception:
+            # Custom OpenAI-compatible endpoints need discovery failures to
+            # reach the caller so the UI can report a bad URL/protocol rather
+            # than silently showing an empty model list. Built-in providers
+            # keep the historical best-effort behavior.
+            if self.is_custom:
+                raise
             return []
 
     async def check_model_connection(

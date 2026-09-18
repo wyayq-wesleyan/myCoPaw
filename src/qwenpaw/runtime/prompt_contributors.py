@@ -288,6 +288,36 @@ class ConversationScopeContributor(SyncPromptContributor):
         )
 
 
+class FileDeliveryContributor(SyncPromptContributor):
+    """Require user-facing delivery for files created during a chat."""
+
+    name = "file_delivery"
+    priority = 84
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        language = (getattr(ctx, "extras", {}) or {}).get("language", "en")
+        if language == "zh":
+            return (
+                "# 文件交付\n\n"
+                "当当前对话的任务产出供用户使用的文件（例如 Word、Excel、"
+                "PDF、PPT、CSV、图片、压缩包或报告）时，完成文件生成后必须将"
+                "文件交付到当前聊天界面：调用 `send_file_to_user(file_path=...)`。"
+                "不要只在回复中写服务器路径、工作区路径或文件名。只有工具结果已经"
+                "明确附带了该文件时，才不要重复发送。内部脚本、临时文件和中间产物"
+                "不要发送。"
+            )
+        return (
+            "# File Delivery\n\n"
+            "When the current chat task produces a user-facing file (for example "
+            "Word, Excel, PDF, PowerPoint, CSV, image, archive, or report), "
+            "deliver it in the current chat after generation by calling "
+            "`send_file_to_user(file_path=...)`. Never merely state a server "
+            "path, workspace path, or filename. Do not send it again only when "
+            "a tool result already explicitly attached that file. Do not send "
+            "internal scripts, temporary files, or intermediate artifacts."
+        )
+
+
 class CodingModeContributor(SyncPromptContributor):
     """Inject Coding Mode persona block when coding mode is active."""
 
@@ -505,6 +535,7 @@ _ALL_CONTRIBUTORS = (
     WorkspacePromptFilesContributor,
     MultimodalHintContributor,
     ConversationScopeContributor,
+    FileDeliveryContributor,
     CodingModeContributor,
     ScrollContextContributor,
     KnowledgeRetrievalContributor,
@@ -530,6 +561,7 @@ __all__ = [
     "WorkspacePromptFilesContributor",
     "MultimodalHintContributor",
     "ConversationScopeContributor",
+    "FileDeliveryContributor",
     "CodingModeContributor",
     "ScrollContextContributor",
     "KnowledgeRetrievalContributor",

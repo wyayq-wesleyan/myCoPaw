@@ -15,11 +15,14 @@ fixed steps (build + execute) are the only agent-touching code.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
+import time
 from typing import Any, AsyncGenerator
 
 from .builder import AgentBuilder
+from ..agents.acp.meta import ACP_EPHEMERAL_META_KEY
 from .envelope import Envelope
 from .executor import AgentExecutor
 from .hooks import HookAction, HookContext
@@ -27,6 +30,19 @@ from .message_convert import _get_last_user_text, _request_input_to_msgs
 from .phases import Phase
 
 logger = logging.getLogger(__name__)
+
+_SESSION_CHECKPOINT_INTERVAL_SECONDS = 2.0
+
+
+def _is_ephemeral_request(ctx: HookContext) -> bool:
+    """Return whether this request is transient and must not be persisted."""
+    request_context = getattr(ctx.request, "request_context", None)
+    if not isinstance(request_context, dict):
+        return False
+    value = request_context.get(ACP_EPHEMERAL_META_KEY)
+    if value is True:
+        return True
+    return isinstance(value, str) and value.lower() in {"1", "true", "yes"}
 
 
 class Runtime:
@@ -58,6 +74,8 @@ class Runtime:
         envelope = Envelope(session_id=ctx.session_id)
         ctx._envelope = envelope  # pylint: disable=protected-access
         skip_agent = False
+        checkpoint_task: asyncio.Task | None = None
+        checkpoint_started = 0.0
 
         try:
             # --- [phase 1] PRE_DISPATCH ---
@@ -131,7 +149,22 @@ class Runtime:
                     or "(empty)",
                 )
                 async for ev in executor.run(ctx.input_msgs):
+                    # Persist the live context while the stream is running.
+                    # The final POST_RESPONSE save is too late when the
+                    # browser disconnects or the worker is restarted mid-turn.
+                    now = time.monotonic()
+                    if (
+                        checkpoint_task is None
+                        or checkpoint_task.done()
+                    ) and now - checkpoint_started >= _SESSION_CHECKPOINT_INTERVAL_SECONDS:
+                        checkpoint_started = now
+                        checkpoint_task = asyncio.create_task(
+                            self._save_session_checkpoint(ctx),
+                        )
                     yield ev
+
+                if checkpoint_task is not None:
+                    await asyncio.shield(checkpoint_task)
 
             # --- [phase 6] POST_RESPONSE ---
             await hooks.run(Phase.POST_RESPONSE, ctx)
@@ -142,6 +175,7 @@ class Runtime:
 
         except (asyncio.CancelledError, KeyboardInterrupt) as e:
             ctx.error = e
+            await self._stop_checkpoint_task(checkpoint_task)
             # The Task's _must_cancel flag may still be True after
             # catching CancelledError, causing the next await to raise
             # CancelledError again.  Wrap ON_ERROR hooks so that
@@ -165,6 +199,7 @@ class Runtime:
                 yield ev
             raise
         except BaseException as e:
+            await self._stop_checkpoint_task(checkpoint_task)
             await self._try_save_on_cancel(ctx)
 
             ctx.error = e
@@ -190,6 +225,11 @@ class Runtime:
                 yield ev
             raise
         finally:
+            # A checkpoint may have been scheduled immediately before the
+            # consumer disconnected or an exception escaped.  Stop and
+            # drain it before closing the agent; otherwise it could attempt
+            # to read agent.state_dict() after agent.close().
+            await self._stop_checkpoint_task(checkpoint_task)
             # Close agent first so governor can flush audit log and persist
             # policy before downstream FINALLY hooks observe the context.
             # See ``QwenPawAgent.close`` (agents/react_agent.py).
@@ -204,6 +244,70 @@ class Runtime:
                         exc_info=True,
                     )
             await hooks.run(Phase.FINALLY, ctx)
+
+    @staticmethod
+    async def _stop_checkpoint_task(task: asyncio.Task | None) -> None:
+        """Cancel and drain an in-flight incremental checkpoint.
+
+        ``Runtime.run`` is an async generator, so cancellation can arrive
+        while the caller is suspended at ``yield ev``.  The checkpoint task
+        must not outlive the request and race ``agent.close()`` in
+        ``finally``.  Draining with ``return_exceptions`` also prevents an
+        otherwise harmless cancellation from being reported as an unhandled
+        task exception.
+        """
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            # Shield the child so a re-cancellation of the request does not
+            # leave it running against an agent that is about to close.
+            await asyncio.shield(task)
+
+    async def _save_session_checkpoint(self, ctx: HookContext) -> None:
+        """Best-effort incremental save for an active chat turn.
+
+        ``state_dict`` is captured before the await so the checkpoint is a
+        coherent snapshot. Writes are throttled by the caller and use the
+        same session path/ownership keys as the normal session hook.
+        """
+        if _is_ephemeral_request(ctx):
+            return
+        workspace = getattr(ctx, "workspace", None)
+        agent = getattr(ctx, "agent", None)
+        session = getattr(workspace, "session", None) if workspace else None
+        if agent is None or session is None:
+            return
+        try:
+            from ._state_utils import StateProxy
+
+            proxy = StateProxy()
+            proxy.data = agent.state_dict()
+            proxy.data["mode_state"] = ctx.mode_state
+            request = ctx.request
+            user_id = getattr(request, "user_id", "") or ctx.session_id
+            channel = getattr(request, "channel", "") or ""
+            await session.save_session_state(
+                session_id=ctx.session_id,
+                user_id=user_id,
+                channel=channel,
+                agent=proxy,
+            )
+            logger.debug(
+                "session checkpoint saved (session=%s)",
+                ctx.session_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Checkpoints are supplementary; a transient disk error must not
+            # abort an otherwise healthy model stream. The final save path
+            # still reports failures through the existing hook/logging.
+            logger.warning(
+                "session checkpoint failed (session=%s)",
+                ctx.session_id,
+                exc_info=True,
+            )
 
     # ----------------------------------------------------------------- helpers
 

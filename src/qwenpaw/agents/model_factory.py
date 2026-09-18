@@ -865,10 +865,17 @@ def _reasoning_by_assistant_segment(
     aligned: list[str | None] = []
     reasoning_parts: list[str] = []
     segment_survives = False
+    omitted_ids = {
+        str(item)
+        for item in getattr(formatter, "_qwenpaw_omit_thinking_ids", set())
+    }
 
     for block in blocks:
         block_type = _get(block, "type")
         if block_type == "thinking":
+            block_id = _get(block, "id")
+            if block_id is not None and str(block_id) in omitted_ids:
+                continue
             thinking = _get(block, "thinking", "")
             if thinking:
                 reasoning_parts.append(thinking)
@@ -1053,6 +1060,11 @@ def _create_file_block_support_formatter(
                     "video/*",
                 ]
             super().__init__(**kwargs)
+
+        def set_thinking_omit_ids(self, block_ids: set[str]) -> bool:
+            """Set ids omitted from request-time reasoning replay."""
+            setattr(self, "_qwenpaw_omit_thinking_ids", {str(i) for i in block_ids})
+            return True
 
         def _format_anthropic_data_block(self, block):
             """Route video ``DataBlock``s to our local helper; defer

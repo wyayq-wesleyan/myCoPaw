@@ -2415,7 +2415,14 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
                 },
             )
 
-        local_models = self.get_provider("qwenpaw-local").extra_models
+        local_provider = self.get_provider("qwenpaw-local")
+        if local_provider is None:
+            logger.info(
+                "Skipping local model restore because the local provider "
+                "is not configured.",
+            )
+            return
+        local_models = local_provider.extra_models
         model_id = local_models[0].id if local_models else None
         if model_id is None:
             return

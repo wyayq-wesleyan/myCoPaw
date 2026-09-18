@@ -31,7 +31,12 @@ LOG_NAMESPACE = PROJECT_NAME.lower()
 
 # Canonical log file name and path — import these instead of reconstructing.
 LOG_FILE_BASENAME = f"{LOG_NAMESPACE}.log"
-LOG_FILE_PATH = WORKING_DIR / LOG_FILE_BASENAME
+_log_dir = os.getenv("QWENPAW_LOG_DIR", "").strip()
+LOG_FILE_PATH = (
+    Path(_log_dir).expanduser().resolve() / LOG_FILE_BASENAME
+    if _log_dir
+    else WORKING_DIR / LOG_FILE_BASENAME
+)
 
 _LOG_SIZE_PATTERN = re.compile(r"^\s*(\d+)\s*([kmgt]?i?b?)?\s*$", re.I)
 _LOG_SIZE_FACTORS = {

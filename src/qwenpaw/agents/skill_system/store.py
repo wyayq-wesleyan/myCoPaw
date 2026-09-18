@@ -63,6 +63,15 @@ _MAX_FRONTMATTER_LINES = 4096
 _MAX_FRONTMATTER_BYTES = 256 * 1024
 
 
+def _sanitize_skill_text(text: str) -> str:
+    """Remove C0/C1 control characters that make YAML frontmatter invalid."""
+    return "".join(
+        ch for ch in text
+        if ch in "\n\r\t"
+        or (ord(ch) >= 0x20 and not 0x7F <= ord(ch) <= 0x9F)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Path getters
 # ---------------------------------------------------------------------------
@@ -188,9 +197,9 @@ def read_frontmatter_safe_from_path(
         skill_name = skill_md_path.parent.name
 
     try:
-        return frontmatter.loads(
+        return frontmatter.loads(_sanitize_skill_text(
             read_text_file_with_encoding_fallback(skill_md_path),
-        )
+        ))
     except Exception as e:
         logger.warning(
             "Failed to read SKILL frontmatter for '%s' at %s: %s. "
@@ -204,9 +213,9 @@ def read_frontmatter_safe_from_path(
 
 def _read_frontmatter(skill_dir: Path) -> Any:
     """Read and parse SKILL.md frontmatter from a skill directory."""
-    return frontmatter.loads(
+    return frontmatter.loads(_sanitize_skill_text(
         read_text_file_with_encoding_fallback(skill_dir / "SKILL.md"),
-    )
+    ))
 
 
 def _read_frontmatter_safe(
@@ -287,7 +296,7 @@ def read_skill_frontmatter_from_dir(
     parse_error: Exception | None = None
     for encoding in _FRONTMATTER_ENCODINGS:
         try:
-            text = raw_frontmatter.decode(encoding)
+            text = _sanitize_skill_text(raw_frontmatter.decode(encoding))
             post = frontmatter.loads(text)
             metadata = dict(post.metadata)
             break

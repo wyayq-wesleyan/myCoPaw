@@ -51,7 +51,10 @@ from pydantic import Field
 # Maximum size (in bytes) of a local media file we are willing to inline as
 # base64 into the model request body.  See the module docstring for the
 # rationale.
-MAX_INLINE_MEDIA_BYTES = 2 * 1024 * 1024  # 2 MB
+# Chat attachments are capped at 20MB in total and are intentionally sent
+# in full context. Keep the formatter cap aligned so valid chat images are
+# not replaced by placeholders before reaching a multimodal model.
+MAX_INLINE_MEDIA_BYTES = 20 * 1024 * 1024
 
 
 def _resolve_local_path(url: str) -> str | None:

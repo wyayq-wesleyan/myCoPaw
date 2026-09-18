@@ -1,6 +1,6 @@
 ---
 name: dingtalk_channel_connect
-description: "Use a headed browser to automatically complete DingTalk channel integration for æ±æºå°å©æ. Applicable when the user mentions DingTalk, developer console, Client ID, Client Secret, bot, Stream mode, binding or configuring a channel. Supports pausing when a login page is detected and resuming after the user logs in."
+description: "Use a headed browser to automatically complete DingTalk channel integration for æ±æºå°å©æ. Applicable when the user mentions DingTalk, developer console, Client ID, Client Secret, bot, Stream mode, binding or configuring a channel. Supports pausing when a login page is detected and resuming after the user logs in."
 metadata:
   builtin_skill_version: "1.3"
   qwenpaw:
@@ -10,7 +10,7 @@ metadata:
 
 # DingTalk Channel Auto-Connect (Headed Browser)
 
-This skill automates the creation of a DingTalk application and the binding of a æ±æºå°å©æ channel using a headed browser.
+This skill automates the creation of a DingTalk application and the binding of a æ±æºå°å©æ channel using a headed browser.
 
 ## Mandatory Rules
 
@@ -45,13 +45,13 @@ Before starting automated clicks, initiate a "configuration confirmation" with t
    - Bot message preview image: format `png/jpeg/jpg`, no more than `2MB`.
 
 3. Clearly state the default values (used automatically if the user does not specify):
-   - Application name: `æ±æºå°å©æ`
+   - Application name: `æ±æºå°å©æ`
    - Application description: `Your personal assistant`
    - Bot icon: `https://img.alicdn.com/imgextra/i4/O1CN01M0iyHF1FVNzM9qjC0_!!6000000000492-2-tps-254-254.png`
    - Bot message preview image: `https://img.alicdn.com/imgextra/i4/O1CN01M0iyHF1FVNzM9qjC0_!!6000000000492-2-tps-254-254.png`
 
 4. If the user provides no custom values, you must first explicitly reply:
-   - "All default settings will be used (æ±æºå°å©æ / Your personal assistant / default images). Proceeding now."
+   - "All default settings will be used (æ±æºå°å©æ / Your personal assistant / default images). Proceeding now."
 
 ## Image Upload Strategy (Both link and path are supported)
 
@@ -108,7 +108,7 @@ After the user confirms login, continue:
 1. Navigate to the creation path:
    - Application Development -> Internal Enterprise Applications -> DingTalk Applications -> Create Application
 2. Fill in the application information (prefer user-customized values, otherwise use defaults):
-   - Application name: default `æ±æºå°å©æ`
+   - Application name: default `æ±æºå°å©æ`
    - Application description: default `Your personal assistant`
 3. Save and create the application
 
@@ -145,12 +145,12 @@ If the page text or structure does not match expectations, re-run `snapshot` and
 1. Navigate to `Basic Information -> Credentials & Basic Info`
 2. Inform the user that the `Client ID` (AppKey) and `Client Secret` (AppSecret) are on this page. Do not make changes proactively; guide the user to bind them on their own
 
-## æ±æºå°å©æ Binding Methods
+## æ±æºå°å©æ Binding Methods
 
 After obtaining the credentials, guide the user to choose one of the following methods:
 
 1. Console frontend configuration:
-   - In the æ±æºå°å©æ console, go to `Control -> Channels -> DingTalk`
+   - In the æ±æºå°å©æ console, go to `Control -> Channels -> DingTalk`
    - Enter the `Client ID` and `Client Secret`
 
 2. Configuration file method:

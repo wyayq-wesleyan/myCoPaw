@@ -64,6 +64,7 @@ from .run_tool_batch import run_tool_batch  # noqa: E402
 from .knowledge import query_knowledge, get_document_detail  # noqa: E402
 from .data_tables import list_data_tables, describe_data_table, query_data_table  # noqa: E402
 from . import generate_docx  # noqa: E402
+from . import generate_chart  # noqa: E402
 
 _BETA_NOTICE_LOGGED = False
 

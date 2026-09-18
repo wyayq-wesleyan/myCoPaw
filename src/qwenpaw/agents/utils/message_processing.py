@@ -15,7 +15,7 @@ from typing import Optional
 
 import httpx
 
-from agentscope.message import Msg, TextBlock, URLSource
+from agentscope.message import Base64Source, DataBlock, Msg, TextBlock, URLSource
 
 from ...app.channels.utils import file_url_to_local_path
 from ...config import load_config
@@ -33,6 +33,24 @@ _NON_MEDIA_EXTS = {
     ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".xls", ".json"
 }
 
+# Chat attachments are included in the current model request.  Keep this
+# bounded so a couple of large documents cannot exhaust the model gateway or
+# the browser tab.  Knowledge-space/data-analysis ingestion remains complete.
+_CHAT_FILE_MAX_CHARS = 80_000
+_CHAT_TOTAL_FILE_MAX_CHARS = 160_000
+_CHAT_TOTAL_IMAGE_MAX_CHARS = 8 * 1024 * 1024
+
+
+def _truncate_chat_text(text: str, limit: int, marker: str) -> tuple[str, bool]:
+    """Bound attachment text while retaining useful context from both ends."""
+    if len(text) <= limit:
+        return text, False
+    if limit <= len(marker):
+        return marker[:limit], True
+    head = (limit - len(marker)) // 2
+    tail = limit - len(marker) - head
+    return f"{text[:head]}{marker}{text[-tail:]}", True
+
 
 def _get_knowledge_parse_config():
     global _KNOWLEDGE_PARSE_URL, _KNOWLEDGE_PARSE_KEY
@@ -44,14 +62,15 @@ def _get_knowledge_parse_config():
     return _KNOWLEDGE_PARSE_URL, _KNOWLEDGE_PARSE_KEY
 
 
-async def _parse_file_via_knowledge(file_path: str, filename: str) -> str | None:
-    """Call knowledge service parse API. Returns parsed text or None on failure."""
+async def _parse_file_via_knowledge(file_path: str, filename: str) -> dict | None:
+    """Parse a chat attachment without indexing it in the knowledge base."""
     url, key = _get_knowledge_parse_config()
     if not url:
         return None
     parse_url = f"{url.rstrip('/')}/v1/documents/parse"
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        # Local MinerU/OCR can take longer than an ordinary chat request.
+        async with httpx.AsyncClient(timeout=300) as client:
             with open(file_path, "rb") as f:
                 response = await client.post(
                     parse_url,
@@ -61,7 +80,7 @@ async def _parse_file_via_knowledge(file_path: str, filename: str) -> str | None
             if response.status_code != 200:
                 return None
             data = response.json()
-            return data.get("content")
+            return data if isinstance(data, dict) else None
     except Exception:
         return None
 
@@ -578,13 +597,55 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
 
         if downloaded_files:
             lang = load_config().agents.language
+            remaining_text_chars = _CHAT_TOTAL_FILE_MAX_CHARS
+            image_chars_used = 0
             for i, local_path in reversed(downloaded_files):
                 suffix = Path(local_path).suffix.lower()
+                parsed = None
                 if suffix in _NON_MEDIA_EXTS:
-                    parsed_text = await _parse_file_via_knowledge(
+                    parsed = await _parse_file_via_knowledge(
                         str(local_path), Path(local_path).name
                     )
+                    parsed_text = parsed.get("content") if parsed else None
                     if parsed_text:
+                        if not isinstance(parsed_text, str):
+                            parsed_text = str(parsed_text)
+                        if lang == "zh":
+                            truncation_marker = (
+                                "\n\n[文件内容过长，已截取首尾部分。原文件仍在当前用户工作区，"
+                                "可通过知识空间或 read_file 分段读取。]\n\n"
+                            )
+                            exhausted_marker = (
+                                "[文件内容已省略：本条消息的附件文本达到上限。"
+                                "原文件仍在当前用户工作区。]"
+                            )
+                        else:
+                            truncation_marker = (
+                                "\n\n[File content was truncated to keep this chat request bounded. "
+                                "The original file remains in your workspace; read it in chunks via the knowledge space or read_file.]\n\n"
+                            )
+                            exhausted_marker = (
+                                "[File content omitted: this message reached its attachment text limit. "
+                                "The original file remains in your workspace.]"
+                            )
+                        file_limit = min(_CHAT_FILE_MAX_CHARS, remaining_text_chars)
+                        if file_limit <= 0:
+                            parsed_text = exhausted_marker
+                        else:
+                            parsed_text, was_truncated = _truncate_chat_text(
+                                parsed_text,
+                                file_limit,
+                                truncation_marker,
+                            )
+                            if was_truncated:
+                                logger.warning(
+                                    "Truncated chat attachment text for %s to %d chars",
+                                    Path(local_path).name,
+                                    file_limit,
+                                )
+                        remaining_text_chars = max(
+                            0, remaining_text_chars - len(parsed_text)
+                        )
                         if lang == "zh":
                             text = (
                                 f"用户上传了文件：{Path(local_path).name}\n\n"
@@ -611,10 +672,34 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
                         if lang == "zh"
                         else f"User uploaded a file, downloaded to {local_path}"
                     )
-                message.content.insert(
-                    i + 1,
-                    TextBlock(type="text", text=text),
-                )
+                inserts = [TextBlock(type="text", text=text)]
+                if parsed:
+                    parsed_images = parsed.get("images", [])
+                    if not isinstance(parsed_images, list):
+                        parsed_images = []
+                    for image_data in parsed_images:
+                        if not isinstance(image_data, str) or ";base64," not in image_data:
+                            continue
+                        media_type, encoded = image_data.split(";base64,", 1)
+                        media_type = media_type.removeprefix("data:")
+                        if encoded and image_chars_used + len(encoded) <= _CHAT_TOTAL_IMAGE_MAX_CHARS:
+                            inserts.append(
+                                DataBlock(
+                                    source=Base64Source(
+                                        data=encoded,
+                                        media_type=media_type,
+                                    ),
+                                )
+                            )
+                            image_chars_used += len(encoded)
+                        elif encoded:
+                            logger.warning(
+                                "Skipped chat attachment image for %s after reaching %d-char image limit",
+                                Path(local_path).name,
+                                _CHAT_TOTAL_IMAGE_MAX_CHARS,
+                            )
+                for offset, item in enumerate(inserts, start=1):
+                    message.content.insert(i + offset, item)
 
     await freeze_local_images_async(messages)
 

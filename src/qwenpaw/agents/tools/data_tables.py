@@ -73,10 +73,14 @@ def _resolve_username() -> str:
     name="list_data_tables",
     description="列出当前用户创建的所有数据表名称、描述、列信息和行数。在需要了解有哪些可用数据表时使用。",
     parameters={"type": "object", "properties": {}, "required": []},
+    tool_type="internal",
+    policy_name="ListDataTables",
+    default_policy="allow",
+    policy_reason="Read-only listing of the current user's data tables",
 )
 def list_data_tables() -> str:
     username = _resolve_username()
-    from qwenpaw.data_tables.store import _get_conn, _put_conn
+    from qwenpaw.data_tables.store import SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn
 
     conn = _get_conn()
     try:
@@ -84,9 +88,9 @@ def list_data_tables() -> str:
 
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                """
+                f"""
                 SELECT table_name, description, columns, row_count, initialized
-                FROM data_table_registry
+                FROM {SYSTEM_TABLE_REGISTRY}
                 WHERE owner_username = %s
                 ORDER BY created_at DESC
             """,
@@ -119,14 +123,18 @@ def list_data_tables() -> str:
             "table_name": {
                 "type": "string",
                 "description": "数据表名称，如 tb_order",
-            }
+            },
         },
         "required": ["table_name"],
     },
+    tool_type="internal",
+    policy_name="DescribeDataTable",
+    default_policy="allow",
+    policy_reason="Read-only inspection of the current user's data table",
 )
 def describe_data_table(table_name: str) -> str:
     username = _resolve_username()
-    from qwenpaw.data_tables.store import _get_conn, _put_conn
+    from qwenpaw.data_tables.store import SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn
     from qwenpaw.data_tables.connection import get_target_connection, put_target_connection
 
     conn = _get_conn()
@@ -135,8 +143,8 @@ def describe_data_table(table_name: str) -> str:
 
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                """
-                SELECT * FROM data_table_registry
+                f"""
+                SELECT * FROM {SYSTEM_TABLE_REGISTRY}
                 WHERE owner_username = %s AND table_name = %s
             """,
                 (username, table_name),
@@ -217,10 +225,14 @@ def describe_data_table(table_name: str) -> str:
             "sql": {
                 "type": "string",
                 "description": "要执行的只读 SQL 查询语句（仅 SELECT 或 WITH 开头）",
-            }
+            },
         },
         "required": ["sql"],
     },
+    tool_type="internal",
+    policy_name="QueryDataTable",
+    default_policy="allow",
+    policy_reason="Read-only SQL query scoped to the current user's database",
 )
 def query_data_table(sql: str) -> str:
     if not _is_read_only(sql):
@@ -231,10 +243,11 @@ def query_data_table(sql: str) -> str:
     from qwenpaw.data_tables.connection import (
         get_target_connection,
         put_target_connection,
-        _slug_username,
+        ensure_user_database,
     )
 
-    hg_conn = get_target_connection(_slug_username(username))
+    db_name = ensure_user_database(username)
+    hg_conn = get_target_connection(db_name)
     try:
         with hg_conn.cursor() as cur:
             cur.execute("SET statement_timeout = '30s'")
@@ -254,4 +267,4 @@ def query_data_table(sql: str) -> str:
     except Exception as e:
         return f"查询执行失败: {str(e)}"
     finally:
-        put_target_connection(hg_conn, _slug_username(username))
+        put_target_connection(hg_conn, db_name)

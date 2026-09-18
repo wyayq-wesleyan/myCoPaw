@@ -1,6 +1,6 @@
 ---
 name: browser
-description: "Drive a live browser with async Python against æ±æºå°å©æ's builtin Browser SDK. The full reference is below; re-load this browser skill after context compaction."
+description: "Drive a live browser with async Python against æ±æºå°å©æ's builtin Browser SDK. The full reference is below; re-load this browser skill after context compaction."
 metadata:
   builtin_skill_version: "0.3"
   qwenpaw:
@@ -22,12 +22,12 @@ When the browser cannot finish, do not substitute data from another channel
 (such as web_search) and still call it a browser result — state each fact's
 real source.
 
-This is æ±æºå°å©æ's builtin Browser SDK, not Playwright. Its surface is closed:
+This is æ±æºå°å©æ's builtin Browser SDK, not Playwright. Its surface is closed:
 anything not listed does not exist. The complete reference is below; re-load
 this browser skill with the Skill tool if it is no longer in context.
 
 <!-- BEGIN GENERATED: browser-manual -->
-æ±æºå°å©æ Browser SDK — complete reference. This is æ±æºå°å©æ's OWN internal
+æ±æºå°å©æ Browser SDK — complete reference. This is æ±æºå°å©æ's OWN internal
 SDK and this is the ENTIRE API; these are all the entrypoints. The SDK
 is already in scope as Browser — call the methods below directly. Write
 async Python. Work in a loop: perceive → act → verify.

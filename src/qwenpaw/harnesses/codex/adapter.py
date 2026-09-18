@@ -606,6 +606,10 @@ class CodexAdapter(HarnessAdapter):
             channel=str(context.get("channel") or "console"),
             agent_id=str(context.get("agent_id") or "default"),
             summary=summary,
+            extra={
+                "requester_username": str(context.get("account_username") or ""),
+                "approver_username": str(context.get("account_username") or ""),
+            },
         )
         decision = await service.wait_for_approval(
             pending.request_id,
