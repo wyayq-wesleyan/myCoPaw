@@ -62,6 +62,10 @@ class PendingApproval:
     # treated as EXACT by the governance consumer. Only meaningful when the
     # decision is APPROVED.
     scope: ApprovalScope | None = None
+    # Account identities are kept separately from channel/user IDs so an
+    # approval cannot be resolved by another logged-in account.
+    requester_username: str = ""
+    approver_username: str = ""
 
 
 def _is_spawn_child_approval(pending: PendingApproval) -> bool:
@@ -184,6 +188,8 @@ class ApprovalService:
             findings_count=result.findings_count,
             severity=result.max_severity.value,
             extra=dict(extra or {}),
+            requester_username=str((extra or {}).get("requester_username") or (extra or {}).get("account_username") or ""),
+            approver_username=str((extra or {}).get("approver_username") or (extra or {}).get("requester_username") or (extra or {}).get("account_username") or ""),
         )
 
         async with self._lock:
@@ -254,6 +260,8 @@ class ApprovalService:
             findings_count=summary.findings_count,
             severity=summary.severity,
             extra=merged_extra,
+            requester_username=str(merged_extra.get("requester_username") or merged_extra.get("account_username") or ""),
+            approver_username=str(merged_extra.get("approver_username") or merged_extra.get("requester_username") or merged_extra.get("account_username") or ""),
         )
         async with self._lock:
             self._pending[request_id] = pending

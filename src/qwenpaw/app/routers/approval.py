@@ -10,12 +10,22 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..approvals import get_approval_service
+from ..user_space import get_request_username, is_admin_user
 from ..approvals.display import approval_display_fields
 from ...security.tool_guard.approval import ApprovalDecision, ApprovalScope
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/approval", tags=["approval"])
+
+
+def _require_pending_access(request: Request, pending) -> str:
+    username = get_request_username(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not is_admin_user(username) and pending.approver_username != username:
+        raise HTTPException(status_code=403, detail="This approval is assigned to another user")
+    return username
 
 
 class ApprovalActionRequest(BaseModel):
@@ -90,6 +100,7 @@ async def post_approval_approve(
             status_code=404,
             detail=f"Approval request not found: {body.request_id[:16]}",
         )
+    _require_pending_access(request, pending)
 
     if pending.root_session_id != body.session_id:
         logger.warning(
@@ -174,6 +185,7 @@ async def post_approval_deny(
             status_code=404,
             detail=f"Approval request not found: {body.request_id[:16]}",
         )
+    _require_pending_access(request, pending)
 
     if pending.root_session_id != body.session_id:
         logger.warning(
@@ -222,6 +234,10 @@ async def get_approval_list(
     Optionally filter by session_id.
     """
     svc = get_approval_service()
+    username = get_request_username(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    admin = is_admin_user(username)
 
     if session_id:
         logger.debug(
@@ -236,6 +252,12 @@ async def get_approval_list(
         async with svc._lock:
             pending_list = list(svc._pending.values())
 
+    if not admin:
+        pending_list = [
+            p for p in pending_list
+            if p.approver_username == username
+        ]
+
     # Serialize pending approvals
     result = []
     for pending in pending_list:
@@ -247,6 +269,7 @@ async def get_approval_list(
                 "owner_agent_id": pending.owner_agent_id,
                 "agent_id": pending.agent_id,
                 "tool_name": pending.tool_name,
+                "approver_username": pending.approver_username,
                 **approval_display_fields(pending),
                 "severity": pending.severity,
                 "findings_count": pending.findings_count,

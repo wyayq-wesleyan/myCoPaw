@@ -133,6 +133,7 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     app: FastAPI,
 ):
     startup_start_time = time.time()
+    import_recovery_task = None
     add_project_file_handler(LOG_FILE_PATH)
 
     # ================================================================
@@ -155,6 +156,21 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     auto_register_from_env()
     check_proxy_config_sanity()
     migrate_all_user_workspaces()
+
+    # Data analysis stores its registry and import jobs in the system PG17
+    # database. Initialize the schema on every deployment startup so a fresh
+    # database does not turn the first page load into a pair of HTTP 500s.
+    try:
+        from ..data_tables.store import init_data_tables_schema
+        from ..data_tables.importer import import_recovery_loop, recover_import_jobs
+
+        await asyncio.to_thread(init_data_tables_schema)
+        await asyncio.to_thread(recover_import_jobs)
+        import_recovery_task = asyncio.create_task(import_recovery_loop(), name="data-import-recovery")
+    except Exception:
+        # Keep the assistant bootable when PG is temporarily unavailable; the
+        # data-analysis endpoint will report the underlying connection error.
+        logger.warning("Data tables schema initialization skipped", exc_info=True)
 
     try:
         from ..utils.telemetry import (
@@ -567,6 +583,10 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     try:
         yield
     finally:
+        if import_recovery_task is not None and not import_recovery_task.done():
+            import_recovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await import_recovery_task
         # Cancel background startup if still in progress
         if not _bg_task.done():
             _bg_task.cancel()

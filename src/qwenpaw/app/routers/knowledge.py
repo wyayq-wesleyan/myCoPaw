@@ -58,7 +58,10 @@ async def knowledge_health(request: Request) -> dict[str, Any]:
     if not url:
         return {"configured": False, "status": "disabled", "user": username}
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        # The knowledge service may need a few seconds to perform its cached
+        # model capability probes after startup.  Keep the proxy timeout above
+        # the probe timeout instead of incorrectly reporting it as offline.
+        async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(f"{url}/health")
             response.raise_for_status()
             return {"configured": True, "status": "ok", "service": response.json()}
@@ -116,15 +119,32 @@ async def upload_knowledge_document(
     file: UploadFile = File(...),
 ) -> Any:
     username = _request_username(request)
-    content = await file.read()
-    return await _forward(
-        request,
-        "POST",
-        "/v1/documents/upload",
-        username,
-        files={"file": (file.filename or "unnamed", content, file.content_type or "application/octet-stream")},
-        data={"space_id": space_id},
-    )
+    url = _service_url()
+    if not url:
+        raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3600.0, connect=10.0)) as client:
+            health = await client.get(f"{url}/health")
+            health.raise_for_status()
+            readiness = health.json()
+            if not readiness.get("upload_ready"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=readiness.get("upload_block_reason")
+                    or "Knowledge upload requires an embedding model",
+                )
+            response = await client.post(
+                f"{url}/v1/documents/upload",
+                headers=_service_headers(username),
+                files={"file": (file.filename or "unnamed", file.file, file.content_type or "application/octet-stream")},
+                data={"space_id": space_id},
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text[:2000]) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
 
 
 @router.get("/documents/{document_id}")
@@ -177,6 +197,9 @@ async def list_knowledge_documents_v2(
     created_after: str | None = None,
     created_before: str | None = None,
     doc_ids: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
 ) -> Any:
     params: dict[str, str] = {}
     if filename:
@@ -187,6 +210,10 @@ async def list_knowledge_documents_v2(
         params["created_before"] = created_before
     if doc_ids:
         params["doc_ids"] = doc_ids
+    if status:
+        params["status"] = status
+    params["page"] = str(page)
+    params["page_size"] = str(page_size)
     username = _request_username(request)
     url = _service_url()
     if not url:
@@ -214,6 +241,28 @@ async def list_knowledge_jobs(request: Request) -> Any:
 @router.get("/jobs/{job_id}")
 async def get_knowledge_job(job_id: str, request: Request) -> Any:
     return await _forward(request, "GET", f"/v1/jobs/{job_id}", _request_username(request))
+
+
+@router.get("/jobs/{job_id}/log")
+async def get_knowledge_job_log(job_id: str, request: Request):
+    username = _request_username(request)
+    url = _service_url()
+    if not url:
+        raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.get(f"{url}/v1/jobs/{job_id}/log", headers=_service_headers(username))
+            response.raise_for_status()
+            from fastapi.responses import Response
+            return Response(
+                content=response.content,
+                media_type="text/plain",
+                headers={"Content-Disposition": response.headers.get("content-disposition", "")},
+            )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text[:2000]) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
 
 
 @router.get("/documents/{document_id}/preview")

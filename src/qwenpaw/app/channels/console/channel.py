@@ -17,6 +17,7 @@ import json as _json
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
@@ -525,6 +526,29 @@ class ConsoleChannel(BaseChannel):
             self._clear_session_turn_usage(session_id)
             logger.exception("console process/reply failed")
             err_msg = str(e).strip() or "An error occurred while processing."
+            # Always terminate the browser's runtime stream. Without a failed
+            # response envelope, an upstream error ends SSE silently and
+            # leaves the chat page in its loading state.
+            failure_event = _json.dumps(
+                {
+                    "object": "response",
+                    "id": f"error-{uuid.uuid4().hex}",
+                    "status": "failed",
+                    "output": [
+                        {
+                            "object": "message",
+                            "id": f"error-message-{uuid.uuid4().hex}",
+                            "type": "error",
+                            "role": "assistant",
+                            "status": "failed",
+                            "content": [],
+                            "message": err_msg,
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            yield f"data: {failure_event}\n\n"
             self._print_error(err_msg)
         finally:
             try:

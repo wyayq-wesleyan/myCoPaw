@@ -4,10 +4,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from urllib.parse import unquote
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import FileResponse
 
 from qwenpaw.constant import WORKING_DIR
+from ..user_space import get_request_username, get_user_root, is_admin_user
 from qwenpaw.security.tool_guard.guardians.file_guardian import (
     FilePathToolGuardian,
     _normalize_path,
@@ -63,6 +64,7 @@ def _check_path(path: Path) -> str | None:
 )
 async def preview_file(
     filepath: str,
+    request: Request,
 ):
     """Preview file."""
     normalized = unquote(filepath)
@@ -80,6 +82,18 @@ async def preview_file(
     if not path.is_absolute():
         path = Path("/" + normalized)
     path = path.resolve()
+    username = get_request_username(request)
+    from ..auth import is_auth_enabled
+    if is_auth_enabled() and not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if username and not is_admin_user(username):
+        try:
+            path.relative_to(get_user_root(username).resolve())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="File preview is limited to your account workspace",
+            ) from exc
     reason = _check_path(path)
     if reason:
         raise HTTPException(status_code=403, detail=reason)

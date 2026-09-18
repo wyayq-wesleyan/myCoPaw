@@ -32,11 +32,62 @@ from ..agent_context import get_agent_for_request
 from ..approvals.display import approval_display_fields
 from ..chats.title_generator import generate_and_update_title
 from ..utils import check_upload_size
+from ..channels.utils import file_url_to_local_path
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/console", tags=["console"])
+
+# Chat attachments are request-scoped context, not knowledge-base uploads.
+# Keep this limit independent from the configurable workspace/knowledge limit.
+CHAT_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+
+_SSE_HEADERS = {
+    # Prevent Nginx and compatible proxies from holding small SSE frames until
+    # a buffer fills. TaskTracker emits a heartbeat while an agent is waiting.
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
+def _validate_chat_attachment_size(content_parts: list[Any], media_dir: Path) -> None:
+    """Require each attachment to be an uploaded file and cap the total.
+
+    The browser limit is only a convenience. This protects direct API callers
+    and prevents a client from referring to arbitrary files in the container.
+    """
+    total = 0
+    root = media_dir.resolve()
+    for part in content_parts:
+        raw = None
+        for field in ("image_url", "file_url", "data", "video_url"):
+            candidate = getattr(part, field, None)
+            if isinstance(candidate, str) and candidate:
+                raw = candidate
+                break
+        if raw is None:
+            continue
+        local_path = file_url_to_local_path(raw)
+        if local_path is None:
+            continue
+        path = Path(local_path).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Chat attachments must be uploaded through the console",
+            ) from exc
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Chat attachment not found")
+        total += path.stat().st_size
+        if total > CHAT_UPLOAD_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Total chat attachment size exceeds the 20MB limit",
+            )
 
 
 # ── Background task store ──
@@ -228,10 +279,7 @@ def _empty_sse_response() -> StreamingResponse:
     return StreamingResponse(
         _empty(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
+        headers=_SSE_HEADERS,
     )
 
 
@@ -287,6 +335,10 @@ async def post_console_chat(
         native_payload = _extract_session_and_payload(request_data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    _validate_chat_attachment_size(
+        native_payload["content_parts"],
+        console_channel.media_dir,
+    )
     session_id = console_channel.resolve_session_id(
         sender_id=native_payload["sender_id"],
         channel_meta=native_payload["meta"],
@@ -380,10 +432,7 @@ async def post_console_chat(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
+        headers=_SSE_HEADERS,
     )
 
 
@@ -453,7 +502,11 @@ async def post_console_upload(
     media_dir = console_channel.media_dir
     media_dir.mkdir(parents=True, exist_ok=True)
     data = await file.read()
-    check_upload_size(data)
+    if len(data) > CHAT_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Chat attachment exceeds the 20MB limit",
+        )
     safe_name = _safe_filename(file.filename or "file")
     stored_name = f"{uuid.uuid4().hex}_{safe_name}"
 
@@ -504,6 +557,7 @@ async def get_backend_debug_logs(
 
 @router.get("/push-messages")
 async def get_push_messages(
+    request: Request,
     session_id: str | None = Query(None, description="Optional session id"),
 ):
     """
@@ -532,6 +586,13 @@ async def get_push_messages(
     # pylint: disable=protected-access
     async with approval_svc._lock:
         all_pending = list(approval_svc._pending.values())
+    from ..user_space import get_request_username, is_admin_user
+    username = get_request_username(request)
+    if not is_admin_user(username):
+        all_pending = [
+            p for p in all_pending
+            if username and p.approver_username == username
+        ]
 
     # Serialize approval data with root_session_id for frontend filtering
     approvals_data = [
@@ -542,6 +603,7 @@ async def get_push_messages(
             "owner_agent_id": p.owner_agent_id,
             "agent_id": p.agent_id,
             "tool_name": p.tool_name,
+            "approver_username": p.approver_username,
             **approval_display_fields(p),
             "severity": p.severity,
             "findings_count": p.findings_count,

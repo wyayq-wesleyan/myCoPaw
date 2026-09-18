@@ -450,6 +450,18 @@ def create_user_account(username: str, password: str, role: str = "user") -> dic
     data["users"] = users
     data.setdefault("jwt_secret", secrets.token_hex(32))
     _save_auth_data(data)
+    # Every account, including the initial administrator, owns one isolated
+    # data-analysis database. Roll back the auth record if provisioning fails.
+    try:
+        from ..data_tables.connection import ensure_user_database
+
+        ensure_user_database(username)
+    except Exception as exc:
+        users.pop(username, None)
+        data["users"] = users
+        _save_auth_data(data)
+        logger.exception("Failed to provision data database for user '%s'", username)
+        raise ValueError("账号创建失败：无法建立对应的数据分析数据库") from exc
     return get_user_info(username) or {"username": username, "role": role, "enabled": True}
 
 

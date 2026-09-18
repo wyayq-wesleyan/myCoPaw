@@ -499,6 +499,18 @@ async def import_local(body: ImportLocalRequest, request: Request) -> dict:
         )
 
     _validate_import_source(source)
+    username = get_request_username(request)
+    from ..auth import is_auth_enabled
+    if is_auth_enabled() and not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if username and not is_admin_user(username):
+        try:
+            source.relative_to(get_user_root(username).resolve())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="Import source is limited to your account workspace",
+            ) from exc
 
     dest_name = body.name.strip() if body.name else source.name
     base = _projects_base(workspace.workspace_dir)
@@ -699,6 +711,7 @@ async def upload_zip(
     summary="Browse directories on the server for project selection",
 )
 async def browse_dirs(
+    request: Request,
     path: str = Query(
         default="~",
         description="Directory to list (default: home)",
@@ -714,6 +727,9 @@ async def browse_dirs(
     lists all available drive letters (C:, D:, ...).
     """
     username = get_request_username(request)
+    from ..auth import is_auth_enabled
+    if is_auth_enabled() and not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     if username and not is_admin_user(username):
         account_root = get_user_root(username).resolve()
         requested = account_root if path in ("", "~") else Path(path).expanduser().resolve()

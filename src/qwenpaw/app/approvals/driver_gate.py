@@ -95,6 +95,8 @@ class QwenPawDriverApprovalGate:
                     "input": context.extras,
                 },
                 "channel_meta": ctx.get("channel_meta"),
+                "requester_username": str(ctx.get("account_username") or ""),
+                "approver_username": str(ctx.get("account_username") or ""),
                 "_channel_instance": ctx.get("_channel_instance"),
                 **(
                     {

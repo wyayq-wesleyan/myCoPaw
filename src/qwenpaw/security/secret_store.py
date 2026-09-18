@@ -327,6 +327,7 @@ def _get_master_key() -> bytes:
 
 
 _cached_fernet: Optional[object] = None
+_decrypt_failure_fingerprints: set[str] = set()
 
 
 def _get_fernet():
@@ -367,10 +368,17 @@ def decrypt(value: str) -> str:
         token = value[len(_ENC_PREFIX) :].encode("ascii")
         return f.decrypt(token).decode("utf-8")
     except Exception:
-        logger.warning(
-            "Failed to decrypt value (master key changed or data corrupted?)"
-            "; returning raw ciphertext",
-        )
+        # A persisted key mismatch can touch the same secret on every request.
+        # Warn once per ciphertext instead of turning a recoverable deployment
+        # problem into thousands of synchronous log writes.
+        fingerprint = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+        if fingerprint not in _decrypt_failure_fingerprints:
+            _decrypt_failure_fingerprints.add(fingerprint)
+            logger.warning(
+                "Failed to decrypt value (master key changed or data "
+                "corrupted?); returning raw ciphertext [fingerprint=%s]",
+                fingerprint,
+            )
         return value
 
 

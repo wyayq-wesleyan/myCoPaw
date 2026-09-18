@@ -46,7 +46,6 @@ from ..user_space import (
     _skill_pool_names,
 )
 from ..user_resources import list_resources_for_user_sync
-
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -528,9 +527,9 @@ async def create_user(req: CreateUserRequest, request: Request) -> CurrentUserRe
         user = create_user_account(req.username, req.password)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    username = str(user["username"])
     from ..user_space import ensure_user_default_agent
 
-    username = str(user["username"])
     ensure_user_default_agent(username)
     set_model_permissions(
         username,

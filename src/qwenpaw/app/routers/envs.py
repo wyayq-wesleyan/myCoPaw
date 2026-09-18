@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ...envs import load_envs, save_envs, delete_env_var
+from ..auth import require_admin_access
+from ..user_space import get_request_username
 
 router = APIRouter(prefix="/envs", tags=["envs"])
 
@@ -34,8 +36,9 @@ class EnvVar(BaseModel):
     response_model=List[EnvVar],
     summary="List all environment variables",
 )
-async def list_envs() -> List[EnvVar]:
+async def list_envs(request: Request) -> List[EnvVar]:
     """Return all configured env vars."""
+    require_admin_access(get_request_username(request))
     envs = load_envs()
     return [EnvVar(key=k, value=v) for k, v in sorted(envs.items())]
 
@@ -49,8 +52,10 @@ async def list_envs() -> List[EnvVar]:
 )
 async def batch_save_envs(
     body: Dict[str, str],
+    request: Request,
 ) -> List[EnvVar]:
     """Batch save – full replacement of all env vars."""
+    require_admin_access(get_request_username(request))
     # Validate keys
     for key in body:
         if not key.strip():
@@ -68,8 +73,9 @@ async def batch_save_envs(
     response_model=List[EnvVar],
     summary="Delete an environment variable",
 )
-async def delete_env(key: str) -> List[EnvVar]:
+async def delete_env(key: str, request: Request) -> List[EnvVar]:
     """Delete a single env var."""
+    require_admin_access(get_request_username(request))
     envs = load_envs()
     if key not in envs:
         raise HTTPException(

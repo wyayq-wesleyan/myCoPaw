@@ -58,6 +58,13 @@ from .schemas_config import (
 router = APIRouter(prefix="/config", tags=["config"])
 
 
+def _require_admin(request: Request) -> None:
+    from ..auth import require_admin_access
+    from ..user_space import get_request_username
+
+    require_admin_access(get_request_username(request))
+
+
 def _channel_config_class(name: str) -> Optional[type[BaseModel]]:
     """Config model for a built-in channel, None for plugin channels.
 
@@ -554,8 +561,9 @@ async def put_acp_config(
     summary="Get ACP Node runtime",
     description="Return configured and detected Node runtimes for ACP",
 )
-async def get_acp_node_runtime() -> ACPNodeRuntimeStatus:
+async def get_acp_node_runtime(request: Request) -> ACPNodeRuntimeStatus:
     """Return global ACP Node runtime status."""
+    _require_admin(request)
     node_path = load_config().acp.node_path
     return await asyncio.to_thread(get_node_runtime_status, node_path)
 
@@ -567,9 +575,11 @@ async def get_acp_node_runtime() -> ACPNodeRuntimeStatus:
     description="Update the global Node runtime used by ACP subprocesses",
 )
 async def put_acp_node_runtime(
+    request: Request,
     body: ACPNodeRuntimeUpdate = Body(...),
 ) -> ACPNodeRuntimeStatus:
     """Update global ACP Node runtime path."""
+    _require_admin(request)
     node_path = body.node_path.strip()
     if node_path:
         candidate = await asyncio.to_thread(resolve_node_runtime, node_path)
@@ -763,7 +773,8 @@ async def run_heartbeat_now(request: Request) -> Any:
     response_model=AgentsLLMRoutingConfig,
     summary="Get agent LLM routing settings",
 )
-async def get_agents_llm_routing() -> AgentsLLMRoutingConfig:
+async def get_agents_llm_routing(request: Request) -> AgentsLLMRoutingConfig:
+    _require_admin(request)
     config = load_config()
     return config.agents.llm_routing
 
@@ -774,8 +785,10 @@ async def get_agents_llm_routing() -> AgentsLLMRoutingConfig:
     summary="Update agent LLM routing settings",
 )
 async def put_agents_llm_routing(
+    request: Request,
     body: AgentsLLMRoutingConfig = Body(...),
 ) -> AgentsLLMRoutingConfig:
+    _require_admin(request)
     config = load_config()
     config.agents.llm_routing = body
     save_config(config)
@@ -790,7 +803,8 @@ async def put_agents_llm_routing(
     summary="Get user timezone",
     description="Return the configured user IANA timezone",
 )
-async def get_user_timezone() -> dict:
+async def get_user_timezone(request: Request) -> dict:
+    _require_admin(request)
     config = load_config()
     return {"timezone": config.user_timezone}
 
@@ -801,8 +815,10 @@ async def get_user_timezone() -> dict:
     description="Set the user IANA timezone",
 )
 async def put_user_timezone(
+    request: Request,
     body: dict = Body(..., description="Body with 'timezone' key"),
 ) -> dict:
+    _require_admin(request)
     tz = body.get("timezone", "").strip()
     if not tz:
         raise HTTPException(status_code=400, detail="timezone is required")
@@ -826,7 +842,8 @@ async def put_user_timezone(
     response_model=ToolGuardConfig,
     summary="Get tool guard settings",
 )
-async def get_tool_guard() -> ToolGuardConfig:
+async def get_tool_guard(request: Request) -> ToolGuardConfig:
+    _require_admin(request)
     config = load_config()
     return config.security.tool_guard
 
@@ -837,8 +854,10 @@ async def get_tool_guard() -> ToolGuardConfig:
     summary="Update tool guard settings",
 )
 async def put_tool_guard(
+    request: Request,
     body: ToolGuardConfig = Body(...),
 ) -> ToolGuardConfig:
+    _require_admin(request)
     config = load_config()
     config.security.tool_guard = body
     save_config(config)
@@ -857,7 +876,8 @@ async def put_tool_guard(
     response_model=List[ToolGuardRuleConfig],
     summary="List built-in guard rules from YAML files",
 )
-async def get_builtin_rules() -> List[ToolGuardRuleConfig]:
+async def get_builtin_rules(request: Request) -> List[ToolGuardRuleConfig]:
+    _require_admin(request)
     from ...security.tool_guard.guardians.rule_guardian import (
         load_rules_from_directory,
     )
@@ -958,6 +978,7 @@ async def _sandbox_effective_status(
     summary="Get global sandbox switch",
 )
 async def get_sandbox_setting(
+    request: Request,
     enabled: Optional[bool] = Query(
         default=None,
         description=(
@@ -967,6 +988,7 @@ async def get_sandbox_setting(
         ),
     ),
 ) -> SandboxStatusResponse:
+    _require_admin(request)
     config = load_config()
     current_enabled = config.security.sandbox_enabled
     # Use the proposed value if provided, otherwise the current config value.
@@ -985,8 +1007,10 @@ async def get_sandbox_setting(
     summary="Update global sandbox switch",
 )
 async def put_sandbox_setting(
+    request: Request,
     body: SandboxSettingBody = Body(...),
 ) -> SandboxStatusResponse:
+    _require_admin(request)
     config = load_config()
     current_enabled = config.security.sandbox_enabled
 
@@ -1032,7 +1056,8 @@ class FileGuardUpdateBody(BaseModel):
     response_model=FileGuardResponse,
     summary="Get file guard settings",
 )
-async def get_file_guard() -> FileGuardResponse:
+async def get_file_guard(request: Request) -> FileGuardResponse:
+    _require_admin(request)
     config = load_config()
     fg = config.security.file_guard
     from ...security.tool_guard.guardians.file_guardian import (
@@ -1053,8 +1078,10 @@ async def get_file_guard() -> FileGuardResponse:
     summary="Update file guard settings",
 )
 async def put_file_guard(
+    request: Request,
     body: FileGuardUpdateBody,
 ) -> FileGuardResponse:
+    _require_admin(request)
     config = load_config()
     fg = config.security.file_guard
 
@@ -1093,7 +1120,8 @@ async def put_file_guard(
     response_model=SkillScannerConfig,
     summary="Get skill scanner settings",
 )
-async def get_skill_scanner() -> SkillScannerConfig:
+async def get_skill_scanner(request: Request) -> SkillScannerConfig:
+    _require_admin(request)
     config = load_config()
     return config.security.skill_scanner
 
@@ -1104,8 +1132,10 @@ async def get_skill_scanner() -> SkillScannerConfig:
     summary="Update skill scanner settings",
 )
 async def put_skill_scanner(
+    request: Request,
     body: SkillScannerConfig = Body(...),
 ) -> SkillScannerConfig:
+    _require_admin(request)
     config = load_config()
     config.security.skill_scanner = body
     save_config(config)
@@ -1116,7 +1146,8 @@ async def put_skill_scanner(
     "/security/skill-scanner/blocked-history",
     summary="Get blocked skills history",
 )
-async def get_blocked_history() -> list:
+async def get_blocked_history(request: Request) -> list:
+    _require_admin(request)
     from ...security.skill_scanner import get_blocked_history as _get_history
 
     records = _get_history()
@@ -1127,7 +1158,8 @@ async def get_blocked_history() -> list:
     "/security/skill-scanner/blocked-history",
     summary="Clear all blocked skills history",
 )
-async def delete_blocked_history() -> dict:
+async def delete_blocked_history(request: Request) -> dict:
+    _require_admin(request)
     from ...security.skill_scanner import clear_blocked_history
 
     clear_blocked_history()
@@ -1139,8 +1171,10 @@ async def delete_blocked_history() -> dict:
     summary="Remove a single blocked history entry",
 )
 async def delete_blocked_entry(
+    request: Request,
     index: int = Path(..., ge=0),
 ) -> dict:
+    _require_admin(request)
     from ...security.skill_scanner import remove_blocked_entry
 
     ok = remove_blocked_entry(index)
@@ -1159,8 +1193,10 @@ class WhitelistAddRequest(BaseModel):
     summary="Add a skill to the whitelist",
 )
 async def add_to_whitelist(
+    request: Request,
     body: WhitelistAddRequest = Body(...),
 ) -> dict:
+    _require_admin(request)
     skill_name = body.skill_name.strip()
     content_hash = body.content_hash
     if not skill_name:
@@ -1192,8 +1228,10 @@ async def add_to_whitelist(
     summary="Remove a skill from the whitelist",
 )
 async def remove_from_whitelist(
+    request: Request,
     skill_name: str = Path(..., min_length=1),
 ) -> dict:
+    _require_admin(request)
     config = load_config()
     scanner_cfg = config.security.skill_scanner
     original_len = len(scanner_cfg.whitelist)
@@ -1233,8 +1271,9 @@ class AllowNoAuthHostsUpdateBody(BaseModel):
     response_model=AllowNoAuthHostsResponse,
     summary="Get allow no auth hosts configuration",
 )
-async def get_allow_no_auth_hosts() -> AllowNoAuthHostsResponse:
+async def get_allow_no_auth_hosts(request: Request) -> AllowNoAuthHostsResponse:
     """Get the list of IP addresses allowed without authentication."""
+    _require_admin(request)
     config = load_config()
     return AllowNoAuthHostsResponse(
         hosts=config.security.allow_no_auth_hosts,
@@ -1247,6 +1286,7 @@ async def get_allow_no_auth_hosts() -> AllowNoAuthHostsResponse:
     summary="Update allow no auth hosts configuration",
 )
 async def put_allow_no_auth_hosts(
+    request: Request,
     body: AllowNoAuthHostsUpdateBody = Body(...),
 ) -> AllowNoAuthHostsResponse:
     """Update the list of IP addresses allowed without authentication.
@@ -1258,6 +1298,7 @@ async def put_allow_no_auth_hosts(
     - Validates as literal IPv4/IPv6 using ipaddress module
     - Returns 400 on invalid IP addresses
     """
+    _require_admin(request)
     import ipaddress
 
     # Normalize and validate IP addresses

@@ -21,6 +21,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..utils import schedule_agent_reload
+from ..auth import require_admin_access
+from ..user_space import get_request_username
 
 logger = logging.getLogger(__name__)
 
@@ -671,6 +673,7 @@ async def install_plugin(
     reloaded in the background so that newly registered tools can be
     used without a server restart.
     """
+    require_admin_access(get_request_username(request))
     loader = getattr(request.app.state, "plugin_loader", None)
     if loader is None:
         raise HTTPException(
@@ -747,6 +750,7 @@ async def upload_plugin(
     force: bool = False,
 ):
     """Install and hot-load a plugin from an uploaded ZIP file."""
+    require_admin_access(get_request_username(request))
     loader = getattr(request.app.state, "plugin_loader", None)
     if loader is None:
         raise HTTPException(
@@ -816,6 +820,7 @@ async def upload_plugin(
 )
 async def uninstall_plugin(plugin_id: str, request: Request):
     """Unload and delete a plugin by ID."""
+    require_admin_access(get_request_username(request))
     loader = getattr(request.app.state, "plugin_loader", None)
     if loader is None:
         raise HTTPException(

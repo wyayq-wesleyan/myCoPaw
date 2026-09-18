@@ -81,18 +81,20 @@ async def get_ctx(request: Request) -> PawAppContext:
     # Get or create session for storage
     session = _get_session(request)
 
-    # Extract request parameters (from query params, headers, or defaults)
-    agent_id = request.query_params.get("agent_id", "default")
+    # The authenticated account, not a client-supplied header, owns the
+    # workspace. Query parameters may select only an agent owned by it.
+    from ..config.utils import load_config
+    from ..app.user_space import get_request_username, require_owned_agent_id
+
+    username = get_request_username(request)
+    requested_agent = request.query_params.get("agent_id") or request.headers.get("X-Agent-Id")
+    agent_id = require_owned_agent_id(load_config(), username, requested_agent)
     channel = (
         request.query_params.get("channel")
         or request.headers.get("X-Channel")
         or "console"
     )
-    user_id = (
-        request.query_params.get("user_id")
-        or request.headers.get("X-User-Id")
-        or "default"
-    )
+    user_id = username or "default"
 
     return PawAppContext(
         app_id=app_id,

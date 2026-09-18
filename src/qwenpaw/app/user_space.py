@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import re
 import shutil
 from pathlib import Path
@@ -57,6 +58,21 @@ DEFAULT_USER_MENU_IDS = frozenset(
 
 
 def _slug(username: str) -> str:
+    """Return a stable, ASCII-only storage key with no username collisions.
+
+    Display/login code continues to use the original username.  Storage and
+    internal IDs use this key so Chinese names and case variants cannot share
+    a workspace (and no raw identity is exposed in filesystem paths).
+    """
+    raw = username.strip()
+    if raw == "admin":
+        return "admin"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    return f"u_{digest}"
+
+
+def _legacy_slug(username: str) -> str:
+    """Return the pre-hash directory key for non-colliding migration only."""
     value = re.sub(r"[^a-zA-Z0-9_.-]+", "-", username.strip()).strip(".-")
     return value.lower() or "user"
 
@@ -112,7 +128,18 @@ def _state_path(username: str) -> Path:
 
 
 def _legacy_state_path(username: str) -> Path:
-    return USER_STATE_ROOT / _slug(username) / "workspaces" / "default" / "state.json"
+    try:
+        from .auth import _get_users, _load_auth_data
+
+        same_key = [
+            item for item in _get_users(_load_auth_data())
+            if _legacy_slug(str(item)) == _legacy_slug(username)
+        ]
+        if len(same_key) > 1:
+            return USER_STATE_ROOT / "__ambiguous_legacy_state__"
+    except Exception:  # noqa: BLE001
+        pass
+    return USER_STATE_ROOT / _legacy_slug(username) / "workspaces" / "default" / "state.json"
 
 
 def load_user_state(username: str) -> dict:
@@ -159,7 +186,7 @@ def _migrate_user_workspace_paths(username: str) -> None:
     state = load_user_state(username)
     default_id = state.get("default_agent_id")
     changed = False
-    legacy_root = USER_STATE_ROOT / _slug(username)
+    legacy_root = USER_STATE_ROOT / _legacy_slug(username)
     account_root = get_user_root(username).resolve()
     for agent_id, profile in config.agents.profiles.items():
         if getattr(profile, "owner_username", None) != username:
@@ -168,6 +195,17 @@ def _migrate_user_workspace_paths(username: str) -> None:
         if current == account_root or account_root in current.parents:
             continue
         target = _account_agent_workspace(username, agent_id).resolve()
+        # A legacy normalized key could be shared by multiple accounts (for
+        # example, all-Chinese names became ``user``). Never copy a shared
+        # directory into each account, which would leak one user's files.
+        same_legacy_path = [
+            other for other in config.agents.profiles.values()
+            if Path(getattr(other, "workspace_dir", "")).expanduser().resolve() == current
+            and getattr(other, "owner_username", None) != username
+        ]
+        if same_legacy_path and current == (USER_WORKSPACE_ROOT / _legacy_slug(username)).resolve():
+            logger.warning("Skipping ambiguous legacy workspace migration for %s", username)
+            continue
         if default_id == agent_id:
             target = account_root
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -511,7 +549,12 @@ def is_model_allowed(username: str | None, provider_id: str, model_id: str) -> b
 
 
 def user_agent_ids(config, username: str | None) -> list[str]:
-    if not username or is_admin_user(username):
+    # Authentication-disabled callers retain the historical unrestricted
+    # behavior. Every authenticated account, including administrators, sees
+    # only profiles it owns. Account administration is handled by the auth
+    # APIs and must not grant access to another account's conversations or
+    # workspace configuration.
+    if not username:
         return list(config.agents.profiles)
     _migrate_user_workspace_paths(username)
     config = load_config()
@@ -538,8 +581,6 @@ def set_user_agent_order(username: str, agent_ids: list[str]) -> None:
 
 def is_agent_owned(config, username: str | None, agent_id: str) -> bool:
     if not username:
-        return agent_id in config.agents.profiles
-    if is_admin_user(username):
         return agent_id in config.agents.profiles
     profile = config.agents.profiles.get(agent_id)
     return bool(profile and getattr(profile, "owner_username", None) == username)

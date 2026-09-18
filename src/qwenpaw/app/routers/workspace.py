@@ -1544,11 +1544,13 @@ async def get_agents_running_config(
     request: Request,
 ) -> AgentsRunningConfig:
     """Get agent running configuration."""
-    from ..auth import is_auth_enabled, require_admin_access
+    from ..auth import is_auth_enabled
     from ..user_space import get_request_username
 
-    if is_auth_enabled():
-        require_admin_access(get_request_username(request))
+    # The agent ownership guard runs in get_agent_for_request. Ordinary
+    # accounts may read their own running configuration.
+    if is_auth_enabled() and not get_request_username(request):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     workspace = await get_agent_for_request(request)
     agent_config = await run_sync_io(load_agent_config, workspace.agent_id)
     running = (agent_config.running or AgentsRunningConfig()).model_copy(deep=True)

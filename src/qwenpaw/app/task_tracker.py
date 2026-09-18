@@ -8,21 +8,56 @@ completes.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
 import weakref
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Callable, Coroutine, Optional
+
+from ..constant import WORKING_DIR
+from ..utils.io_utils import read_json, run_sync_io, write_json_atomic
 
 logger = logging.getLogger(__name__)
 
 _SENTINEL = None
 
+# Keep a browser/proxy SSE connection alive while the agent is waiting for a
+# model, document parser, or tool.  This is intentionally per-subscriber and
+# is never added to the replay buffer or persisted chat history.
+try:
+    _SSE_HEARTBEAT_SECONDS = max(
+        1.0,
+        float(os.environ.get("QWENPAW_SSE_HEARTBEAT_SECONDS", "10")),
+    )
+except (TypeError, ValueError):
+    _SSE_HEARTBEAT_SECONDS = 10.0
+SSE_HEARTBEAT = f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+
 # Emitted to reconnect subscribers right after the buffered events, so
 # the client can render the replayed part instantly (no token-by-token
 # re-animation) and switch to live streaming afterwards.
 REPLAY_END_SSE = f"data: {json.dumps({'type': 'replay_end'})}\n\n"
+_COMPLETED_RUN_TTL_SECONDS = max(
+    60.0,
+    float(os.environ.get("QWENPAW_COMPLETED_RUN_TTL_SECONDS", "600")),
+)
+_MAX_COMPLETED_RUNS = max(
+    10,
+    int(os.environ.get("QWENPAW_MAX_COMPLETED_RUNS", "200")),
+)
+_MAX_RUN_BUFFER_EVENTS = max(
+    100,
+    int(os.environ.get("QWENPAW_MAX_RUN_BUFFER_EVENTS", "5000")),
+)
+_PERSIST_INTERVAL_SECONDS = max(
+    0.5,
+    float(os.environ.get("QWENPAW_RUN_REPLAY_PERSIST_SECONDS", "2")),
+)
+_REPLAY_DIR = WORKING_DIR / "chat_replays"
 
 
 @dataclass
@@ -35,6 +70,59 @@ class _RunState:
     start_time: Optional[datetime] = None
     finish_time: Optional[datetime] = None
     owner: object | None = None
+    retained_until: float | None = None
+    last_persist_at: float = 0.0
+
+
+def _replay_path(run_key: str):
+    # Chat IDs are normally UUIDs, but hash defensively so an external caller
+    # can never turn a run key into a filesystem path.
+    digest = hashlib.sha256(run_key.encode("utf-8")).hexdigest()
+    return _REPLAY_DIR / f"{digest}.json"
+
+
+def _write_replay(
+    run_key: str,
+    buffer: list[str],
+    expires_at: float,
+) -> None:
+    path = _replay_path(run_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(
+        path,
+        {
+            "run_key": run_key,
+            "expires_at": expires_at,
+            "events": buffer,
+        },
+        sort_keys=True,
+    )
+
+
+def _read_replay(run_key: str) -> list[str] | None:
+    path = _replay_path(run_key)
+    if not path.exists():
+        return None
+    try:
+        payload = read_json(path)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("run_key") != run_key
+            or float(payload.get("expires_at", 0)) <= time.time()
+        ):
+            path.unlink(missing_ok=True)
+            return None
+        events = payload.get("events")
+        if not isinstance(events, list):
+            return None
+        return [item for item in events if isinstance(item, str)]
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("failed to read chat replay for run=%s", run_key)
+        return None
+
+
+def _delete_replay(run_key: str) -> None:
+    _replay_path(run_key).unlink(missing_ok=True)
 
 
 class TaskTracker:
@@ -52,6 +140,27 @@ class TaskTracker:
         self._global_last_run_at: Optional[datetime] = None
         self._global_last_finish_at: Optional[datetime] = None
 
+    def _purge_completed_locked(self) -> None:
+        """Drop expired/old completed buffers while retaining recent replays."""
+        now = time.monotonic()
+        completed = [
+            (key, state)
+            for key, state in self._runs.items()
+            if state.task.done()
+        ]
+        for key, state in completed:
+            if state.retained_until is not None and state.retained_until <= now:
+                self._runs.pop(key, None)
+        completed = [
+            (key, state)
+            for key, state in self._runs.items()
+            if state.task.done()
+        ]
+        if len(completed) > _MAX_COMPLETED_RUNS:
+            completed.sort(key=lambda item: item[1].retained_until or 0)
+            for key, _state in completed[:-_MAX_COMPLETED_RUNS]:
+                self._runs.pop(key, None)
+
     @property
     def lock(self) -> asyncio.Lock:
         return self._lock
@@ -59,10 +168,11 @@ class TaskTracker:
     async def get_status(self, run_key: str) -> str:
         """Return ``'idle'`` or ``'running'``."""
         async with self._lock:
+            self._purge_completed_locked()
             state = self._runs.get(run_key)
-        if state is None or state.task.done():
+        if state is None:
             return "idle"
-        return "running"
+        return "idle" if state.task.done() else "running"
 
     async def get_global_status(self) -> dict:
         """Get global agent status summary.
@@ -185,15 +295,30 @@ class TaskTracker:
         *run_key*.
         """
         async with self._lock:
+            self._purge_completed_locked()
             state = self._runs.get(run_key)
-            if state is None or state.task.done():
-                return None
-            q: asyncio.Queue = asyncio.Queue()
-            for sse in state.buffer:
-                q.put_nowait(sse)
-            q.put_nowait(REPLAY_END_SSE)
-            state.queues.append(q)
-            return q
+            if state is not None:
+                q: asyncio.Queue = asyncio.Queue()
+                for sse in state.buffer:
+                    q.put_nowait(sse)
+                q.put_nowait(REPLAY_END_SSE)
+                state.queues.append(q)
+                if state.task.done():
+                    q.put_nowait(_SENTINEL)
+                return q
+
+        # A process restart loses in-memory queues.  The producer writes a
+        # bounded checkpoint every few seconds, so reconnect can still replay
+        # the completed/interrupted turn for the retention window.
+        persisted = await run_sync_io(_read_replay, run_key)
+        if persisted is None:
+            return None
+        q = asyncio.Queue()
+        for sse in persisted:
+            q.put_nowait(sse)
+        q.put_nowait(REPLAY_END_SSE)
+        q.put_nowait(_SENTINEL)
+        return q
 
     async def detach_subscriber(
         self,
@@ -255,6 +380,7 @@ class TaskTracker:
         Returns ``(queue, is_new_run)``.
         """
         async with self._lock:
+            self._purge_completed_locked()
             state = self._runs.get(run_key)
             if state is not None and not state.task.done():
                 q: asyncio.Queue = asyncio.Queue()
@@ -271,6 +397,10 @@ class TaskTracker:
                 owner=owner,
             )
             self._runs[run_key] = run
+
+            # A new user question supersedes any recoverable replay from the
+            # prior completed turn in the same chat.
+            await run_sync_io(_delete_replay, run_key)
 
             tracker_ref = weakref.ref(self)
 
@@ -291,8 +421,26 @@ class TaskTracker:
                             return
                         async with tracker.lock:
                             run.buffer.append(sse)
+                            if len(run.buffer) > _MAX_RUN_BUFFER_EVENTS:
+                                del run.buffer[:-_MAX_RUN_BUFFER_EVENTS]
                             for q in run.queues:
                                 q.put_nowait(sse)
+                            now = time.monotonic()
+                            if (
+                                now - run.last_persist_at
+                                >= _PERSIST_INTERVAL_SECONDS
+                            ):
+                                run.last_persist_at = now
+                                snapshot = list(run.buffer)
+                            else:
+                                snapshot = None
+                        if snapshot is not None:
+                            await run_sync_io(
+                                _write_replay,
+                                run_key,
+                                snapshot,
+                                time.time() + _COMPLETED_RUN_TTL_SECONDS,
+                            )
                 except asyncio.CancelledError:
                     logger.debug("run cancelled run_key=%s", run_key)
                 except Exception:
@@ -311,6 +459,7 @@ class TaskTracker:
                     finish_time = datetime.now(timezone.utc)
                     tracker = tracker_ref()
                     if tracker is not None:
+                        final_snapshot = None
                         async with tracker.lock:
                             run.finish_time = finish_time
                             # pylint: disable=protected-access
@@ -318,9 +467,19 @@ class TaskTracker:
                             for q in run.queues:
                                 q.put_nowait(_SENTINEL)
                             # pylint: disable=protected-access
-                            tracker._runs.pop(
+                            # Keep a bounded replay after completion so a page
+                            # refresh can recover the just-finished answer.
+                            run.retained_until = (
+                                time.monotonic() + _COMPLETED_RUN_TTL_SECONDS
+                            )
+                            final_snapshot = list(run.buffer)
+                            tracker._purge_completed_locked()
+                        if final_snapshot:
+                            await run_sync_io(
+                                _write_replay,
                                 run_key,
-                                None,
+                                final_snapshot,
+                                time.time() + _COMPLETED_RUN_TTL_SECONDS,
                             )
 
             run.task = asyncio.create_task(_producer())
@@ -339,10 +498,18 @@ class TaskTracker:
         try:
             while True:
                 try:
-                    event = await queue.get()
+                    event = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=_SSE_HEARTBEAT_SECONDS,
+                    )
                     if event is _SENTINEL:
                         break
                     yield event
+                except asyncio.TimeoutError:
+                    # A data event, rather than an SSE comment, also resets
+                    # SDK-level idle timers. The web client treats this as a
+                    # no-op heartbeat.
+                    yield SSE_HEARTBEAT
                 except asyncio.CancelledError:
                     break
         finally:
