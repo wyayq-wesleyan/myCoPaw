@@ -15,6 +15,7 @@ export interface DataTableItem {
   total_imported?: number;
   created_at: string;
   updated_at: string;
+  pending_import_count?: number;
 }
 
 export interface DataImportJob {
@@ -23,12 +24,16 @@ export interface DataImportJob {
   table_name: string;
   filename: string;
   status: string;
+  attempts?: number;
+  next_retry_at?: string | null;
   total_rows: number;
   success_rows: number;
   failed_rows: number;
   errors: unknown[];
   created_at: string;
+  started_at?: string | null;
   finished_at: string | null;
+  processing_duration?: number | null;
 }
 
 async function apiGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
@@ -116,6 +121,13 @@ export const dataAnalysisApi = {
   getImportJobs: (params: Record<string, unknown>) =>
     apiGet<{ items: DataImportJob[]; total: number }>("/data-import-jobs", params),
 
+  downloadImportJobLog: async (jobId: string) => {
+    const response = await fetch(getApiUrl(`/data-import-jobs/${encodeURIComponent(jobId)}/log`), { headers: buildAuthHeaders() });
+    if (!response.ok) throw new Error(await response.text());
+    const blob = await response.blob(); const url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = url; link.download = `import-${jobId}.log`; link.click(); URL.revokeObjectURL(url);
+  },
+
   getImportJob: (id: string) =>
     apiGet<DataImportJob>(`/data-import-jobs/${id}`),
 };
@@ -129,3 +141,4 @@ export const batchDeleteTables = dataAnalysisApi.batchDeleteTables;
 export const previewTable = dataAnalysisApi.previewTable;
 export const importFiles = dataAnalysisApi.importFiles;
 export const getImportJobs = dataAnalysisApi.getImportJobs;
+export const downloadImportJobLog = dataAnalysisApi.downloadImportJobLog;

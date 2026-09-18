@@ -39,6 +39,14 @@ vi.mock("../shared/utils", () => ({
   }),
 }));
 
+vi.mock("../../../../utils/downloadFileFromUrl", () => ({
+  downloadFileFromUrl: vi.fn(),
+}));
+
+vi.mock("../../../../api/authHeaders", () => ({
+  buildAuthHeaders: () => ({ Authorization: "Bearer test" }),
+}));
+
 import SendFileCard from "./SendFileCard";
 
 describe("SendFileCard", () => {
@@ -59,7 +67,7 @@ describe("SendFileCard", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "open file" }));
 
-    expect(screen.getByRole("button").parentElement).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "open file" }).parentElement).toHaveAttribute(
       "data-expanded",
       "true",
     );

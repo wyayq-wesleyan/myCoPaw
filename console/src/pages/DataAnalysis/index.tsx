@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Badge,
   Button,
+  Badge,
   Card,
   Col,
   DatePicker,
@@ -18,10 +18,12 @@ import {
   Spin,
   Table,
   Tag,
+  Typography,
   Upload,
 } from "antd";
 import {
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   EyeOutlined,
   InboxOutlined,
@@ -38,6 +40,7 @@ import {
   createTable,
   deleteTable,
   getImportJobs,
+  downloadImportJobLog,
   getTableDetail,
   importFiles,
   listTables,
@@ -84,7 +87,6 @@ export default function DataAnalysisPage() {
   // Jobs
   const [jobs, setJobs] = useState<DataImportJob[]>([]);
   const [jobsTotal, setJobsTotal] = useState(0);
-  const [jobsSnapshot, setJobsSnapshot] = useState(0);
   const [jobsPage, setJobsPage] = useState(1);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
@@ -119,6 +121,12 @@ export default function DataAnalysisPage() {
   useEffect(() => {
     fetchTables();
   }, [fetchTables]);
+
+  useEffect(() => {
+    if (!tables.some((table) => (table.pending_import_count || 0) > 0)) return;
+    const timer = window.setInterval(() => void fetchTables(), 3000);
+    return () => window.clearInterval(timer);
+  }, [tables, fetchTables]);
 
   // Auto-fetch preview when import area opens for an initialized table
   useEffect(() => {
@@ -193,7 +201,6 @@ export default function DataAnalysisPage() {
     setJobsPage(1);
     setJobsFilterStatus(undefined);
     setJobsDrawerOpen(true);
-    setJobsSnapshot(jobsTotal);
     fetchJobs(1);
   };
 
@@ -291,22 +298,43 @@ export default function DataAnalysisPage() {
       dataIndex: "display_name",
       key: "display_name",
       width: 200,
-      render: (v: string, record) => (
-        <Space size={4}>
-          <span>{v || record.table_name}</span>
-          <Tag color={record.initialized ? "success" : "default"}>{record.initialized ? "已导入" : "待导入"}</Tag>
-        </Space>
-      ),
+      render: (v: string, record) => v || record.table_name,
+      sorter: (a: DataTableItem, b: DataTableItem) => (a.display_name || a.table_name).localeCompare(b.display_name || b.table_name),
     },
-    { title: "表描述", dataIndex: "description", key: "description", width: 200, ellipsis: true },
-    { title: "列数", dataIndex: "column_count", key: "column_count", width: 80, align: "center" },
-    { title: "行数", dataIndex: "row_count", key: "row_count", width: 100, align: "right", render: (v: number) => v?.toLocaleString() || "0" },
+    {
+      title: <Badge count={tables.reduce((sum, item) => sum + (item.pending_import_count || 0), 0)} overflowCount={999} offset={[8, 0]}><span>状态</span></Badge>,
+      dataIndex: "initialized",
+      key: "status",
+      width: 100,
+      render: (_: unknown, record: DataTableItem) => (
+        <Tag color={record.initialized ? "success" : "default"}>
+          {record.initialized ? "已导入" : "待导入"}
+        </Tag>
+      ),
+      filters: [
+        { text: "已导入", value: true },
+        { text: "待导入", value: false },
+      ],
+      onFilter: (value: unknown, record: DataTableItem) => record.initialized === value,
+      sorter: (a: DataTableItem, b: DataTableItem) => (a.initialized ? 1 : 0) - (b.initialized ? 1 : 0),
+      defaultSortOrder: "ascend",
+    },
+    { title: "表描述", dataIndex: "description", key: "description", width: 200, ellipsis: true,
+      sorter: (a: DataTableItem, b: DataTableItem) => (a.description || '').localeCompare(b.description || ''),
+    },
+    { title: "列数", dataIndex: "column_count", key: "column_count", width: 80, align: "center",
+      sorter: (a: DataTableItem, b: DataTableItem) => a.column_count - b.column_count,
+    },
+    { title: "行数", dataIndex: "row_count", key: "row_count", width: 100, align: "right", render: (v: number) => v?.toLocaleString() || "0",
+      sorter: (a: DataTableItem, b: DataTableItem) => a.row_count - b.row_count,
+    },
     {
       title: "创建时间",
       dataIndex: "created_at",
       key: "created_at",
       width: 170,
       render: (v: string) => (v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "-"),
+      sorter: (a: DataTableItem, b: DataTableItem) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
     },
     {
       title: "操作",
@@ -343,8 +371,12 @@ export default function DataAnalysisPage() {
   ];
 
   const jobColumns: ColumnsType<DataImportJob> = [
-    { title: "表名", dataIndex: "table_name", key: "table_name", width: 150, ellipsis: true },
-    { title: "文件名", dataIndex: "filename", key: "filename", width: 200, ellipsis: true },
+    { title: "表名", dataIndex: "table_name", key: "table_name", width: 150, ellipsis: true,
+      sorter: (a: DataImportJob, b: DataImportJob) => a.table_name.localeCompare(b.table_name),
+    },
+    { title: "文件名", dataIndex: "filename", key: "filename", width: 200, ellipsis: true,
+      sorter: (a: DataImportJob, b: DataImportJob) => a.filename.localeCompare(b.filename),
+    },
     {
       title: "状态",
       dataIndex: "status",
@@ -354,16 +386,47 @@ export default function DataAnalysisPage() {
         const meta = STATUS_MAP[v] || { color: "default", label: v };
         return <Tag color={meta.color}>{meta.label}</Tag>;
       },
+      sorter: (a: DataImportJob, b: DataImportJob) => a.status.localeCompare(b.status),
     },
-    { title: "总行数", dataIndex: "total_rows", key: "total_rows", width: 80, align: "right" },
-    { title: "成功", dataIndex: "success_rows", key: "success_rows", width: 80, align: "right", render: (v: number) => <span style={{ color: "#52c41a" }}>{v}</span> },
-    { title: "失败", dataIndex: "failed_rows", key: "failed_rows", width: 80, align: "right", render: (v: number) => <span style={{ color: v > 0 ? "#ff4d4f" : undefined }}>{v}</span> },
+    { title: "总行数", dataIndex: "total_rows", key: "total_rows", width: 80, align: "right",
+      sorter: (a: DataImportJob, b: DataImportJob) => a.total_rows - b.total_rows,
+    },
+    { title: "成功", dataIndex: "success_rows", key: "success_rows", width: 80, align: "right", render: (v: number) => <span style={{ color: "#52c41a" }}>{v}</span>,
+      sorter: (a: DataImportJob, b: DataImportJob) => a.success_rows - b.success_rows,
+    },
+    { title: "失败", dataIndex: "failed_rows", key: "failed_rows", width: 80, align: "right", render: (v: number) => <span style={{ color: v > 0 ? "#ff4d4f" : undefined }}>{v}</span>,
+      sorter: (a: DataImportJob, b: DataImportJob) => a.failed_rows - b.failed_rows,
+    },
+    {
+      title: "处理时长",
+      key: "processing_duration",
+      width: 100,
+      render: (_: unknown, record: DataImportJob) => {
+        if (record.processing_duration != null) {
+          return `${record.processing_duration.toFixed(1)}s`;
+        }
+        if (record.started_at && !record.finished_at) {
+          return <span style={{ color: '#1890ff' }}>处理中...</span>;
+        }
+        return '-';
+      },
+      sorter: (a: DataImportJob, b: DataImportJob) => (a.processing_duration || 0) - (b.processing_duration || 0),
+    },
     {
       title: "创建时间",
       dataIndex: "created_at",
       key: "created_at",
       width: 170,
       render: (v: string) => (v ? dayjs(v).format("YYYY-MM-DD HH:mm") : "-"),
+      sorter: (a: DataImportJob, b: DataImportJob) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    },
+    {
+      title: "日志",
+      key: "log",
+      width: 70,
+      render: (_: unknown, record: DataImportJob) => record.status === "failed"
+        ? <Button type="text" icon={<DownloadOutlined />} title="下载失败日志" onClick={() => void downloadImportJobLog(record.id)} />
+        : null,
     },
   ];
 
@@ -397,11 +460,9 @@ export default function DataAnalysisPage() {
           <Col flex="1" />
           <Col>
             <Space>
-              <Badge count={jobsTotal - jobsSnapshot} size="small" offset={[0, 2]}>
-                <Button icon={<UnorderedListOutlined />} onClick={handleShowJobs}>
-                  任务
-                </Button>
-              </Badge>
+              <Button icon={<UnorderedListOutlined />} onClick={handleShowJobs}>
+                任务
+              </Button>
               {selectedRowKeys.length > 0 && (
                 <Popconfirm
                   title={`确定删除选中的 ${selectedRowKeys.length} 张表？`}
@@ -542,7 +603,7 @@ export default function DataAnalysisPage() {
               >
                 <p className="ant-upload-drag-icon"><InboxOutlined /></p>
                 <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
-                <p className="ant-upload-hint">支持 CSV、XLS、XLSX 格式，可多选文件</p>
+                <p className="ant-upload-hint">支持 CSV、XLS、XLSX 格式，可多选文件，单文件不超过 10GB</p>
               </Dragger>
             </Spin>
 
@@ -651,6 +712,30 @@ export default function DataAnalysisPage() {
           dataSource={jobs}
           rowKey="id"
           loading={jobsLoading}
+          expandable={{
+            expandedRowRender: (record: DataImportJob) => {
+              const errs = record.errors as Array<{ row?: number; column?: string; message?: string }>;
+              if (!errs || errs.length === 0) return <Typography.Text type="secondary">无错误详情</Typography.Text>;
+              return (
+                <pre style={{
+                  background: "#fff1f0",
+                  border: "1px solid #ffa39e",
+                  borderRadius: 6,
+                  padding: "12px 16px",
+                  margin: 0,
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                  maxHeight: 200,
+                  overflow: "auto",
+                }}>
+                  {errs.map((e, i) => `[${i + 1}] ${e.row != null ? `行${e.row} ` : ""}${e.column ? `列${e.column} ` : ""}${e.message || JSON.stringify(e)}`).join("\n")}
+                </pre>
+              );
+            },
+            rowExpandable: (record: DataImportJob) => record.status === "failed" || record.status === "partial",
+          }}
           pagination={{
             current: jobsPage,
             pageSize: 10,

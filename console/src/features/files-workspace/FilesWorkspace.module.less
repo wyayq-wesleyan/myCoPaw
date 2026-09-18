@@ -27,7 +27,9 @@
 }
 
 .drawerPreview {
-  width: 30%;
+  // Document preview needs a reading-sized canvas. Keep the chat visible,
+  // while giving DOCX/PDF/XLSX enough width to avoid artificial wrapping.
+  width: 54%;
 }
 
 .drawerWorkspace {
@@ -175,8 +177,10 @@
 .previewSurface {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: auto;
-  padding: clamp(20px, 4vw, 48px);
+  padding: 0;
 }
 
 .textPreview {

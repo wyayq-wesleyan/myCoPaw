@@ -154,8 +154,44 @@ function parseV1Props(v1Props: Record<string, unknown>): {
 // ---------------------------------------------------------------------------
 
 /**
+ * Parse cache keyed by the SDK message object identity.
+ *
+ * Completed tool calls keep a reference-stable `data` object (immer
+ * structural sharing + identity-preserving merge in HostBubbles), so the
+ * expensive `JSON.parse(arguments)` in parseV1Props must run only once per
+ * distinct message — not on every streaming render tick (~7/sec) of the
+ * response card. Streaming messages change identity per delta and simply
+ * miss the cache (their parse path is bounded to a 4KB preview).
+ */
+interface V1ParseCacheEntry {
+  data: Record<string, unknown>;
+  content: ToolCallContent;
+  isStreaming: boolean;
+}
+const v1ParseCache = new WeakMap<object, V1ParseCacheEntry>();
+
+function parseV1PropsCached(v1Props: Record<string, unknown>): {
+  content: ToolCallContent;
+  isStreaming: boolean;
+} {
+  const data = (v1Props?.data ?? v1Props) as Record<string, unknown> | null;
+  if (data && typeof data === "object") {
+    const cached = v1ParseCache.get(data);
+    if (cached && cached.data === data) return cached;
+    const parsed = parseV1Props(v1Props);
+    v1ParseCache.set(data, { data, ...parsed });
+    return parsed;
+  }
+  return parseV1Props(v1Props);
+}
+
+/**
  * Wrap a ChatV2 BuiltinCardComponent so it can be used as a ChatV1
  * `customToolRenderConfig` renderer.
+ *
+ * Wrapped in React.memo on the SDK message identity: with the merge cache
+ * in HostBubbles keeping merged tool messages reference-stable, completed
+ * tool cards skip re-rendering entirely while sibling messages stream.
  *
  * Includes an error boundary so that rendering failures don't break
  * the entire ChatV1 UI.
@@ -163,10 +199,10 @@ function parseV1Props(v1Props: Record<string, unknown>): {
 export function adaptCardForV1(
   CardComponent: BuiltinCardComponent,
 ): React.FC<any> {
-  const V1WrappedCard: React.FC<any> = (v1Props) => {
-    const { content, isStreaming } = parseV1Props(v1Props);
+  const V1WrappedCard = React.memo(function V1WrappedCard(v1Props: any) {
+    const { content, isStreaming } = parseV1PropsCached(v1Props);
     return <CardComponent content={content} isStreaming={isStreaming} />;
-  };
+  });
 
   V1WrappedCard.displayName = `V1(${
     CardComponent.displayName || CardComponent.name || "Card"

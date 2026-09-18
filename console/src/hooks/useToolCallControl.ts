@@ -61,6 +61,7 @@ export function useToolCallControl(
   const toolNameRef = useRef(toolName || toolCallId || "");
   toolNameRef.current = toolName || toolCallId || "";
   const prevCallingRef = useRef(false);
+  const missingRef = useRef(false);
 
   const tryRegisterBackground = useCallback(
     (reason: string) => {
@@ -212,6 +213,7 @@ export function useToolCallControl(
     if (!isCalling || !toolCallId) return;
 
     fetchedRef.current = false;
+    missingRef.current = false;
     autoOffloadRegisteredRef.current = false;
     initialOffloadRef.current = null;
     autoTriggeredRef.current = false;
@@ -220,11 +222,17 @@ export function useToolCallControl(
     let policyLoaded = false;
 
     const tryFetch = async () => {
-      if (cancelled || fetchedRef.current) return;
+      if (cancelled || fetchedRef.current || missingRef.current) return;
 
       const sid = resolveSessionId(sessionId);
       const infoPromise = sid
-        ? toolCallsApi.getInfo(sid, toolCallId).catch(() => null)
+        ? toolCallsApi.getInfo(sid, toolCallId).catch((error) => {
+            if ((error as { status?: number })?.status === 404) {
+              missingRef.current = true;
+              fetchedRef.current = true;
+            }
+            return null;
+          })
         : Promise.resolve(null);
       const policyPromise = policyLoaded
         ? Promise.resolve(null)
@@ -242,7 +250,12 @@ export function useToolCallControl(
         setState((s) => ({ ...s, defaultPolicy: dp }));
       }
 
-      if (!info) return;
+      if (!info) {
+        // A new chat may not have a backend session id yet. A confirmed 404
+        // is marked by the request catch above; other empty/transient results
+        // remain retryable for the short initial hydration window.
+        return;
+      }
 
       fetchedRef.current = true;
       if (info.status === "offloaded") {
@@ -283,7 +296,7 @@ export function useToolCallControl(
   // Poll backend status while calling — catches system auto-offload even when
   // the tool card leaves "calling" before the local countdown hits zero.
   useEffect(() => {
-    if (!isCalling || !toolCallId) return;
+    if (!isCalling || !toolCallId || missingRef.current) return;
 
     let cancelled = false;
     const poll = async () => {
@@ -309,8 +322,11 @@ export function useToolCallControl(
             },
           );
         }
-      } catch {
-        /* ignore transient errors */
+      } catch (error) {
+        if ((error as { status?: number })?.status === 404) {
+          missingRef.current = true;
+          clearInterval(id);
+        }
       }
     };
 
@@ -347,6 +363,7 @@ export function useToolCallControl(
       initialOffloadRef.current = null;
       return;
     }
+    if (missingRef.current) return;
 
     // Only register after the backend confirms offloaded — local countdown
     // reaching zero is not sufficient (policy changes / clock skew).
@@ -380,8 +397,10 @@ export function useToolCallControl(
             }));
           }
         })
-        .catch(() => {
-          /* network blip — poll path may still catch offload */
+        .catch((error) => {
+          if ((error as { status?: number })?.status === 404) {
+            missingRef.current = true;
+          }
         });
     }
 

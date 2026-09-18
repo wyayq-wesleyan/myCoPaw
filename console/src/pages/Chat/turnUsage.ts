@@ -309,6 +309,100 @@ function snapshotFromSsePayload(raw: string): TurnUsageSnapshot | null {
 }
 
 /**
+ * Throttle raw SSE bytes so the SDK's async iterator receives chunks in
+ * batches (at most every `intervalMs`) instead of one-by-one.  This lets
+ * React 18's automatic batching coalesce the resulting `updateMessage`
+ * state updates into a single re-render per batch, dramatically reducing
+ * render pressure during fast token streaming.
+ *
+ * Terminal frames (Completed/Failed/Canceled) flush immediately so the
+ * final answer and actions are never delayed.
+ */
+const STREAM_THROTTLE_MS = 50;
+const STREAM_FLUSH_MAX_BYTES = 256 * 1024;
+
+function createSseThrottleStream(
+  intervalMs: number = STREAM_THROTTLE_MS,
+): TransformStream<Uint8Array, Uint8Array> {
+  let pending: Uint8Array[] = [];
+  let pendingSize = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let decoder = new TextDecoder();
+  let closed = false;
+
+  function doFlush(
+    controller: { enqueue: (chunk: Uint8Array) => void },
+  ) {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (pending.length === 0) return;
+    const chunks = pending;
+    pending = [];
+    pendingSize = 0;
+    for (const chunk of chunks) {
+      try {
+        controller.enqueue(chunk);
+      } catch {
+        // Stream may have been errored or closed between transform and flush.
+        closed = true;
+        return;
+      }
+    }
+  }
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      if (closed) return;
+
+      // Detect terminal status in the raw bytes to flush immediately.
+      let isTerminal = false;
+      try {
+        const text = decoder.decode(chunk, { stream: true });
+        if (
+          text.includes('"status":"completed"') ||
+          text.includes('"status":"failed"') ||
+          text.includes('"status":"canceled"') ||
+          text.includes('"status": "completed"') ||
+          text.includes('"status": "failed"') ||
+          text.includes('"status": "canceled"')
+        ) {
+          isTerminal = true;
+        }
+      } catch {
+        /* decode errors are harmless here */
+      }
+
+      if (isTerminal) {
+        doFlush(controller);
+        controller.enqueue(chunk);
+        return;
+      }
+
+      pending.push(chunk);
+      pendingSize += chunk.byteLength;
+
+      // Flush immediately if buffer exceeds the size cap.
+      if (pendingSize >= STREAM_FLUSH_MAX_BYTES) {
+        doFlush(controller);
+        return;
+      }
+
+      if (timer === null) {
+        timer = setTimeout(() => {
+          timer = null;
+          doFlush(controller);
+        }, intervalMs);
+      }
+    },
+    flush(controller) {
+      doFlush(controller);
+    },
+  });
+}
+
+/**
  * Observe the SSE body and patch usage when the stream finishes.
  *
  * Trailing `turn_usage` SSE arrives after Completed response. The chat SDK
@@ -325,7 +419,9 @@ export function wrapChatResponseUsageStream(
   let buffer = "";
   let pendingUsage: TurnUsageSnapshot | null = null;
 
-  const transformed = response.body.pipeThrough(
+  const throttled = response.body.pipeThrough(createSseThrottleStream());
+
+  const transformed = throttled.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         controller.enqueue(chunk);

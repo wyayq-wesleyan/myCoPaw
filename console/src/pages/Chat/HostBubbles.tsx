@@ -14,7 +14,7 @@
  * Vendor response primitives are deep-imported because the SDK does not expose
  * a message-renderer seam. If their paths change, update the imports below.
  */
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import VendorRequestCardOriginal from "@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/AgentScopeRuntime/Request/Card";
 import AgentScopeRuntimeResponseBuilder from "@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/AgentScopeRuntime/Response/Builder";
 import ResponseActions from "@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/AgentScopeRuntime/Response/Actions";
@@ -59,7 +59,139 @@ function sortByOrder<T extends { item: { order?: number } }>(arr: T[]): T[] {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyCardProps = any;
 
-function HostMessage({ data }: { data: IAgentScopeRuntimeMessage }) {
+const RESPONSE_RENDER_INTERVAL_MS = 150;
+
+function isTerminalResponse(data: IAgentScopeRuntimeResponse): boolean {
+  return [
+    AgentScopeRuntimeRunStatus.Completed,
+    AgentScopeRuntimeRunStatus.Failed,
+    AgentScopeRuntimeRunStatus.Canceled,
+  ].includes(data.status);
+}
+
+const TOOL_INPUT_TYPES = new Set([
+  AgentScopeRuntimeMessageType.PLUGIN_CALL,
+  AgentScopeRuntimeMessageType.TOOL_CALL,
+  AgentScopeRuntimeMessageType.MCP_CALL,
+]);
+const TOOL_OUTPUT_TYPES = new Set([
+  AgentScopeRuntimeMessageType.PLUGIN_CALL_OUTPUT,
+  AgentScopeRuntimeMessageType.TOOL_CALL_OUTPUT,
+  AgentScopeRuntimeMessageType.MCP_CALL_OUTPUT,
+]);
+
+function toolCallKey(content: any): string | null {
+  const data = content?.data;
+  if (!data) return null;
+  return data.call_id || data.name || null;
+}
+
+/**
+ * Cache of "input message + first output content block -> merged message".
+ *
+ * The response builder produces a fresh output array on every streamed
+ * delta, so this merge re-runs on every render tick. Re-creating merged
+ * objects each run would break React.memo on every historical tool card,
+ * forcing them to re-parse (JSON.parse) and re-stringify their full
+ * arguments at up to ~7 renders/sec. Immer's structural sharing keeps
+ * unchanged messages reference-identical, so caching by input identity
+ * lets completed tool cards keep a stable `data` prop across ticks.
+ */
+interface ToolMergeCacheEntry {
+  outputContent: unknown;
+  merged: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+const toolMergeCache = new WeakMap<object, ToolMergeCacheEntry>();
+
+export function mergeToolMessagesLinear(
+  messages: IAgentScopeRuntimeResponse["output"],
+) {
+  const inputIndexByKey = new Map<string, number>();
+  const result: typeof messages = [];
+
+  for (const message of messages) {
+    const hasContent = message.content?.length > 0;
+    if (TOOL_INPUT_TYPES.has(message.type) && hasContent) {
+      const key = toolCallKey(message.content[0]);
+      if (key) inputIndexByKey.set(key, result.length);
+      result.push(message);
+    } else if (TOOL_OUTPUT_TYPES.has(message.type) && hasContent) {
+      const key = toolCallKey(message.content[0]);
+      const inputIdx = key != null ? inputIndexByKey.get(key) : undefined;
+      if (inputIdx !== undefined) {
+        const input = result[inputIdx];
+        const outputContent = message.content[0];
+        let merged: typeof input;
+        const cached = toolMergeCache.get(input as object);
+        if (cached && cached.outputContent === outputContent) {
+          merged = cached.merged;
+        } else {
+          merged = {
+            ...input,
+            content: [...input.content, outputContent],
+          };
+          toolMergeCache.set(input as object, { outputContent, merged });
+        }
+        result[inputIdx] = merged;
+      } else {
+        result.push(message);
+      }
+    } else {
+      result.push(message);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * The SDK publishes one React message update for every SSE frame. Keep the
+ * builder state fully up to date, but limit expensive Markdown/tool-tree
+ * rendering while a long response is still streaming. Terminal frames always
+ * render immediately so the final answer and actions are never delayed.
+ */
+function useThrottledResponseData(
+  data: IAgentScopeRuntimeResponse,
+): IAgentScopeRuntimeResponse {
+  const [rendered, setRendered] = useState(data);
+  const latestRef = useRef(data);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    latestRef.current = data;
+
+    if (isTerminalResponse(data)) {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      setRendered(data);
+      return;
+    }
+
+    if (timerRef.current === null) {
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setRendered(latestRef.current);
+      }, RESPONSE_RENDER_INTERVAL_MS);
+    }
+  }, [data]);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  return rendered;
+}
+
+const HostMessage = React.memo(function HostMessage({
+  data,
+}: {
+  data: IAgentScopeRuntimeMessage;
+}) {
   const replaceMediaURL = useChatAnywhereOptions(
     (options) => options.api?.replaceMediaURL,
   );
@@ -134,9 +266,9 @@ function HostMessage({ data }: { data: IAgentScopeRuntimeMessage }) {
       })}
     </>
   );
-}
+});
 
-function DefaultHostResponseCard({
+const DefaultHostResponseCard = React.memo(function DefaultHostResponseCard({
   data,
   isLast,
   contentPrepend,
@@ -150,7 +282,7 @@ function DefaultHostResponseCard({
   const avatar = useChatAnywhereOptions((options) => options.welcome?.avatar);
   const nick = useChatAnywhereOptions((options) => options.welcome?.nick);
   const messages = useMemo(
-    () => AgentScopeRuntimeResponseBuilder.mergeToolMessages(data.output),
+    () => mergeToolMessagesLinear(data.output),
     [data.output],
   );
 
@@ -199,7 +331,7 @@ function DefaultHostResponseCard({
       <ResponseActions data={data} isLast={isLast} />
     </>
   );
-}
+});
 
 export function HostRequestCard(props: { data: ChatRequestData }) {
   const extScalar = useChatScalarSnapshot();
@@ -267,50 +399,65 @@ export function HostResponseCard(props: {
   data: ChatResponseData;
   isLast?: boolean;
 }) {
+  const throttledData = useThrottledResponseData(
+    props.data as unknown as IAgentScopeRuntimeResponse,
+  );
   const extScalar = useChatScalarSnapshot();
   const extLists = useChatListSnapshot();
 
   const renderEntry = extScalar[ChatScalar.responseRender];
   const renderFn = renderEntry?.value;
-  const prependList = sortByOrder(extLists[ChatList.responsePrepend]);
-  const appendList = sortByOrder(extLists[ChatList.responseAppend]);
+  const prependList = useMemo(
+    () => sortByOrder(extLists[ChatList.responsePrepend]),
+    [extLists],
+  );
+  const appendList = useMemo(
+    () => sortByOrder(extLists[ChatList.responseAppend]),
+    [extLists],
+  );
 
   // prepend/append are routed through vendor's contentPrepend/contentAppend
   // slot so they land BETWEEN messages and Actions — actions always last.
   // Vendor change: see Response/Card.js DefaultResponseRender, which now
   // reads props.contentPrepend / props.contentAppend.
-  const contentPrepend =
-    prependList.length === 0 ? null : (
-      <>
-        {prependList.map((e) => (
-          <PluginSlotBoundary
-            key={e.item.id}
-            slot={ChatList.responsePrepend}
-            pluginId={e.pluginId}
-          >
-            {e.item.render({ data: props.data, isLast: props.isLast })}
-          </PluginSlotBoundary>
-        ))}
-      </>
-    );
-  const contentAppend =
-    appendList.length === 0 ? null : (
-      <>
-        {appendList.map((e) => (
-          <PluginSlotBoundary
-            key={e.item.id}
-            slot={ChatList.responseAppend}
-            pluginId={e.pluginId}
-          >
-            {e.item.render({ data: props.data, isLast: props.isLast })}
-          </PluginSlotBoundary>
-        ))}
-      </>
-    );
+  const contentPrepend = useMemo(
+    () =>
+      prependList.length === 0 ? null : (
+        <>
+          {prependList.map((e) => (
+            <PluginSlotBoundary
+              key={e.item.id}
+              slot={ChatList.responsePrepend}
+              pluginId={e.pluginId}
+            >
+              {e.item.render({ data: throttledData as unknown as ChatResponseData, isLast: props.isLast })}
+            </PluginSlotBoundary>
+          ))}
+        </>
+      ),
+    [prependList, throttledData, props.isLast],
+  );
+  const contentAppend = useMemo(
+    () =>
+      appendList.length === 0 ? null : (
+        <>
+          {appendList.map((e) => (
+            <PluginSlotBoundary
+              key={e.item.id}
+              slot={ChatList.responseAppend}
+              pluginId={e.pluginId}
+            >
+              {e.item.render({ data: throttledData as unknown as ChatResponseData, isLast: props.isLast })}
+            </PluginSlotBoundary>
+          ))}
+        </>
+      ),
+    [appendList, throttledData, props.isLast],
+  );
 
   const fallback = () => (
     <DefaultHostResponseCard
-      data={props.data as unknown as IAgentScopeRuntimeResponse}
+      data={throttledData}
       isLast={props.isLast}
       contentPrepend={contentPrepend}
       contentAppend={contentAppend}
@@ -325,7 +472,7 @@ export function HostResponseCard(props: {
         fallback={fallback()}
       >
         {renderFn({
-          data: props.data,
+          data: throttledData as unknown as ChatResponseData,
           isLast: props.isLast,
           fallback,
         })}

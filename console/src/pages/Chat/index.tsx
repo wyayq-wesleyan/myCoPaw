@@ -84,6 +84,7 @@ import {
 } from "./headlineFilter";
 import FilesDrawer from "../../features/files-workspace/FilesDrawer";
 import SessionProjectDirectory from "../../features/project-directory/SessionProjectDirectory";
+import { ChunkErrorBoundary } from "../../components/ChunkErrorBoundary";
 import {
   sessionFilesScopeKey,
   type FilesWorkspaceScope,
@@ -113,6 +114,15 @@ import { useCodingTabsStore } from "../../stores/codingTabsStore";
 import { RichFileReferenceInputProvider } from "./RichFileReferenceInput";
 import type { ParsedFileReference } from "./fileReferenceFormatting";
 import { scrollReverseMessageList } from "./messageScroll";
+
+const CHAT_ATTACHMENTS_MAX_BYTES = 20 * 1024 * 1024;
+
+const INTERNAL_INJECTION_NAMES = new Set([
+  "knowledge_auto_context",
+  "visual_context",
+  "visual_history",
+]);
+const KNOWLEDGE_INJECTION_PREFIX = "以下内容来自当前账户可访问的知识空间";
 
 interface ApprovalMessageData {
   requestId: string;
@@ -169,7 +179,6 @@ import {
   buildChatPath,
   getSessionIdFromPath,
 } from "../../utils/sessionRoute";
-import { useUploadLimitStore } from "../../stores/uploadLimitStore";
 import ChatSenderTabsPanel from "./components/ChatSenderTabsPanel";
 import {
   selectTasksForSession,
@@ -2703,16 +2712,19 @@ export default function ChatPage() {
           // Warn (not block) when only image is supported
           message.warning(t("chat.attachments.imageOnlyWarning"));
         }
-        const sizeMb = file.size / 1024 / 1024;
-        const uploadLimit = useUploadLimitStore.getState().uploadMaxSizeMb;
-        if (uploadLimit !== null && sizeMb > uploadLimit) {
+        const currentAttachmentBytes = pendingFileListRef.current.reduce(
+          (total, item) => total + (item.size ?? 0),
+          0,
+        );
+        const totalAttachmentBytes = currentAttachmentBytes + file.size;
+        if (totalAttachmentBytes > CHAT_ATTACHMENTS_MAX_BYTES) {
           message.error(
             t("chat.attachments.fileSizeExceeded", {
-              limit: uploadLimit,
-              size: sizeMb.toFixed(2),
+              limit: 20,
+              size: (totalAttachmentBytes / 1024 / 1024).toFixed(2),
             }),
           );
-          onError?.(new Error(`File size exceeds ${uploadLimit}MB`));
+          onError?.(new Error("Total chat attachment size exceeds 20MB"));
           return;
         }
 
@@ -3186,23 +3198,16 @@ export default function ChatPage() {
               attachments: {
                 multiple: true,
                 trigger: function (props: any) {
-                  const uploadLimit =
-                    useUploadLimitStore.getState().uploadMaxSizeMb;
                   const tooltipKey = multimodalCaps.supportsMultimodal
                     ? multimodalCaps.supportsImage &&
                       !multimodalCaps.supportsVideo
                       ? "chat.attachments.tooltipImageOnly"
                       : "chat.attachments.tooltip"
                     : "chat.attachments.tooltipNoMultimodal";
-                  const tooltipTitle =
-                    uploadLimit !== null
-                      ? `${t(tooltipKey)}, ${t(
-                          "chat.attachments.fileSizeLimit",
-                          {
-                            limit: uploadLimit,
-                          },
-                        )}`
-                      : t(tooltipKey);
+                  const tooltipTitle = `${t(tooltipKey)}, ${t(
+                    "chat.attachments.totalFileSizeLimit",
+                    { limit: 20 },
+                  )}`;
                   return (
                     <Tooltip title={tooltipTitle}>
                       <IconButton
@@ -3239,18 +3244,38 @@ export default function ChatPage() {
         ...defaultConfig.api,
         fetch: customFetch,
         responseParser: (chunk: string) => {
-          const payload = JSON.parse(chunk) as Record<string, unknown>;
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(chunk) as Record<string, unknown>;
+          } catch (error) {
+            // A truncated proxy/SSE frame must not escape into the vendor
+            // response builder. Treat it as a transport no-op and allow the
+            // next complete frame to continue the answer.
+            console.warn("Ignoring malformed chat stream frame", error);
+            return { object: "message", type: "heartbeat" } as any;
+          }
+          if (!payload || typeof payload !== "object") {
+            return { object: "message", type: "heartbeat" } as any;
+          }
+          // TaskTracker sends this while the agent is awaiting a model, a
+          // long-running tool, or document parsing. It keeps the transport
+          // live but must never become a visible chat message.
+          if (payload.type === "heartbeat") {
+            return { object: "message", type: "heartbeat" } as any;
+          }
+          // Ignore malformed content frames.  A few error paths can emit a
+          // heartbeat/content envelope without a message id; passing it to
+          // AgentScope's response builder causes a null-object crash and
+          // leaves the sender spinner running forever.
+          if (
+            payload.object === "content" &&
+            (typeof payload.msg_id !== "string" || !payload.msg_id)
+          ) {
+            return { object: "message", type: "heartbeat" } as any;
+          }
           markLoopModeRunning();
           sanitizeHeadlinePayload(payload, headlineStreamFilterRef.current);
 
-          // Filter out internal runtime injections (knowledge context,
-          // visual/screenshot context) from the SSE output so they never
-          // appear as user bubbles in the UI.
-          const INTERNAL_INJECTION_NAMES = new Set([
-            "knowledge_auto_context",
-            "visual_context",
-            "visual_history",
-          ]);
           if (Array.isArray(payload.output)) {
             payload.output = (payload.output as any[]).filter(
               (msg: any) => {
@@ -3263,7 +3288,7 @@ export default function ChatPage() {
                       .map((c: any) => c.text)
                       .join("")
                   : "";
-                return !text.startsWith("以下内容来自当前账户可访问的知识空间");
+                return !text.startsWith(KNOWLEDGE_INJECTION_PREFIX);
               },
             );
           }
@@ -3292,7 +3317,7 @@ export default function ChatPage() {
           }
 
           if (payload.type === "turn_usage") {
-            return null;
+            return { object: "message", type: "heartbeat" } as any;
           }
 
           // Replay boundary marker from the reconnect stream. The
@@ -3309,7 +3334,17 @@ export default function ChatPage() {
               (payload.alternatives as typeof rateLimitAlternatives) || [];
             setRateLimitAlternatives(alts);
             message.warning(t("chat.rateLimitHit"));
-            return null;
+            return { object: "message", type: "heartbeat" } as any;
+          }
+
+          // Never pass extension/control frames without a runtime object to
+          // the SDK. Its response builder assumes `data.object` exists and
+          // can throw synchronously when handed an unknown shape.
+          if (
+            typeof payload.object !== "string" ||
+            !["response", "message", "content"].includes(payload.object)
+          ) {
+            return { object: "message", type: "heartbeat" } as any;
           }
 
           if (payloadRequestsHistoryClear(payload)) {
@@ -3538,11 +3573,13 @@ export default function ChatPage() {
               void openInlineFileReference(reference, trigger)
             }
           >
-            <AgentScopeRuntimeWebUI
-              ref={chatRef}
-              key={refreshKey}
-              options={options}
-            />
+            <ChunkErrorBoundary resetKey={`${queueSessionId}:${refreshKey}`}>
+              <AgentScopeRuntimeWebUI
+                ref={chatRef}
+                key={refreshKey}
+                options={options}
+              />
+            </ChunkErrorBoundary>
           </RichFileReferenceInputProvider>
         </div>
 

@@ -352,7 +352,7 @@ describe("ChatPage", () => {
 
   // ── handleFileUpload ──────────────────────────────────────────────────────
 
-  it("calls onError and skips upload when file exceeds 10MB", async () => {
+  it("allows a chat attachment up to the 20MB total limit", async () => {
     renderWithProviders(<ChatPage />, { initialEntries: ["/chat"] });
     await screen.findByTestId("chat-ui");
 
@@ -368,8 +368,32 @@ describe("ChatPage", () => {
       onError,
     });
 
-    expect(onError).toHaveBeenCalledOnce();
-    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    expect(mockUploadFile).toHaveBeenCalledWith(bigFile);
+  });
+
+  it("rejects attachments when their combined size exceeds 20MB", async () => {
+    renderWithProviders(<ChatPage />, { initialEntries: ["/chat"] });
+    await screen.findByTestId("chat-ui");
+
+    const first = new File([new ArrayBuffer(11 * 1024 * 1024)], "first.bin");
+    const second = new File([new ArrayBuffer(10 * 1024 * 1024)], "second.bin");
+    const firstSuccess = vi.fn();
+    const secondError = vi.fn();
+
+    await capturedOptions.sender.attachments.customRequest({
+      file: first,
+      onSuccess: firstSuccess,
+    });
+    await capturedOptions.sender.attachments.customRequest({
+      file: second,
+      onSuccess: vi.fn(),
+      onError: secondError,
+    });
+
+    expect(firstSuccess).toHaveBeenCalledOnce();
+    expect(secondError).toHaveBeenCalledOnce();
+    expect(mockUploadFile).toHaveBeenCalledTimes(1);
   });
 
   it("uploads successfully and calls onSuccess when file is within size limit", async () => {

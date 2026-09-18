@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Badge,
   Button,
+  Badge,
   DatePicker,
   Drawer,
   Empty,
   Input,
   Popconfirm,
   Row,
+  Select,
   Col,
   Space,
   Spin,
@@ -41,7 +42,15 @@ import styles from "./index.module.less";
 const { RangePicker } = DatePicker;
 
 const ACCEPTED_FILES = ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.csv,.txt,.md,.json";
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024;
+
+type DocumentListFilters = {
+  filename?: string;
+  created_after?: string;
+  created_before?: string;
+  doc_ids?: string;
+  status?: KnowledgeDocument["status"];
+};
 
 const statusMeta: Record<KnowledgeDocument["status"], { color: string; label: string }> = {
   queued: { color: "default", label: "等待处理" },
@@ -49,6 +58,23 @@ const statusMeta: Record<KnowledgeDocument["status"], { color: string; label: st
   completed: { color: "success", label: "已入库" },
   failed: { color: "error", label: "处理失败" },
 };
+
+const processingStageLabel: Record<string, string> = {
+  queued: "等待 Worker",
+  parsing: "正在解析文档",
+  vision: "正在识别图片",
+  extracting: "正在抽取知识",
+  embedding: "正在生成向量",
+  storing: "正在写入知识库",
+  graph_indexing: "正在构建关系索引",
+  completed: "已完成",
+  failed: "处理失败",
+};
+
+function getProcessingStageLabel(stage?: string | null): string | null {
+  if (!stage || stage === "completed" || stage === "failed") return null;
+  return processingStageLabel[stage] || stage;
+}
 
 function getFileExtension(filename: string): string {
   return filename.split(".").pop()?.toLowerCase() || "";
@@ -194,7 +220,16 @@ function DocxPreview({ documentId }: { documentId: string }) {
     }
   }, [documentId]);
 
-  if (error) return <Typography.Text type="danger">DOCX 加载失败: {error}</Typography.Text>;
+  if (error) {
+    return (
+      <div>
+        <Typography.Text type="warning" style={{ display: "block", marginBottom: 12 }}>
+          原始 DOCX 预览失败，已切换为解析内容预览：{error}
+        </Typography.Text>
+        <ChunkPreview documentId={documentId} />
+      </div>
+    );
+  }
   return (
     <div style={{ position: "relative" }}>
       <div ref={callbackRef} className={styles.docxPreview} />
@@ -233,17 +268,45 @@ function TextPreview({ documentId }: { documentId: string }) {
   return <pre className={styles.textContent}>{content}</pre>;
 }
 
+function ChunkPreview({ documentId }: { documentId: string }) {
+  const [content, setContent] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    knowledgeApi.getDocumentChunks(documentId, 200)
+      .then((result) => {
+        if (cancelled) return;
+        const chunks = Array.isArray(result?.chunks) ? result.chunks : [];
+        setContent(chunks.map((chunk: { content?: string; page?: number | null; location?: string | null }) => {
+          const where = chunk.page ? `第 ${chunk.page} 页` : (chunk.location || "");
+          return where ? `[${where}]\n${chunk.content || ""}` : (chunk.content || "");
+        }).join("\n\n") || "文档没有可预览的解析内容");
+      })
+      .catch((err) => {
+        if (!cancelled) setContent(`加载失败: ${err instanceof Error ? err.message : "unknown"}`);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [documentId]);
+
+  if (loading) return <div style={{ textAlign: "center", padding: "40px 0" }}><Spin size="large" /></div>;
+  return <pre className={styles.textContent}>{content}</pre>;
+}
+
 function DocumentPreview({ documentId, filename }: { documentId: string; filename: string }) {
   const ext = getFileExtension(filename);
   if (ext === "pdf") return <PdfPreview documentId={documentId} />;
-  if (ext === "docx" || ext === "doc") return <DocxPreview documentId={documentId} />;
+  if (ext === "docx") return <DocxPreview documentId={documentId} />;
+  if (ext === "doc") return <ChunkPreview documentId={documentId} />;
   return <TextPreview documentId={documentId} />;
 }
 
 /* ── Stats Drawer ──────────────────────────────────────────────── */
 
-function StatsDrawer({ documentId, filename, open, onClose }: {
+function StatsDrawer({ documentId, jobId, filename, open, onClose }: {
   documentId: string;
+  jobId?: string;
   filename: string;
   open: boolean;
   onClose: () => void;
@@ -273,6 +336,36 @@ function StatsDrawer({ documentId, filename, open, onClose }: {
             <Col span={12}><Statistic title="实体数" value={stats.entity_count} /></Col>
             <Col span={12}><Statistic title="关系数" value={stats.relation_count} /></Col>
           </Row>
+          <Row gutter={[16, 16]}>
+            <Col span={24}><Statistic title="当前步骤" value={getProcessingStageLabel(stats.processing_stage) || "-"} /></Col>
+            <Col span={24}><Statistic title="上传时间" value={stats.created_at ? dayjs(stats.created_at).format('YYYY-MM-DD HH:mm:ss') : '-'} /></Col>
+            <Col span={24}><Statistic title="开始处理" value={stats.started_at ? dayjs(stats.started_at).format('YYYY-MM-DD HH:mm:ss') : '-'} /></Col>
+            <Col span={24}><Statistic title="处理完成" value={stats.completed_at ? dayjs(stats.completed_at).format('YYYY-MM-DD HH:mm:ss') : '-'} /></Col>
+            <Col span={24}><Statistic title="处理时长" value={stats.processing_duration != null ? `${stats.processing_duration.toFixed(1)}s` : '-'} /></Col>
+          </Row>
+          {stats.status === "failed" && stats.error && (
+            <div>
+              <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>失败原因：</Typography.Text>
+              <pre style={{
+                background: "#fff1f0",
+                border: "1px solid #ffa39e",
+                borderRadius: 6,
+                padding: "12px 16px",
+                margin: 0,
+                fontSize: 12,
+                lineHeight: 1.6,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                maxHeight: 300,
+                overflow: "auto",
+              }}>
+                {stats.error}
+              </pre>
+            </div>
+          )}
+          {stats.status === "failed" && jobId && (
+            <Button onClick={() => void knowledgeApi.downloadJobLog(jobId)}>下载失败日志片段</Button>
+          )}
         </Space>
       ) : (
         <Typography.Text type="secondary">无法加载统计信息</Typography.Text>
@@ -286,15 +379,24 @@ function StatsDrawer({ documentId, filename, open, onClose }: {
 export default function KnowledgePage() {
   const [loading, setLoading] = useState(true);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
+  const [documentTotal, setDocumentTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [uploadBlockReason, setUploadBlockReason] = useState<string | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const [reprocessingId, setReprocessingId] = useState<string>();
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
 
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [filenameFilter, setFilenameFilter] = useState("");
   const [keywordFilter, setKeywordFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<KnowledgeDocument["status"] | undefined>();
+  const [appliedFilters, setAppliedFilters] = useState<DocumentListFilters>({});
   const [querying, setQuerying] = useState(false);
+  const uploadBatchGuard = useRef(false);
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDocument, setPreviewDocument] = useState<KnowledgeDocument | null>(null);
@@ -302,19 +404,22 @@ export default function KnowledgePage() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [statsDocument, setStatsDocument] = useState<KnowledgeDocument | null>(null);
 
-  const activeJobCount = documents.filter((d) => d.status === "queued" || d.status === "processing").length;
-
   /* ── Data Loading ──────────────────────────────────────────── */
 
-  const loadDocuments = async (params?: {
-    filename?: string;
-    created_after?: string;
-    created_before?: string;
-    doc_ids?: string;
+  const loadDocuments = async (params?: DocumentListFilters & {
+    page?: number;
+    page_size?: number;
   }) => {
     try {
-      const result = await knowledgeApi.listDocuments(params);
-      setDocuments(result);
+      const result = await knowledgeApi.listDocuments({
+        ...appliedFilters,
+        ...params,
+        page: params?.page ?? page,
+        page_size: params?.page_size ?? pageSize,
+      });
+      setDocuments(result.items);
+      setDocumentTotal(result.total);
+      setPendingCount(result.pending_count || 0);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "无法加载文档列表");
     }
@@ -325,7 +430,16 @@ export default function KnowledgePage() {
     try {
       const health = await knowledgeApi.health();
       setConfigured(health.configured);
-      if (health.configured) await loadDocuments();
+      setUploadBlockReason(
+        health.service?.upload_ready === false
+          ? health.service.upload_block_reason || "缺少嵌入模型配置"
+          : null,
+      );
+      setUploadNotice(health.service?.upload_notice || null);
+      if (health.configured) {
+        setPage(1);
+        await loadDocuments({ page: 1 });
+      }
     } catch (error) {
       message.error(error instanceof Error ? error.message : "知识服务连接失败");
     } finally {
@@ -354,23 +468,27 @@ export default function KnowledgePage() {
         const filterResult = await knowledgeApi.searchFilter(keywordFilter.trim());
         docIds = filterResult.document_ids;
         if (docIds.length === 0) {
+          setAppliedFilters({ doc_ids: "__no_match__" });
           setDocuments([]);
+          setDocumentTotal(0);
+          setPage(1);
           return;
         }
       }
 
       const params: {
-        filename?: string;
-        created_after?: string;
-        created_before?: string;
-        doc_ids?: string;
-      } = {};
+        page?: number;
+      } & DocumentListFilters = {};
 
       if (filenameFilter.trim()) params.filename = filenameFilter.trim();
       if (dateRange && dateRange[0]) params.created_after = dateRange[0].startOf("day").toISOString();
       if (dateRange && dateRange[1]) params.created_before = dateRange[1].endOf("day").toISOString();
       if (docIds) params.doc_ids = docIds.join(",");
+      if (statusFilter) params.status = statusFilter;
+      params.page = 1;
 
+      setAppliedFilters(params);
+      setPage(1);
       await loadDocuments(params);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "检索失败");
@@ -383,28 +501,19 @@ export default function KnowledgePage() {
     setDateRange(null);
     setFilenameFilter("");
     setKeywordFilter("");
-    void loadDocuments();
+    setStatusFilter(undefined);
+    setAppliedFilters({});
+    setPage(1);
+    void knowledgeApi.listDocuments({ page: 1, page_size: pageSize })
+      .then((result) => {
+        setDocuments(result.items);
+        setDocumentTotal(result.total);
+        setPendingCount(result.pending_count || 0);
+      })
+      .catch((error) => message.error(error instanceof Error ? error.message : "无法加载文档列表"));
   };
 
   /* ── Upload ────────────────────────────────────────────────── */
-
-  const handleUpload = async (file: File) => {
-    if (file.size >= MAX_FILE_SIZE) {
-      message.warning("文件大小不能超过10MB");
-      return false;
-    }
-    setUploading(true);
-    try {
-      await knowledgeApi.upload(file);
-      await loadDocuments();
-      message.success("文件已上传，正在后台解析");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "上传失败");
-    } finally {
-      setUploading(false);
-    }
-    return false;
-  };
 
   /* ── Reprocess ─────────────────────────────────────────────── */
 
@@ -485,6 +594,7 @@ export default function KnowledgePage() {
           {text}
         </Typography.Link>
       ),
+      sorter: (a: KnowledgeDocument, b: KnowledgeDocument) => a.filename.localeCompare(b.filename),
     },
     {
       title: "大小",
@@ -492,16 +602,28 @@ export default function KnowledgePage() {
       key: "size",
       width: 100,
       render: (val: number) => formatFileSize(val),
+      sorter: (a: KnowledgeDocument, b: KnowledgeDocument) => (a.size || 0) - (b.size || 0),
     },
     {
-      title: "状态",
+      title: <Badge count={pendingCount} overflowCount={999} offset={[8, 0]}><span>状态</span></Badge>,
       dataIndex: "status",
       key: "status",
-      width: 100,
-      render: (status: KnowledgeDocument["status"]) => {
+      width: 180,
+      render: (status: KnowledgeDocument["status"], record: KnowledgeDocument) => {
         const meta = statusMeta[status];
-        return <Tag color={meta.color}>{meta.label}</Tag>;
+        const stage = getProcessingStageLabel(record.processing_stage);
+        return (
+          <Space direction="vertical" size={2}>
+            <Tag color={meta.color}>{meta.label}</Tag>
+            {stage ? <Typography.Text type="secondary">{stage}</Typography.Text> : null}
+          </Space>
+        );
       },
+      sorter: (a: KnowledgeDocument, b: KnowledgeDocument) => {
+        const order = { queued: 0, processing: 1, failed: 2, completed: 3 };
+        return (order[a.status] ?? 4) - (order[b.status] ?? 4);
+      },
+      defaultSortOrder: "ascend",
     },
     {
       title: "上传时间",
@@ -509,6 +631,7 @@ export default function KnowledgePage() {
       key: "created_at",
       width: 170,
       render: (val: string) => val ? dayjs(val).format("YYYY-MM-DD HH:mm") : "-",
+      sorter: (a: KnowledgeDocument, b: KnowledgeDocument) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime(),
     },
     {
       title: "操作",
@@ -576,6 +699,16 @@ export default function KnowledgePage() {
       <div className={styles.queryBar}>
         <Row gutter={[12, 12]} align="middle">
           <Col>
+            <Select
+              placeholder="处理状态"
+              value={statusFilter}
+              onChange={(value) => setStatusFilter(value)}
+              allowClear
+              style={{ width: 130 }}
+              options={Object.entries(statusMeta).map(([value, meta]) => ({ value, label: meta.label }))}
+            />
+          </Col>
+          <Col>
             <RangePicker
               value={dateRange as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null}
               onChange={(dates) => setDateRange(dates as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
@@ -629,34 +762,50 @@ export default function KnowledgePage() {
                 showUploadList={false}
                 multiple
                 beforeUpload={(_file, fileList) => {
-                  if (fileList.length <= 1) return handleUpload(fileList[0]);
+                  // Ant Design invokes beforeUpload once per selected file. Only
+                  // process the first callback, otherwise a 30-file selection
+                  // can submit the same batch 30 times.
+                  if (uploadBatchGuard.current) return false;
+                  uploadBatchGuard.current = true;
                   (async () => {
                     setUploading(true);
                     let success = 0;
                     let fail = 0;
-                    for (const f of fileList) {
-                      if (f.size >= MAX_FILE_SIZE) { fail++; continue; }
+                    for (const f of fileList.slice()) {
+                      if (f.size > MAX_FILE_SIZE) { fail++; continue; }
                       try { await knowledgeApi.upload(f); success++; } catch { fail++; }
                     }
                     await loadDocuments();
                     setUploading(false);
                     if (fail === 0) message.success(`${success} 个文件已上传`);
                     else message.warning(`${success} 个成功，${fail} 个失败`);
+                    window.setTimeout(() => { uploadBatchGuard.current = false; }, 0);
                   })();
                   return false;
                 }}
-                disabled={uploading}
+                disabled={uploading || Boolean(uploadBlockReason)}
               >
-                <Badge count={activeJobCount} offset={[-5, 0]} size="small">
-                  <Button type="primary" icon={<UploadOutlined />} loading={uploading}>
-                    上传资料
+                <Tooltip title={uploadBlockReason || "上传资料"}>
+                  <Button
+                    type="primary"
+                    icon={<UploadOutlined />}
+                    loading={uploading}
+                    disabled={Boolean(uploadBlockReason)}
+                  >
+                  上传资料
                   </Button>
-                </Badge>
+                </Tooltip>
               </Upload>
             </Space>
           </Col>
         </Row>
-        <div className={styles.hint}>支持 PDF、DOC/DOCX、XLS/XLSX、CSV、TXT、Markdown、JSON，单文件不超过 10MB。</div>
+        <div className={styles.hint}>
+          {uploadBlockReason
+            ? `当前无法上传：${uploadBlockReason}`
+            : uploadNotice
+              ? uploadNotice
+            : "支持 PDF、DOC/DOCX、XLS/XLSX、CSV、TXT、Markdown、JSON，单文件不超过 10GB。"}
+        </div>
       </div>
 
       {/* ── Document Table ──────────────────────────────────────── */}
@@ -670,7 +819,19 @@ export default function KnowledgePage() {
             onChange: setSelectedRowKeys,
           }}
           locale={{ emptyText: <Empty description="暂无资料" /> }}
-          pagination={{ pageSize: 20, showTotal: (total) => `共 ${total} 个文件` }}
+          pagination={{
+            current: page,
+            pageSize,
+            total: documentTotal,
+            showSizeChanger: true,
+            pageSizeOptions: ["20", "50", "100"],
+            showTotal: (total) => `共 ${total} 个文件`,
+            onChange: (nextPage, nextPageSize) => {
+              setPage(nextPage);
+              setPageSize(nextPageSize);
+              void loadDocuments({ page: nextPage, page_size: nextPageSize });
+            },
+          }}
           size="middle"
         />
       </div>
@@ -693,6 +854,7 @@ export default function KnowledgePage() {
       {statsDocument && (
         <StatsDrawer
           documentId={statsDocument.id}
+          jobId={statsDocument.job_id}
           filename={statsDocument.filename}
           open={statsOpen}
           onClose={() => { setStatsOpen(false); setStatsDocument(null); }}

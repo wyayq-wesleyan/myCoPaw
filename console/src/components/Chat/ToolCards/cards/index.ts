@@ -96,6 +96,8 @@ export const BUILTIN_CARD_REGISTRY: Record<string, BuiltinCardComponent> = {
   view_video: ViewVideoCard,
   desktop_screenshot: DesktopScreenshotCard,
   send_file_to_user: SendFileCard,
+  generate_docx: SendFileCard,
+  generate_chart: SendFileCard,
 
   // Unified Browser SDK
   browser: BrowserCard,

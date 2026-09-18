@@ -2466,6 +2466,7 @@
       "tooltipImageOnly": "現在のモデルは画像アップロードのみ対応",
       "tooltipNoMultimodal": "現在のモデルにマルチモーダル機能が検出されていません。画像や動画が正しく処理されない場合があります",
       "fileSizeLimit": "1ファイルあたり最大{{limit}}MB",
+      "totalFileSizeLimit": "このメッセージの添付ファイル合計は{{limit}}MBまで",
       "fileSizeExceeded": "ファイルサイズが{{limit}}MBの制限を超えています。現在のファイル: {{size}}MB",
       "multimodalDisabled": "現在のモデルはファイルアップロードに対応していません",
       "multimodalWarning": "現在のモデルにマルチモーダル機能が検出されていません。画像や動画が正しく処理されない場合があります",

@@ -53,11 +53,13 @@ describe("agentApi", () => {
     });
   });
 
-  it("getAgentRunningConfig calls GET /agent/running-config", async () => {
+  it("getAgentRunningConfig calls the selected agent running-config API", async () => {
     const config = { agents: [] };
     vi.mocked(request).mockResolvedValue(config);
     const result = await agentApi.getAgentRunningConfig();
-    expect(request).toHaveBeenCalledWith("/workspace/running-config");
+    expect(request).toHaveBeenCalledWith(
+      "/agents/default/workspace/running-config",
+    );
     expect(result).toEqual(config);
   });
 
@@ -65,11 +67,14 @@ describe("agentApi", () => {
     const config = { agents: [{ name: "test" }] } as any;
     vi.mocked(request).mockResolvedValue(config);
     const result = await agentApi.updateAgentRunningConfig(config);
-    expect(request).toHaveBeenCalledWith("/workspace/running-config", {
-      method: "PUT",
-      body: JSON.stringify(config),
-      timeout: 10 * 60 * 1000,
-    });
+    expect(request).toHaveBeenCalledWith(
+      "/agents/default/workspace/running-config",
+      {
+        method: "PUT",
+        body: JSON.stringify(config),
+        timeout: 10 * 60 * 1000,
+      },
+    );
     expect(result).toEqual(config);
   });
 

@@ -216,6 +216,31 @@
   display: inline-block;
 }
 
+:global(.tool-file-download) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 4px 18px;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ant-color-link, #1677ff);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--ant-color-link-hover, #69b1ff);
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ant-color-primary-border, #91caff);
+    outline-offset: 2px;
+  }
+}
+
 .filePreviewLink {
   flex: 0 0 auto;
   padding: 0;

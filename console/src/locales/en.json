@@ -3019,6 +3019,7 @@
       "tooltipImageOnly": "Current model supports image upload only",
       "tooltipNoMultimodal": "No multimodal capability detected for current model, images or videos may not be processed correctly",
       "fileSizeLimit": "File size limit: {{limit}}MB",
+      "totalFileSizeLimit": "Max {{limit}}MB for all attachments in this message",
       "fileSizeExceeded": "File size exceeds {{limit}}MB limit. Current file: {{size}}MB",
       "multimodalDisabled": "Current model does not support file upload",
       "multimodalWarning": "No multimodal capability detected for current model, images or videos may not be processed correctly",

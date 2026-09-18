@@ -1,9 +1,11 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Send } from "lucide-react";
+import { Download, Send } from "lucide-react";
 import type { ToolCallContent } from "../shared/types";
 import { ToolCardShell, MediaPreview } from "../shared";
 import { shortFileName, getMediaInfo } from "../shared/utils";
+import { downloadFileFromUrl } from "../../../../utils/downloadFileFromUrl";
+import { buildAuthHeaders } from "../../../../api/authHeaders";
 import {
   filePathFromPreviewUrl,
   parseInternalFileLink,
@@ -26,7 +28,8 @@ const SendFileCard: React.FC<SendFileCardProps> = ({
     params.audio_path ||
     params.path ||
     "") as string;
-  const file = shortFileName(filePath);
+  const media = getMediaInfo(content);
+  const file = shortFileName(media?.name || filePath);
   const title = file ? t("tool.sendFile", { file }) : t("tool.sendFileDefault");
 
   if (content.status === "error") {
@@ -40,7 +43,6 @@ const SendFileCard: React.FC<SendFileCardProps> = ({
     );
   }
 
-  const media = getMediaInfo(content);
   const workspaceTarget = parseInternalFileLink(filePath);
   const target = media
     ? {
@@ -60,20 +62,38 @@ const SendFileCard: React.FC<SendFileCardProps> = ({
       defaultExpanded={Boolean(media)}
     >
       {media && (
-        <MediaPreview
-          media={media}
-          onFileOpen={
-            target
-              ? (trigger) => {
-                  window.dispatchEvent(
-                    new CustomEvent("qwenpaw:open-file-preview", {
-                      detail: { target, trigger },
-                    }),
-                  );
-                }
-              : undefined
-          }
-        />
+        <>
+          <MediaPreview
+            media={media}
+            onFileOpen={
+              target
+                ? (trigger) => {
+                    window.dispatchEvent(
+                      new CustomEvent("qwenpaw:open-file-preview", {
+                        detail: { target, trigger },
+                      }),
+                    );
+                  }
+                : undefined
+            }
+          />
+          {media.type === "file" && (
+            <button
+              type="button"
+              className="tool-file-download"
+              onClick={() => {
+                void downloadFileFromUrl(media.url, media.name, {
+                  headers: buildAuthHeaders(),
+                  errorMessage: t("files.downloadFailed"),
+                  preferResponseFilename: true,
+                });
+              }}
+            >
+              <Download size={14} aria-hidden="true" />
+              {t("download")}
+            </button>
+          )}
+        </>
       )}
     </ToolCardShell>
   );

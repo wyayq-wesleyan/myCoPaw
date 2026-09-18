@@ -7,7 +7,10 @@ export interface KnowledgeDocument {
   job_id?: string;
   filename: string;
   status: "queued" | "processing" | "completed" | "failed";
+  processing_stage?: string | null;
   error?: string | null;
+  attempts?: number;
+  log_excerpt?: string | null;
   size?: number;
   created_at?: string;
   updated_at?: string;
@@ -65,28 +68,66 @@ export interface KnowledgeDocumentStats {
   document_id: string;
   filename: string;
   status: string;
+  error?: string | null;
   size: number;
   chunk_count: number;
   entity_count: number;
   relation_count: number;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  processing_duration?: number;
+  processing_stage?: string | null;
+}
+
+export interface KnowledgeDocumentPage {
+  items: KnowledgeDocument[];
+  total: number;
+  page: number;
+  page_size: number;
+  pending_count?: number;
+}
+
+export interface KnowledgeHealth {
+  configured: boolean;
+  status: string;
+  service?: {
+    upload_ready?: boolean;
+    embedding_configured?: boolean;
+    embedding_available?: boolean;
+    upload_block_reason?: string | null;
+    upload_notice?: string | null;
+    worker?: {
+      available?: boolean;
+      status?: string | null;
+      stage?: string | null;
+      reason?: string | null;
+    };
+  };
 }
 
 export const knowledgeApi = {
-  health: () => request<{ configured: boolean; status: string }>("/knowledge/health"),
+  health: () => request<KnowledgeHealth>("/knowledge/health"),
 
   listDocuments: (params?: {
     filename?: string;
     created_after?: string;
     created_before?: string;
     doc_ids?: string;
+    status?: KnowledgeDocument["status"];
+    page?: number;
+    page_size?: number;
   }) => {
     const query = new URLSearchParams();
     if (params?.filename) query.set("filename", params.filename);
     if (params?.created_after) query.set("created_after", params.created_after);
     if (params?.created_before) query.set("created_before", params.created_before);
     if (params?.doc_ids) query.set("doc_ids", params.doc_ids);
+    if (params?.status) query.set("status", params.status);
+    if (params?.page) query.set("page", String(params.page));
+    if (params?.page_size) query.set("page_size", String(params.page_size));
     const qs = query.toString();
-    return request<KnowledgeDocument[]>(`/knowledge/documents${qs ? `?${qs}` : ""}`);
+    return request<KnowledgeDocumentPage>(`/knowledge/documents${qs ? `?${qs}` : ""}`);
   },
 
   reprocessDocument: (documentId: string) =>
@@ -112,6 +153,13 @@ export const knowledgeApi = {
 
   getDocumentStats: (documentId: string) =>
     request<KnowledgeDocumentStats>(`/knowledge/documents/${encodeURIComponent(documentId)}/stats`),
+
+  downloadJobLog: async (jobId: string) => {
+    const response = await fetch(getApiUrl(`/knowledge/jobs/${encodeURIComponent(jobId)}/log`), { headers: buildAuthHeaders() });
+    if (!response.ok) throw new Error(await response.text());
+    const blob = await response.blob(); const url = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = url; link.download = `job-${jobId}.log`; link.click(); URL.revokeObjectURL(url);
+  },
 
   searchFilter: (query: string) =>
     request<KnowledgeSearchFilterResult>("/knowledge/search/filter", {

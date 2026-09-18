@@ -306,6 +306,7 @@
       "tooltipImageOnly": "Model saat ini hanya mendukung unggahan gambar",
       "tooltipNoMultimodal": "Kemampuan multimodal tidak terdeteksi untuk model saat ini. Gambar atau video mungkin tidak diproses dengan benar",
       "fileSizeLimit": "Satu file hingga {{limit}}MB",
+      "totalFileSizeLimit": "Total semua lampiran maksimal {{limit}}MB",
       "fileSizeExceeded": "Ukuran file melebihi batas {{limit}}MB. File saat ini: {{size}}MB",
       "multimodalDisabled": "Model saat ini tidak mendukung unggahan file",
       "multimodalWarning": "Kemampuan multimodal tidak terdeteksi untuk model saat ini, gambar atau video mungkin tidak diproses dengan benar",

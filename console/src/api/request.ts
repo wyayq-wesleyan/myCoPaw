@@ -139,7 +139,11 @@ export async function request<T = unknown>(
           ? `${errorMessage} - ${text}`
           : `Request failed: ${response.status} ${response.statusText}`;
 
-        throw new Error(finalMessage);
+        const requestError = new Error(finalMessage) as Error & {
+          status?: number;
+        };
+        requestError.status = response.status;
+        throw requestError;
       }
 
       if (response.status === 204) {

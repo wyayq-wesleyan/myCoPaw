@@ -1,6 +1,6 @@
 import { request } from "../request";
 import { getApiUrl } from "../config";
-import { buildAuthHeaders } from "../authHeaders";
+import { buildAuthHeaders, getAgentScopedApiPath } from "../authHeaders";
 import type {
   AgentRequest,
   AgentsRunningConfig,
@@ -56,14 +56,19 @@ export const agentApi = {
     }),
 
   getAgentRunningConfig: () =>
-    request<AgentsRunningConfig>("/workspace/running-config"),
+    request<AgentsRunningConfig>(
+      getAgentScopedApiPath("/workspace/running-config"),
+    ),
 
   updateAgentRunningConfig: (config: AgentsRunningConfig) =>
-    request<AgentsRunningConfig>("/workspace/running-config", {
-      method: "PUT",
-      body: JSON.stringify(config),
-      timeout: 10 * 60 * 1000,
-    }),
+    request<AgentsRunningConfig>(
+      getAgentScopedApiPath("/workspace/running-config"),
+      {
+        method: "PUT",
+        body: JSON.stringify(config),
+        timeout: 10 * 60 * 1000,
+      },
+    ),
 
   testEmbedding: (config: EmbeddingModelConfig) =>
     request<EmbeddingTestResponse>("/workspace/embedding/test", {

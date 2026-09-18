@@ -25,6 +25,7 @@
 const REPLAY_END_EVENT = 'data: {"type": "replay_end"}';
 
 const DEFAULT_IDLE_FLUSH_MS = 300;
+const REPLAY_BATCH_SIZE = 100;
 
 /** Unique sentinel for the idle-timeout race. */
 const IDLE_TIMEOUT = Symbol("idle-timeout");
@@ -63,7 +64,11 @@ export function wrapReplayFastForward(
         buffering = false;
         const out = replayEvents.filter((e) => !isMarker(e));
         replayEvents = [];
-        if (out.length > 0) controller.enqueue(encodeEvents(out));
+        // Keep each enqueue bounded so a long replay cannot monopolize the
+        // browser main thread or force the SDK to render one giant chunk.
+        for (let i = 0; i < out.length; i += REPLAY_BATCH_SIZE) {
+          controller.enqueue(encodeEvents(out.slice(i, i + REPLAY_BATCH_SIZE)));
+        }
       };
 
       // Held across loop iterations so an idle-timeout never leaves a

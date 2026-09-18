@@ -25,7 +25,9 @@ import type { FileMetadata, FilesDrawerEvent, FilesDrawerState } from "./types";
 import type { FilesWorkspaceScope } from "./filesWorkspaceScope";
 import styles from "./FilesWorkspace.module.less";
 
-const PREVIEW_WIDTH_STORAGE_KEY = "qwenpaw-files-preview-width";
+// Bump the key so existing narrow preview widths do not override the new
+// reading-oriented default after the layout improvement.
+const PREVIEW_WIDTH_STORAGE_KEY = "qwenpaw-files-preview-width-v2";
 const WORKSPACE_WIDTH_STORAGE_KEY = "qwenpaw-files-workspace-width";
 const MIN_DRAWER_WIDTH = 420;
 const MIN_CHAT_WIDTH = 420;
