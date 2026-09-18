@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist/docker-images"
 APP_DIR="${DIST_DIR}/app"
-PACKAGE_NAME="${1:-huizhi-assistant-app-code-2.0.1.tar.gz}"
+PACKAGE_NAME="${1:-huizhi-assistant-app-code-$(date +%Y%m%d).tar.gz}"
 
 cd "${ROOT_DIR}"
 
@@ -29,7 +29,7 @@ cp pyproject.toml setup.py README.md README_zh.md "${APP_DIR}/"
 find "${APP_DIR}" \
   \( -name "__pycache__" -o -name "*.pyc" -o -name "*.pyo" -o -name ".DS_Store" \) \
   -prune -exec rm -rf {} +
-rm -rf "${APP_DIR}/src/copaw.egg-info"
+rm -rf "${APP_DIR}/src/copaw.egg-info" "${APP_DIR}/src/qwenpaw.egg-info"
 
 tar -C "${DIST_DIR}" -czf "${DIST_DIR}/${PACKAGE_NAME}" app
 shasum -a 256 "${DIST_DIR}/${PACKAGE_NAME}" > "${DIST_DIR}/${PACKAGE_NAME}.sha256"

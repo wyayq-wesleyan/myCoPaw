@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=py311-base:2.0.1-arm64
+ARG BASE_IMAGE=py312-base:2.0.2-amd64
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 

@@ -8,6 +8,9 @@ export QWENPAW_AUTH_USERNAME="${QWENPAW_AUTH_USERNAME:-admin}"
 export QWENPAW_AUTH_PASSWORD="${QWENPAW_AUTH_PASSWORD:-Admin@123456}"
 export QWENPAW_FORCE_AUTH_ON_LOCALHOST="${QWENPAW_FORCE_AUTH_ON_LOCALHOST:-true}"
 export QWENPAW_ENABLED_CHANNELS="${QWENPAW_ENABLED_CHANNELS:-console}"
+export QWENPAW_LOG_LEVEL="${QWENPAW_LOG_LEVEL:-info}"
+export QWENPAW_LOG_DIR="${QWENPAW_LOG_DIR:-${QWENPAW_WORKING_DIR:-/app/working}/logs}"
+mkdir -p "${QWENPAW_LOG_DIR}"
 
 offline_plugin_source="/opt/huizhi/offline-plugins/omp-workflows"
 offline_plugin_target="${QWENPAW_WORKING_DIR:-/app/working}/plugins/omp-workflows"
@@ -59,7 +62,7 @@ config_path.write_text(
 )
 PY
 
-envsubst '${COPAW_PORT}' \
+envsubst '${COPAW_PORT} ${QWENPAW_LOG_LEVEL} ${QWENPAW_LOG_DIR}' \
   < /etc/supervisor/conf.d/supervisord.conf.template \
   > /etc/supervisor/conf.d/supervisord.conf
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

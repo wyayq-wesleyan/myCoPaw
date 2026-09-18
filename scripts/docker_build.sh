@@ -6,7 +6,7 @@
 #
 # Build on top of a reusable base image to avoid repeated dependency downloads.
 # Build the base first when needed:
-#   bash scripts/docker_build_base.sh py311-base:1.0.1
+#   bash scripts/docker_build_base.sh py312-base:1.0.1
 #
 # The app image now rebuilds the local console frontend first and copies the
 # generated static assets into the Python package so the container always uses
@@ -24,7 +24,7 @@ cd "$REPO_ROOT"
 DOCKERFILE="${DOCKERFILE:-$REPO_ROOT/deploy/Dockerfile}"
 TAG="${1:-huizhi-assistant:2.0.1-arm64}"
 shift || true
-BASE_IMAGE="${BASE_IMAGE:-py311-base:2.0.1-arm64}"
+BASE_IMAGE="${BASE_IMAGE:-py312-base:2.0.2-amd64}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"

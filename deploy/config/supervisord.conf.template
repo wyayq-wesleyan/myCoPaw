@@ -1,6 +1,8 @@
 [supervisord]
 user=root
-logfile=/var/log/supervisord.log
+logfile=${QWENPAW_LOG_DIR}/supervisord.log
+logfile_maxbytes=20MB
+logfile_backups=5
 pidfile=/var/log/supervisord.pid
 nodaemon=true
 
@@ -8,19 +10,27 @@ nodaemon=true
 command=/bin/sh -c "rm -f /run/dbus/pid; mkdir -p /run/dbus; exec /usr/bin/dbus-daemon --system --nofork"
 autostart=true
 autorestart=true
-stderr_logfile=/var/log/dbus.err.log
-stdout_logfile=/var/log/dbus.out.log
+stderr_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stderr.log
+stderr_logfile_maxbytes=20MB
+stderr_logfile_backups=5
+stdout_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stdout.log
+stdout_logfile_maxbytes=20MB
+stdout_logfile_backups=5
 
 [program:app]
-command=qwenpaw app --host 0.0.0.0 --port ${COPAW_PORT}
+command=qwenpaw app --host 0.0.0.0 --port ${COPAW_PORT} --log-level ${QWENPAW_LOG_LEVEL}
 autostart=true
 autorestart=unexpected
 startretries=5
 startsecs=10
 priority=30
 stopwaitsecs=30
-stderr_logfile=/var/log/app.err.log
-stdout_logfile=/var/log/app.out.log
+stderr_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stderr.log
+stderr_logfile_maxbytes=20MB
+stderr_logfile_backups=5
+stdout_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stdout.log
+stdout_logfile_maxbytes=20MB
+stdout_logfile_backups=5
 environment=DISPLAY=":1",PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="/usr/bin/chromium",QWENPAW_RUNNING_IN_CONTAINER="1"
 
 [program:xvfb]
@@ -28,8 +38,12 @@ command=/bin/sh -c "rm -f /tmp/.X1-lock /tmp/.X11-unix/X1; mkdir -p /tmp/.X11-un
 autostart=true
 autorestart=true
 priority=10
-stderr_logfile=/var/log/xvfb.err.log
-stdout_logfile=/var/log/xvfb.out.log
+stderr_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stderr.log
+stderr_logfile_maxbytes=20MB
+stderr_logfile_backups=5
+stdout_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stdout.log
+stdout_logfile_maxbytes=20MB
+stdout_logfile_backups=5
 environment=DISPLAY=":1"
 
 [program:xfce4]
@@ -37,6 +51,10 @@ command=/bin/sh -c 'export DISPLAY=:1; for i in $(seq 1 200); do [ -S /tmp/.X11-
 autostart=true
 autorestart=true
 priority=20
-stderr_logfile=/var/log/xfce4.err.log
-stdout_logfile=/var/log/xfce4.out.log
+stderr_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stderr.log
+stderr_logfile_maxbytes=20MB
+stderr_logfile_backups=5
+stdout_logfile=${QWENPAW_LOG_DIR}/supervisor-%(program_name)s.stdout.log
+stdout_logfile_maxbytes=20MB
+stdout_logfile_backups=5
 environment=DISPLAY=":1"
