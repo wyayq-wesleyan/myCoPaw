@@ -6,7 +6,7 @@ import {
   sumUsage,
   UNATTRIBUTED_KEY,
 } from "./aggregate";
-import type { AccountUsageSummary } from "../../../../api/types/tokenUsage";
+import type { AccountUsageSummary } from "../../../api/types/tokenUsage";
 
 const LABEL = "未归属（历史数据）";
 

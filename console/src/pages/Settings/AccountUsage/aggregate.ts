@@ -5,7 +5,7 @@
  * "totals must agree with the chart" requirement depends on — can be tested
  * without rendering.
  */
-import type { AccountUsageSummary } from "../../../../api/types/tokenUsage";
+import type { AccountUsageSummary } from "../../../api/types/tokenUsage";
 
 /** Local row key for usage that could not be attributed to an account. */
 export const UNATTRIBUTED_KEY = "__unattributed__";
