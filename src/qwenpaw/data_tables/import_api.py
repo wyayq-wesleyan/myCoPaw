@@ -1,19 +1,43 @@
 """Data import API — file upload and job management."""
 
 import os
+import json
 import uuid
+from pathlib import Path
 
 import psycopg2.extras
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import PlainTextResponse
 
 from ..app.user_space import get_request_username, is_admin_user
 from .importer import start_import_task
-from .store import _get_conn, _put_conn
+from .store import SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
 
-router = APIRouter(tags=["data-import"])
+router = APIRouter(tags=["data-import"], dependencies=[Depends(init_data_tables_schema)])
 
 UPLOAD_DIR = "/app/working/data_uploads"
 ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
+MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024 * 1024
+# xlrd/pandas cannot stream legacy XLS files. Keep their limit materially
+# below the general limit so one upload cannot require several GB of RAM.
+MAX_XLS_FILE_BYTES = 512 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+async def _save_upload_file(file: UploadFile, destination: Path) -> int:
+    """Stream an import file to disk so multi-GB uploads never sit in memory."""
+    size = 0
+    try:
+        with destination.open("wb") as output:
+            while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+                size += len(chunk)
+                if size > MAX_IMPORT_FILE_BYTES:
+                    raise HTTPException(status_code=413, detail="数据分析单文件不能超过 10GB")
+                output.write(chunk)
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return size
 
 
 @router.post("/data-tables/{table_id}/import")
@@ -24,7 +48,7 @@ async def import_data(table_id: str, files: list[UploadFile] = File(...), reques
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM data_table_registry WHERE id=%s", (table_id,))
+            cur.execute(f"SELECT * FROM {SYSTEM_TABLE_REGISTRY} WHERE id=%s", (table_id,))
             table = cur.fetchone()
             if not table:
                 raise HTTPException(status_code=404, detail="表不存在")
@@ -43,9 +67,14 @@ async def import_data(table_id: str, files: list[UploadFile] = File(...), reques
         task_dir = os.path.join(UPLOAD_DIR, task_id)
         os.makedirs(task_dir, exist_ok=True)
         file_path = os.path.join(task_dir, file.filename or "data.csv")
-        content = await file.read()
-        with open(file_path, "wb") as f:
-            f.write(content)
+        file_size = await _save_upload_file(file, Path(file_path))
+        if ext == ".xls" and file_size > MAX_XLS_FILE_BYTES:
+            Path(file_path).unlink(missing_ok=True)
+            errors.append({
+                "filename": file.filename,
+                "error": "传统 XLS 文件不能超过 512MB，请转换为 CSV 或 XLSX",
+            })
+            continue
         job_id = await start_import_task(table_id, file_path, file.filename or "data.csv")
         job_ids.append({"job_id": job_id, "filename": file.filename})
     return {"jobs": job_ids, "errors": errors}
@@ -81,8 +110,8 @@ async def list_import_jobs(
             cur.execute(
                 f"""
                 SELECT COUNT(*) as cnt
-                FROM data_import_job j
-                JOIN data_table_registry t ON j.table_id = t.id
+                FROM {SYSTEM_TABLE_IMPORT_JOB} j
+                JOIN {SYSTEM_TABLE_REGISTRY} t ON j.table_id = t.id
                 {where}
             """,
                 params,
@@ -92,8 +121,8 @@ async def list_import_jobs(
             cur.execute(
                 f"""
                 SELECT j.*, t.table_name
-                FROM data_import_job j
-                JOIN data_table_registry t ON j.table_id = t.id
+                FROM {SYSTEM_TABLE_IMPORT_JOB} j
+                JOIN {SYSTEM_TABLE_REGISTRY} t ON j.table_id = t.id
                 {where}
                 ORDER BY j.created_at DESC
                 LIMIT %s OFFSET %s
@@ -108,12 +137,19 @@ async def list_import_jobs(
                     "table_name": r["table_name"],
                     "filename": r["filename"],
                     "status": r["status"],
+                    "attempts": r.get("attempts", 0),
+                    "next_retry_at": str(r["next_retry_at"]) if r.get("next_retry_at") else None,
                     "total_rows": r["total_rows"],
                     "success_rows": r["success_rows"],
                     "failed_rows": r["failed_rows"],
                     "errors": r["errors"],
                     "created_at": str(r["created_at"]),
+                    "started_at": str(r["started_at"]) if r["started_at"] else None,
                     "finished_at": str(r["finished_at"]) if r["finished_at"] else None,
+                    "processing_duration": (
+                        (r["finished_at"] - r["started_at"]).total_seconds()
+                        if r["started_at"] and r["finished_at"] else None
+                    ),
                 }
                 for r in rows
             ]
@@ -129,10 +165,10 @@ async def get_import_job(job_id: str, request: Request):
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                """
+                f"""
                 SELECT j.*, t.table_name, t.owner_username
-                FROM data_import_job j
-                JOIN data_table_registry t ON j.table_id = t.id
+                FROM {SYSTEM_TABLE_IMPORT_JOB} j
+                JOIN {SYSTEM_TABLE_REGISTRY} t ON j.table_id = t.id
                 WHERE j.id = %s
             """,
                 (job_id,),
@@ -148,12 +184,41 @@ async def get_import_job(job_id: str, request: Request):
                 "table_name": r["table_name"],
                 "filename": r["filename"],
                 "status": r["status"],
+                "attempts": r.get("attempts", 0),
+                "next_retry_at": str(r["next_retry_at"]) if r.get("next_retry_at") else None,
                 "total_rows": r["total_rows"],
                 "success_rows": r["success_rows"],
                 "failed_rows": r["failed_rows"],
                 "errors": r["errors"],
                 "created_at": str(r["created_at"]),
+                "started_at": str(r["started_at"]) if r["started_at"] else None,
                 "finished_at": str(r["finished_at"]) if r["finished_at"] else None,
+                "processing_duration": (
+                    (r["finished_at"] - r["started_at"]).total_seconds()
+                    if r["started_at"] and r["finished_at"] else None
+                ),
             }
+    finally:
+        _put_conn(conn)
+
+
+@router.get("/data-import-jobs/{job_id}/log")
+async def get_import_job_log(job_id: str, request: Request):
+    username = get_request_username(request) or "admin"
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""SELECT j.log_excerpt, j.errors, t.owner_username
+                    FROM {SYSTEM_TABLE_IMPORT_JOB} j JOIN {SYSTEM_TABLE_REGISTRY} t ON t.id=j.table_id
+                    WHERE j.id=%s""", (job_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            if not is_admin_user(username) and row["owner_username"] != username:
+                raise HTTPException(status_code=403, detail="无权查看此任务")
+            text = row.get("log_excerpt") or json.dumps(row.get("errors") or [], ensure_ascii=False, indent=2)
+            return PlainTextResponse(text, headers={"Content-Disposition": f'attachment; filename="import-{job_id}.log"'})
     finally:
         _put_conn(conn)

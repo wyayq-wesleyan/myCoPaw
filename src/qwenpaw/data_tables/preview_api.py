@@ -1,13 +1,13 @@
 """Data preview API."""
 
 import psycopg2.extras
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..app.user_space import get_request_username, is_admin_user
 from .connection import get_target_connection, put_target_connection
-from .store import _get_conn, _put_conn
+from .store import SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
 
-router = APIRouter(tags=["data-preview"])
+router = APIRouter(tags=["data-preview"], dependencies=[Depends(init_data_tables_schema)])
 
 
 @router.get("/data-tables/{table_id}/preview")
@@ -16,7 +16,7 @@ async def preview_table(table_id: str, request: Request, limit: int = Query(100,
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM data_table_registry WHERE id=%s", (table_id,))
+            cur.execute(f"SELECT * FROM {SYSTEM_TABLE_REGISTRY} WHERE id=%s", (table_id,))
             table = cur.fetchone()
             if not table:
                 raise HTTPException(status_code=404, detail="表不存在")

@@ -4,14 +4,18 @@ import json
 import re
 
 import psycopg2.extras
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..app.user_space import get_request_username, is_admin_user
-from .connection import _slug_username, drop_table, generate_table_name
-from .store import _get_conn, _put_conn
+from .connection import drop_table, ensure_user_database, generate_table_name
+from .store import SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
 
-router = APIRouter(prefix="/data-tables", tags=["data-tables"])
+router = APIRouter(
+    prefix="/data-tables",
+    tags=["data-tables"],
+    dependencies=[Depends(init_data_tables_schema)],
+)
 
 TABLE_NAME_RE = re.compile(r"^tb_[a-z][a-z0-9_]{0,62}$")
 
@@ -57,14 +61,21 @@ async def list_tables(
                 conditions.append("created_at <= %s")
                 params.append(created_end)
             where = " WHERE " + " AND ".join(conditions) if conditions else ""
-            cur.execute(f"SELECT COUNT(*) as cnt FROM data_table_registry{where}", params)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM {SYSTEM_TABLE_REGISTRY}{where}", params)
             total = cur.fetchone()["cnt"]
             offset = (page - 1) * page_size
             cur.execute(
-                f"SELECT * FROM data_table_registry{where} ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                f"SELECT * FROM {SYSTEM_TABLE_REGISTRY}{where} ORDER BY created_at DESC LIMIT %s OFFSET %s",
                 params + [page_size, offset],
             )
             rows = cur.fetchall()
+            pending_counts: dict[str, int] = {}
+            for row in rows:
+                cur.execute(
+                    f"SELECT COUNT(*) AS cnt FROM {SYSTEM_TABLE_IMPORT_JOB} WHERE table_id=%s AND status IN ('pending','parsing','loading')",
+                    (row["id"],),
+                )
+                pending_counts[str(row["id"])] = int(cur.fetchone()["cnt"] or 0)
             items = [
                 {
                     "id": str(r["id"]),
@@ -78,6 +89,7 @@ async def list_tables(
                     "initialized": r["initialized"],
                     "created_at": str(r["created_at"]),
                     "updated_at": str(r["updated_at"]),
+                    "pending_import_count": pending_counts.get(str(r["id"]), 0),
                 }
                 for r in rows
             ]
@@ -102,12 +114,13 @@ async def create_table(payload: CreateTableRequest, request: Request):
 
     # Always auto-generate table_name
     table_name = generate_table_name("", payload.description or payload.display_name)
+    db_name = ensure_user_database(username)
 
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM data_table_registry WHERE owner_username=%s AND table_name=%s",
+                f"SELECT 1 FROM {SYSTEM_TABLE_REGISTRY} WHERE owner_username=%s AND table_name=%s",
                 (username, table_name),
             )
             if cur.fetchone():
@@ -116,17 +129,16 @@ async def create_table(payload: CreateTableRequest, request: Request):
         _put_conn(conn)
 
     cols = [{"comment": c.strip(), "column_name": None, "type": None, "nullable": True, "is_primary_key": False} for c in payload.columns if c.strip()]
-    db_name = _slug_username(username)
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO data_table_registry (owner_username, db_name, table_name, display_name, description, columns)
+                f"""
+                INSERT INTO {SYSTEM_TABLE_REGISTRY} (owner_username, db_name, table_name, display_name, description, columns)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
             """,
-                (username, "", table_name, payload.display_name.strip(), payload.description.strip(), json.dumps(cols)),
+                (username, db_name, table_name, payload.display_name.strip(), payload.description.strip(), json.dumps(cols)),
             )
             row_id = cur.fetchone()[0]
             conn.commit()
@@ -145,7 +157,7 @@ async def get_table(table_id: str, request: Request):
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM data_table_registry WHERE id = %s", (table_id,))
+            cur.execute(f"SELECT * FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (table_id,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="表不存在")
@@ -154,7 +166,7 @@ async def get_table(table_id: str, request: Request):
             cols = row["columns"] or []
             # Count import jobs
             cur.execute(
-                "SELECT COUNT(*) as cnt, COALESCE(SUM(success_rows),0) as total_imported FROM data_import_job WHERE table_id=%s",
+                f"SELECT COUNT(*) as cnt, COALESCE(SUM(success_rows),0) as total_imported FROM {SYSTEM_TABLE_IMPORT_JOB} WHERE table_id=%s",
                 (table_id,),
             )
             job_stats = cur.fetchone()
@@ -184,7 +196,7 @@ async def delete_table(table_id: str, request: Request):
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM data_table_registry WHERE id = %s", (table_id,))
+            cur.execute(f"SELECT * FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (table_id,))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="表不存在")
@@ -192,7 +204,7 @@ async def delete_table(table_id: str, request: Request):
                 raise HTTPException(status_code=403, detail="无权删除此表")
             if row["initialized"]:
                 drop_table(row["db_name"], row["table_name"])
-            cur.execute("DELETE FROM data_table_registry WHERE id = %s", (table_id,))
+            cur.execute(f"DELETE FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (table_id,))
             conn.commit()
         return {"ok": True}
     except Exception:
@@ -214,7 +226,7 @@ async def batch_delete_tables(payload: dict, request: Request):
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             for tid in ids:
-                cur.execute("SELECT * FROM data_table_registry WHERE id = %s", (tid,))
+                cur.execute(f"SELECT * FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (tid,))
                 row = cur.fetchone()
                 if not row:
                     continue
@@ -225,7 +237,7 @@ async def batch_delete_tables(payload: dict, request: Request):
                         drop_table(row["db_name"], row["table_name"])
                     except Exception:
                         pass
-                cur.execute("DELETE FROM data_table_registry WHERE id = %s", (tid,))
+                cur.execute(f"DELETE FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (tid,))
                 deleted += 1
             conn.commit()
         return {"ok": True, "deleted": deleted}

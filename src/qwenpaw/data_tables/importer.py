@@ -1,13 +1,15 @@
-"""Async data importer — parse files and lazy-create tables in HighGo."""
+"""Bounded background data importer for the multi-user application."""
 
 import asyncio
 import json
 import logging
 import os
 import re
+import traceback
 import uuid
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from itertools import chain
+from typing import Any, Iterator
 
 import pandas as pd
 import psycopg2
@@ -19,7 +21,7 @@ from .connection import (
     put_target_connection,
     sanitize_column_name,
 )
-from .store import _get_conn, _put_conn
+from .store import SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,24 @@ TIMESTAMP_FORMATS = [
     "%Y%m%d %H:%M:%S",
     "%Y年%m月%d日 %H:%M:%S",
 ]
+IMPORT_CHUNK_ROWS = 10_000
+
+# Keep CPU-heavy Pandas parsing and synchronous database writes away from the
+# FastAPI event loop.  A small global limit prevents several users from
+# starting large imports at the same time and exhausting the host.
+_IMPORT_MAX_CONCURRENCY = max(
+    1,
+    int(os.getenv("QWENPAW_DATA_IMPORT_MAX_CONCURRENCY", "2")),
+)
+_import_semaphore: asyncio.Semaphore | None = None
+_scheduled_jobs: set[str] = set()
+
+
+def _get_import_semaphore() -> asyncio.Semaphore:
+    global _import_semaphore
+    if _import_semaphore is None:
+        _import_semaphore = asyncio.Semaphore(_IMPORT_MAX_CONCURRENCY)
+    return _import_semaphore
 
 
 def _detect_encoding(file_path: str) -> str:
@@ -53,6 +73,7 @@ def _detect_encoding(file_path: str) -> str:
 
 
 def _read_df(file_path: str, filename: str) -> pd.DataFrame:
+    """Read a legacy XLS file. CSV/XLSX imports use _iter_data_frames instead."""
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".csv":
         enc = _detect_encoding(file_path)
@@ -61,6 +82,57 @@ def _read_df(file_path: str, filename: str) -> pd.DataFrame:
         return pd.read_excel(file_path, dtype=str, keep_default_na=False)
     else:
         raise ValueError(f"不支持的文件格式: {ext}")
+
+
+def _iter_xlsx_frames(file_path: str) -> Iterator[pd.DataFrame]:
+    """Yield XLSX rows in bounded batches using openpyxl read-only mode."""
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(file_path, read_only=True, data_only=True)
+    try:
+        sheet = workbook.active
+        rows = sheet.iter_rows(values_only=True)
+        header_row = next(rows, None)
+        if header_row is None:
+            yield pd.DataFrame()
+            return
+        headers = ["" if value is None else str(value) for value in header_row]
+        batch: list[tuple[Any, ...]] = []
+        for row in rows:
+            batch.append(tuple("" if value is None else str(value) for value in row))
+            if len(batch) >= IMPORT_CHUNK_ROWS:
+                yield pd.DataFrame(batch, columns=headers)
+                batch = []
+        if batch:
+            yield pd.DataFrame(batch, columns=headers)
+        elif not headers:
+            yield pd.DataFrame()
+    finally:
+        workbook.close()
+
+
+def _iter_data_frames(file_path: str, filename: str) -> Iterator[pd.DataFrame]:
+    """Yield import data frames without materializing CSV/XLSX files in memory."""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".csv":
+        encoding = _detect_encoding(file_path)
+        yield from pd.read_csv(
+            file_path,
+            encoding=encoding,
+            dtype=str,
+            keep_default_na=False,
+            chunksize=IMPORT_CHUNK_ROWS,
+        )
+        return
+    if ext == ".xlsx":
+        yield from _iter_xlsx_frames(file_path)
+        return
+    if ext == ".xls":
+        # Legacy XLS has no streaming reader in the supported dependency set.
+        # It remains supported, but modern large files should use CSV/XLSX.
+        yield _read_df(file_path, filename)
+        return
+    raise ValueError(f"不支持的文件格式: {ext}")
 
 
 def _infer_type(series: pd.Series) -> str:
@@ -168,7 +240,9 @@ def _ensure_unique_col_names(headers: list[str]) -> list[str]:
 
 def _create_real_table(hg_conn, table_name: str, col_names: list[str], df: pd.DataFrame, comments: list[str]) -> dict:
     """Create the real HighGo table with id UUID PK + inferred column types."""
-    col_defs = ['id UUID PRIMARY KEY DEFAULT gen_random_uuid()']
+    # BIGSERIAL keeps account databases self-contained. Unlike gen_random_uuid,
+    # it does not depend on pgcrypto being installed in every new user database.
+    col_defs = ['id BIGSERIAL PRIMARY KEY']
     types: list[str] = []
     for i, cname in enumerate(col_names):
         ctype = _infer_type(df[cname])
@@ -238,16 +312,26 @@ def _process_file_headers(df: pd.DataFrame, user_comments: list[str], filename: 
     return col_names, padded
 
 
-async def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
+def _remap_frame_columns(df: pd.DataFrame, col_names: list[str]) -> pd.DataFrame:
+    """Map a later import batch to the persisted schema by column position."""
+    raw_headers = list(df.columns)
+    if len(raw_headers) != len(col_names):
+        raise ValueError(f"文件列数不匹配：数据表有 {len(col_names)} 列，文件有 {len(raw_headers)} 列")
+    remapped = df.copy()
+    remapped.columns = col_names
+    return remapped
+
+
+def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
     from .store import _get_conn as get_sys_conn, _put_conn as put_sys_conn
 
     conn = get_sys_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE data_import_job SET status='parsing' WHERE id=%s", (job_id,))
+            cur.execute(f"UPDATE {SYSTEM_TABLE_IMPORT_JOB} SET status='parsing', attempts=attempts+1, started_at=COALESCE(started_at, now()), next_retry_at=NULL WHERE id=%s", (job_id,))
             conn.commit()
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM data_table_registry WHERE id=%s", (table_id,))
+            cur.execute(f"SELECT * FROM {SYSTEM_TABLE_REGISTRY} WHERE id=%s", (table_id,))
             table = cur.fetchone()
             if not table:
                 raise RuntimeError(f"表不存在: {table_id}")
@@ -259,12 +343,15 @@ async def run_import_job(job_id: str, table_id: str, file_path: str, filename: s
         put_sys_conn(conn)
 
     try:
-        df = _read_df(file_path, filename)
-        total = len(df)
+        frames = iter(_iter_data_frames(file_path, filename))
+        first_frame = next(frames, None)
+        if first_frame is None:
+            raise ValueError("上传文件为空或没有表头")
+        total = 0
         conn = get_sys_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute("UPDATE data_import_job SET status='loading', total_rows=%s WHERE id=%s", (total, job_id))
+                cur.execute(f"UPDATE {SYSTEM_TABLE_IMPORT_JOB} SET status='loading', total_rows=0 WHERE id=%s", (job_id,))
                 conn.commit()
         finally:
             put_sys_conn(conn)
@@ -273,8 +360,8 @@ async def run_import_job(job_id: str, table_id: str, file_path: str, filename: s
         hg_conn = get_target_connection(db_name)
         try:
             if not already_initialized:
-                col_names, comments = _process_file_headers(df, user_comments, filename)
-                types = _create_real_table(hg_conn, table_name, col_names, df, comments)
+                col_names, comments = _process_file_headers(first_frame, user_comments, filename)
+                types = _create_real_table(hg_conn, table_name, col_names, first_frame, comments)
                 # persist real schema to registry
                 conn = get_sys_conn()
                 try:
@@ -289,7 +376,7 @@ async def run_import_job(job_id: str, table_id: str, file_path: str, filename: s
                         })
                     with conn.cursor() as cur:
                         cur.execute(
-                            "UPDATE data_table_registry SET columns=%s, db_name=%s, initialized=true, updated_at=now() WHERE id=%s",
+                            f"UPDATE {SYSTEM_TABLE_REGISTRY} SET columns=%s, db_name=%s, initialized=true, updated_at=now() WHERE id=%s",
                             (json.dumps(new_columns), db_name, table_id),
                         )
                         conn.commit()
@@ -300,23 +387,31 @@ async def run_import_job(job_id: str, table_id: str, file_path: str, filename: s
                 conn = get_sys_conn()
                 try:
                     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                        cur.execute("SELECT columns FROM data_table_registry WHERE id=%s", (table_id,))
+                        cur.execute(f"SELECT columns FROM {SYSTEM_TABLE_REGISTRY} WHERE id=%s", (table_id,))
                         persisted = cur.fetchone()
                         persisted_cols = persisted["columns"] or []
                     col_names = [c["column_name"] for c in persisted_cols]
                     types = {c["column_name"]: c["type"] for c in persisted_cols}
                 finally:
                     put_sys_conn(conn)
-                # Re-map DataFrame columns to match persisted schema
-                raw_headers = list(df.columns)
-                if len(raw_headers) >= len(col_names):
-                    rename_map = {}
-                    for i, cname in enumerate(col_names):
-                        if i < len(raw_headers) and raw_headers[i] != cname:
-                            rename_map[raw_headers[i]] = cname
-                    if rename_map:
-                        df.rename(columns=rename_map, inplace=True)
-            success, insert_errors = _batch_insert(hg_conn, table_name, col_names, df, [types[c] for c in col_names])
+                first_frame = _remap_frame_columns(first_frame, col_names)
+
+            success = 0
+            insert_errors: list[dict] = []
+            for frame in chain((first_frame,), frames):
+                frame = _remap_frame_columns(frame, col_names)
+                total += len(frame)
+                inserted, errors = _batch_insert(
+                    hg_conn,
+                    table_name,
+                    col_names,
+                    frame,
+                    [types[c] for c in col_names],
+                )
+                success += inserted
+                insert_errors.extend(errors)
+                if len(insert_errors) >= 100:
+                    break
             status = "completed" if not insert_errors else ("partial" if success > 0 else "failed")
         finally:
             put_target_connection(hg_conn, db_name)
@@ -325,14 +420,14 @@ async def run_import_job(job_id: str, table_id: str, file_path: str, filename: s
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    UPDATE data_import_job SET
-                        status=%s, success_rows=%s, failed_rows=%s, errors=%s, finished_at=now()
+                    f"""
+                    UPDATE {SYSTEM_TABLE_IMPORT_JOB} SET
+                        status=%s, total_rows=%s, success_rows=%s, failed_rows=%s, errors=%s, finished_at=now()
                     WHERE id=%s
                 """,
-                    (status, success, total - success, json.dumps(insert_errors[:100]), job_id),
+                    (status, total, success, total - success, json.dumps(insert_errors[:100]), job_id),
                 )
-                cur.execute("UPDATE data_table_registry SET row_count = row_count + %s, updated_at=now() WHERE id=%s", (success, table_id))
+                cur.execute(f"UPDATE {SYSTEM_TABLE_REGISTRY} SET row_count = row_count + %s, updated_at=now() WHERE id=%s", (success, table_id))
                 conn.commit()
         finally:
             put_sys_conn(conn)
@@ -341,16 +436,43 @@ async def run_import_job(job_id: str, table_id: str, file_path: str, filename: s
         except OSError:
             pass
     except Exception as e:
+        log_excerpt = traceback.format_exc()
         conn = get_sys_conn()
         try:
             with conn.cursor() as cur:
+                cur.execute(f"SELECT attempts FROM {SYSTEM_TABLE_IMPORT_JOB} WHERE id=%s", (job_id,))
+                row = cur.fetchone()
+                attempts = int(row[0] if row else 1)
+                retry = attempts <= 3
                 cur.execute(
-                    "UPDATE data_import_job SET status='failed', errors=%s, finished_at=now() WHERE id=%s",
-                    (json.dumps([{"row": 0, "column": "", "message": str(e)[:500]}]), job_id),
+                    f"""UPDATE {SYSTEM_TABLE_IMPORT_JOB} SET status=%s, errors=%s,
+                        log_excerpt=%s, next_retry_at=%s,
+                        finished_at=CASE WHEN %s THEN NULL ELSE now() END WHERE id=%s""",
+                    ("pending" if retry else "failed",
+                     json.dumps([{"row": 0, "column": "", "message": str(e)[:500]}]),
+                     log_excerpt[-12000:], datetime.now(timezone.utc) + timedelta(hours=1) if retry else None,
+                     retry, job_id),
                 )
                 conn.commit()
         finally:
             put_sys_conn(conn)
+
+
+async def _run_import_job_bounded(
+    job_id: str,
+    table_id: str,
+    file_path: str,
+    filename: str,
+) -> None:
+    """Run one blocking import in a bounded worker thread."""
+    async with _get_import_semaphore():
+        await asyncio.to_thread(
+            run_import_job,
+            job_id,
+            table_id,
+            file_path,
+            filename,
+        )
 
 
 async def start_import_task(table_id: str, file_path: str, filename: str) -> str:
@@ -359,14 +481,56 @@ async def start_import_task(table_id: str, file_path: str, filename: str) -> str
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO data_import_job (id, table_id, filename, status)
-                VALUES (%s, %s, %s, 'pending')
+                f"""
+                INSERT INTO {SYSTEM_TABLE_IMPORT_JOB} (id, table_id, filename, status, file_path, attempts)
+                VALUES (%s, %s, %s, 'pending', %s, 0)
             """,
-                (job_id, table_id, filename),
+                (job_id, table_id, filename, file_path),
             )
             conn.commit()
     finally:
         _put_conn(conn)
-    asyncio.create_task(run_import_job(job_id, table_id, file_path, filename))
+    _schedule_job(job_id, table_id, file_path, filename)
     return job_id
+
+
+def _schedule_job(job_id: str, table_id: str, file_path: str, filename: str) -> None:
+    if job_id in _scheduled_jobs:
+        return
+    _scheduled_jobs.add(job_id)
+    async def runner() -> None:
+        try:
+            await _run_import_job_bounded(job_id, table_id, file_path, filename)
+        finally:
+            _scheduled_jobs.discard(job_id)
+    asyncio.create_task(runner(), name=f"data-import-{job_id}")
+
+
+def recover_import_jobs() -> int:
+    """Requeue interrupted jobs and schedule queued jobs after app restart."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(f"""UPDATE {SYSTEM_TABLE_IMPORT_JOB}
+                SET status='pending', next_retry_at=NULL
+                WHERE status IN ('parsing','loading')""")
+            cur.execute(f"""SELECT id, table_id, file_path, filename FROM {SYSTEM_TABLE_IMPORT_JOB}
+                WHERE status='pending' AND file_path IS NOT NULL
+                AND (next_retry_at IS NULL OR next_retry_at <= now())""")
+            rows = cur.fetchall()
+            conn.commit()
+    finally:
+        _put_conn(conn)
+    for row in rows:
+        if Path(row["file_path"]).is_file():
+            _schedule_job(str(row["id"]), str(row["table_id"]), row["file_path"], row["filename"])
+    return len(rows)
+
+
+async def import_recovery_loop() -> None:
+    while True:
+        await asyncio.sleep(60)
+        try:
+            recover_import_jobs()
+        except Exception:
+            logger.exception("data import recovery scan failed")

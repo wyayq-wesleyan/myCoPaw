@@ -1,17 +1,18 @@
-"""HighGo database connection manager."""
+"""Per-account PostgreSQL database connection manager."""
 
 import re
 import time
 import logging
+import os
+import uuid
+import hashlib
 
 import psycopg2
-import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 
 logger = logging.getLogger(__name__)
 
 _target_pool: dict[str, ThreadedConnectionPool] = {}
-_source_config: dict | None = None
 
 
 def _slug_username(username: str) -> str:
@@ -20,8 +21,23 @@ def _slug_username(username: str) -> str:
     return slug[:63] or "db_default"
 
 
+def _database_name_for_username(username: str) -> str:
+    """Return a PostgreSQL-safe, collision-resistant database name.
+
+    A normal lowercase ASCII username remains unchanged, which keeps the
+    database name intuitive. Names requiring normalization receive a stable
+    hash suffix so different usernames can never collapse into one database.
+    """
+    raw = username.strip()
+    if re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", raw):
+        return raw
+    slug = _slug_username(raw)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+    return f"{slug[:52]}_{digest}"[:63]
+
+
 def generate_table_name(label: str | None, description: str | None = None) -> str:
-    """Generate a valid table name tb_<slug> from a user-provided label.
+    """Generate a unique data-table name using the required prefix.
 
     Falls back to description, then to a timestamp-based name.
     """
@@ -30,7 +46,7 @@ def generate_table_name(label: str | None, description: str | None = None) -> st
     if not slug:
         slug = f"data{int(time.time()) % 1000000}"
     slug = slug[:40]
-    return f"tb_{slug}"
+    return f"tb_hzxzs_{slug}_{uuid.uuid4().hex[:8]}"[:63]
 
 
 def sanitize_column_name(header: str, index: int) -> str:
@@ -45,38 +61,30 @@ def sanitize_column_name(header: str, index: int) -> str:
     return slug[:63]
 
 
-def _load_source_config():
-    from .store import _get_conn, _put_conn
+def _system_db_config() -> dict:
+    """Return the PG17 connection used by assistant metadata and user databases.
 
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM data_source_config ORDER BY created_at DESC LIMIT 1")
-            row = cur.fetchone()
-            if not row:
-                raise RuntimeError("数据源未配置，请在管理端设置数据源")
-            return {
-                "host": row["host"],
-                "port": row["port"],
-                "username": row["username"],
-                "password": row["password_encrypted"],
-            }
-    finally:
-        _put_conn(conn)
-
-
-def _get_source_config() -> dict:
-    global _source_config
-    if _source_config is None:
-        _source_config = _load_source_config()
-    return _source_config
+    The data-source settings table is deliberately not consulted here.  That
+    table may contain a historic external/HighGo connection, while account
+    isolation requires all account databases to be created in the managed
+    PG17 instance configured for this deployment.
+    """
+    configured_host = os.getenv("QWENPAW_DATA_TABLES_DB_HOST", "").strip()
+    return {
+        # The production assistant runs with host networking, so localhost is
+        # both simpler and more reliable than Docker's host-gateway alias.
+        "host": configured_host or "127.0.0.1",
+        "port": int(os.getenv("QWENPAW_DATA_TABLES_DB_PORT", "15432")),
+        "username": os.getenv("QWENPAW_DATA_TABLES_DB_USER", "huizhi_knowledge"),
+        "password": os.getenv("QWENPAW_DATA_TABLES_DB_PASSWORD", "huizhi_knowledge"),
+    }
 
 
 def get_target_connection(db_name: str):
     if db_name in _target_pool:
         pool = _target_pool[db_name]
     else:
-        cfg = _get_source_config()
+        cfg = _system_db_config()
         pool = ThreadedConnectionPool(
             1,
             5,
@@ -97,8 +105,33 @@ def put_target_connection(conn, db_name: str):
 
 
 def ensure_user_database(username: str) -> str:
-    db_name = _slug_username(username)
-    cfg = _get_source_config()
+    """Create and register one isolated database for an account.
+
+    The database is created on the configured PostgreSQL server, while the
+    mapping is stored in the assistant system database. Repeated calls are
+    idempotent and return the same database name.
+    """
+    from .store import SYSTEM_TABLE_USER_DATABASE, init_data_tables_schema, _get_conn, _put_conn
+
+    username = username.strip()
+    if not username:
+        raise ValueError("username is required")
+    init_data_tables_schema()
+    cfg = _system_db_config()
+    db_name = _database_name_for_username(username)
+    metadata_conn = _get_conn()
+    try:
+        with metadata_conn.cursor() as cur:
+            cur.execute(
+                f"SELECT database_name FROM {SYSTEM_TABLE_USER_DATABASE} WHERE username = %s",
+                (username,),
+            )
+            existing = cur.fetchone()
+            if existing:
+                db_name = str(existing[0])
+    finally:
+        _put_conn(metadata_conn)
+
     admin_conn = psycopg2.connect(
         host=cfg["host"],
         port=cfg["port"],
@@ -113,9 +146,30 @@ def ensure_user_database(username: str) -> str:
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
             if not cur.fetchone():
                 cur.execute(f'CREATE DATABASE "{db_name}"')
-                logger.info("Created database: %s", db_name)
+                logger.info("Created data-analysis database for user '%s': %s", username, db_name)
     finally:
         admin_conn.close()
+
+    metadata_conn = _get_conn()
+    try:
+        with metadata_conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {SYSTEM_TABLE_USER_DATABASE}
+                    (username, database_name, status, error, updated_at)
+                VALUES (%s, %s, 'ready', NULL, now())
+                ON CONFLICT (username) DO UPDATE SET
+                    database_name = EXCLUDED.database_name,
+                    status = 'ready', error = NULL, updated_at = now()
+                """,
+                (username, db_name),
+            )
+            metadata_conn.commit()
+    except Exception:
+        metadata_conn.rollback()
+        raise
+    finally:
+        _put_conn(metadata_conn)
     return db_name
 
 

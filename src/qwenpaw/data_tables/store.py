@@ -1,6 +1,9 @@
 """Data tables module — metadata storage in system PG17."""
 
 import json
+import logging
+import os
+import threading
 import uuid
 from typing import Any
 
@@ -10,7 +13,18 @@ from psycopg2.pool import ThreadedConnectionPool
 
 from ..config.utils import load_config
 
+logger = logging.getLogger(__name__)
+
 _pool: ThreadedConnectionPool | None = None
+_schema_lock = threading.Lock()
+_schema_initialized = False
+
+# Shared metadata tables are part of the assistant system database. Keep the
+# names explicit and centralized so migrations and every API use one contract.
+SYSTEM_TABLE_SOURCE_CONFIG = "tb_hzxzh_data_source_config"
+SYSTEM_TABLE_REGISTRY = "tb_hzxzh_data_table_registry"
+SYSTEM_TABLE_IMPORT_JOB = "tb_hzxzh_data_import_job"
+SYSTEM_TABLE_USER_DATABASE = "tb_hzxzh_user_database"
 
 
 def _get_pool() -> ThreadedConnectionPool:
@@ -18,17 +32,26 @@ def _get_pool() -> ThreadedConnectionPool:
     if _pool is not None:
         return _pool
 
-    # Connect to the knowledge-postgres container via host.docker.internal
-    _pool = ThreadedConnectionPool(
-        1,
-        10,
-        host="host.docker.internal",
-        port=15432,
-        dbname="huizhi_knowledge",
-        user="huizhi_knowledge",
-        password="huizhi_knowledge",
-    )
-    return _pool
+    configured_host = os.getenv("QWENPAW_DATA_TABLES_DB_HOST", "").strip()
+    hosts = [configured_host] if configured_host else ["host.docker.internal", "127.0.0.1"]
+    last_error: Exception | None = None
+    for host in hosts:
+        try:
+            _pool = ThreadedConnectionPool(
+                1,
+                10,
+                host=host,
+                port=int(os.getenv("QWENPAW_DATA_TABLES_DB_PORT", "15432")),
+                dbname=os.getenv("QWENPAW_DATA_TABLES_DB_NAME", "huizhi_knowledge"),
+                user=os.getenv("QWENPAW_DATA_TABLES_DB_USER", "huizhi_knowledge"),
+                password=os.getenv("QWENPAW_DATA_TABLES_DB_PASSWORD", "huizhi_knowledge"),
+                connect_timeout=10,
+            )
+            return _pool
+        except Exception as exc:
+            last_error = exc
+            _pool = None
+    raise RuntimeError(f"无法连接数据分析 PostgreSQL（尝试地址: {', '.join(hosts)}）: {last_error}")
 
 
 def _get_conn():
@@ -41,12 +64,24 @@ def _put_conn(conn):
 
 def init_data_tables_schema():
     """Create metadata tables in system PG17 if not exist."""
+    global _schema_initialized
+    if _schema_initialized:
+        return
+    with _schema_lock:
+        if _schema_initialized:
+            return
+        _init_data_tables_schema()
+        _schema_initialized = True
+
+
+def _init_data_tables_schema():
+    """Create metadata tables while holding the schema initialization lock."""
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS data_source_config (
+                f"""
+                CREATE TABLE IF NOT EXISTS {SYSTEM_TABLE_SOURCE_CONFIG} (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     name TEXT UNIQUE NOT NULL,
                     host TEXT NOT NULL,
@@ -59,8 +94,8 @@ def init_data_tables_schema():
             """
             )
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS data_table_registry (
+                f"""
+                CREATE TABLE IF NOT EXISTS {SYSTEM_TABLE_REGISTRY} (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     owner_username TEXT NOT NULL,
                     db_name TEXT NOT NULL,
@@ -77,10 +112,10 @@ def init_data_tables_schema():
             """
             )
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS data_import_job (
+                f"""
+                CREATE TABLE IF NOT EXISTS {SYSTEM_TABLE_IMPORT_JOB} (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    table_id UUID NOT NULL REFERENCES data_table_registry(id) ON DELETE CASCADE,
+                    table_id UUID NOT NULL REFERENCES {SYSTEM_TABLE_REGISTRY}(id) ON DELETE CASCADE,
                     filename TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     total_rows BIGINT DEFAULT 0,
@@ -89,23 +124,50 @@ def init_data_tables_schema():
                     errors JSONB DEFAULT '[]',
                     file_path TEXT,
                     created_at TIMESTAMPTZ DEFAULT now(),
+                    started_at TIMESTAMPTZ,
                     finished_at TIMESTAMPTZ
+                    ,attempts INTEGER NOT NULL DEFAULT 0
+                    ,next_retry_at TIMESTAMPTZ
+                    ,log_excerpt TEXT
                 );
             """
             )
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {SYSTEM_TABLE_USER_DATABASE} (
+                    username TEXT PRIMARY KEY,
+                    database_name TEXT UNIQUE NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ready',
+                    error TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
             conn.commit()
-            # Migration: ensure initialized column exists on existing tables
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "ALTER TABLE data_table_registry ADD COLUMN IF NOT EXISTS initialized BOOLEAN NOT NULL DEFAULT false"
-                    )
-                    cur.execute(
-                        "ALTER TABLE data_table_registry ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''"
-                    )
+            # Existing databases predate some columns. Each statement commits on
+            # its own: a failure aborts the psycopg2 transaction, and running
+            # them in one shared transaction used to discard every later
+            # migration silently, leaving the runtime queries with columns the
+            # metadata tables never grew.
+            migrations = [
+                f"ALTER TABLE {SYSTEM_TABLE_REGISTRY} ADD COLUMN IF NOT EXISTS initialized BOOLEAN NOT NULL DEFAULT false",
+                f"ALTER TABLE {SYSTEM_TABLE_REGISTRY} ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''",
+                f"ALTER TABLE {SYSTEM_TABLE_REGISTRY} ADD COLUMN IF NOT EXISTS db_name TEXT NOT NULL DEFAULT ''",
+                f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+                f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS file_path TEXT",
+                f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+                f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ",
+                f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS log_excerpt TEXT",
+            ]
+            for statement in migrations:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(statement)
                     conn.commit()
-            except Exception:
-                conn.rollback()
+                except Exception as exc:
+                    conn.rollback()
+                    logger.warning("data tables migration skipped (%s): %s", exc, statement)
     except Exception:
         conn.rollback()
         raise
