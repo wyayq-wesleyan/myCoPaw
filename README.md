@@ -1105,15 +1105,24 @@ MinerU 解析 PDF → 返回纯文本
 
 | 脚本 | 用途 |
 |------|------|
-| `scripts/package_code_update.sh` | 主应用代码包（src + console/dist + 插件） |
-| `scripts/package_knowledge_code_update.sh` | 知识服务代码包 |
-| `scripts/package_assistant_update.sh` | 主应用组合包（代码 + deploy 层） |
-| `scripts/package_merge_updates.sh` | **合并包**：主应用 + 知识服务 + deploy 一次打包，单包双服务更新 |
+| `scripts/package_merge_updates.sh` | **日常更新统一用这个**：一条命令产出主应用 + 知识服务 + deploy 的合并包 |
+| `scripts/package_code_update.sh` | 仅主应用代码包（src + console/dist + 插件），紧急热修用 |
+| `scripts/package_knowledge_code_update.sh` | 仅知识服务代码包，紧急热修用 |
+| `scripts/package_assistant_update.sh` | 主应用组合包（代码 + deploy 层），不含知识服务 |
 | `scripts/docker_build_knowledge.sh` | 构建 arm64 知识服务镜像（可选预装 MinerU 模型），全新部署用 |
 
-**包名约定**：一律用「前缀 + 日期」，即 `huizhi-knowledge-code-YYYYMMDD.tar.gz`、
-`huizhi-assistant-code-YYYYMMDD.tar.gz`、`huizhi-assistant-app-code-YYYYMMDD.tar.gz`
-（仅代码、不含 deploy 层）和 `huizhi-code-update-YYYYMMDD.tar.gz`（合并包）。
+**日常更新不要再分包**：主应用与知识服务统一打成一个
+`huizhi-code-update-YYYYMMDD.tar.gz` 一起上线，避免两个包分别部署造成版本错配。
+`package_merge_updates.sh` 已改为自动调用两个服务的打包脚本（含前端构建），不需要
+先手动准备分件包，直接执行即可：
+
+```bash
+bash scripts/package_merge_updates.sh
+```
+
+**包名约定**：一律用「前缀 + 日期」，即 `huizhi-code-update-YYYYMMDD.tar.gz`（合并包，
+日常用）、`huizhi-knowledge-code-YYYYMMDD.tar.gz`、`huizhi-assistant-code-YYYYMMDD.tar.gz`、
+`huizhi-assistant-app-code-YYYYMMDD.tar.gz`（后三者仅紧急热修单个服务时用）。
 不要加 git SHA、架构后缀或 `-schema-selfheal` 这类描述性尾巴；包内容是架构无关的
 Python 代码和前端产物，架构差异体现在 compose 与镜像里。同名包在同一天重复打包会
 覆盖，需要留档时显式传入自定义文件名（脚本第一个参数），校验值始终写在同名

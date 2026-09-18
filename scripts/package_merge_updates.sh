@@ -1,37 +1,56 @@
 #!/usr/bin/env bash
+# One-shot combined code package: 主应用 app/ + 知识服务 knowledge-service/.
+#
+# 单独打某一个服务的包只在紧急热修时才需要（用 package_code_update.sh 或
+# package_knowledge_code_update.sh）。日常更新统一走本脚本，避免两个包分别
+# 上线导致主应用与知识服务版本错配。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist/docker-images"
 TODAY="$(date +%Y%m%d)"
-ASSISTANT_PACKAGE="${1:-${DIST_DIR}/huizhi-assistant-app-code-${TODAY}.tar.gz}"
-KNOWLEDGE_PACKAGE="${2:-${DIST_DIR}/huizhi-knowledge-code-${TODAY}.tar.gz}"
-PACKAGE_NAME="${3:-huizhi-code-update-${TODAY}.tar.gz}"
+PACKAGE_NAME="${1:-huizhi-code-update-${TODAY}.tar.gz}"
 STAGE_DIR="$(mktemp -d)"
-trap 'rm -rf "${STAGE_DIR}"' EXIT
+PART_DIR="$(mktemp -d)"
+trap 'rm -rf "${STAGE_DIR}" "${PART_DIR}"' EXIT
 
 mkdir -p "${DIST_DIR}" "${STAGE_DIR}/deploy/config"
-[[ -f "${ASSISTANT_PACKAGE}" ]] || { echo "Missing assistant package: ${ASSISTANT_PACKAGE}" >&2; exit 1; }
-[[ -f "${KNOWLEDGE_PACKAGE}" ]] || { echo "Missing knowledge package: ${KNOWLEDGE_PACKAGE}" >&2; exit 1; }
 
-# Both source packages are code-only archives. Extract them under one staging
-# directory while keeping their existing top-level app/ and knowledge-service/
-# layout. No images, .env files, or runtime data are added.
-tar -xzf "${ASSISTANT_PACKAGE}" -C "${STAGE_DIR}"
-tar -xzf "${KNOWLEDGE_PACKAGE}" -C "${STAGE_DIR}"
-find "${STAGE_DIR}" \
-  \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' -o -name .DS_Store \) \
-  -prune -exec rm -rf {} +
+# Each part keeps its own established packager (frontend rebuild, plugin
+# bundling, compose wiring). They write into DIST_DIR, so read the artefacts
+# back from there with the staging names passed in.
+ASSISTANT_PART="huizhi-combined-staging-assistant.tar.gz"
+KNOWLEDGE_PART="huizhi-combined-staging-knowledge.tar.gz"
 
-# The merged code packages are enough for Python/frontend changes. Include
-# the small deployment layer needed by the current logging/schema fix so a
-# single upload also enables host-mounted logs.
+echo "==> 打包主应用代码（含前端构建）"
+bash "${ROOT_DIR}/scripts/package_code_update.sh" "${ASSISTANT_PART}" >/dev/null
+mv "${DIST_DIR}/${ASSISTANT_PART}" "${PART_DIR}/assistant.tar.gz"
+rm -f "${DIST_DIR}/${ASSISTANT_PART}.sha256"
+
+echo "==> 打包知识服务代码"
+bash "${ROOT_DIR}/scripts/package_knowledge_code_update.sh" "${KNOWLEDGE_PART}" >/dev/null
+mv "${DIST_DIR}/${KNOWLEDGE_PART}" "${PART_DIR}/knowledge.tar.gz"
+rm -f "${DIST_DIR}/${KNOWLEDGE_PART}.sha256"
+
+tar -xzf "${PART_DIR}/assistant.tar.gz" -C "${STAGE_DIR}"
+tar -xzf "${PART_DIR}/knowledge.tar.gz" -C "${STAGE_DIR}"
+
+# The deployment layer carries the code-mount entrypoint and the host-mounted
+# log template. Compose files contain only resource wiring (no secrets), so a
+# single upload also keeps logs landing on the host. Do not extract deploy/
+# over an existing production directory without comparing resource limits.
 cp "${ROOT_DIR}/deploy/code-mount-entrypoint.sh" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/docker-compose.code-mount.arm64.yml" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/entrypoint.sh" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/config/supervisord.conf.template" "${STAGE_DIR}/deploy/config/"
 
+find "${STAGE_DIR}" \
+  \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' -o -name .DS_Store \) \
+  -prune -exec rm -rf {} +
+
 tar -C "${STAGE_DIR}" -czf "${DIST_DIR}/${PACKAGE_NAME}" app knowledge-service deploy
 (cd "${DIST_DIR}" && shasum -a 256 "${PACKAGE_NAME}") > "${DIST_DIR}/${PACKAGE_NAME}.sha256"
-printf 'Merged code update package: %s\nChecksum: %s\n' \
-  "${DIST_DIR}/${PACKAGE_NAME}" "${DIST_DIR}/${PACKAGE_NAME}.sha256"
+
+echo
+echo "Combined code update package: ${DIST_DIR}/${PACKAGE_NAME}"
+echo "Checksum: ${DIST_DIR}/${PACKAGE_NAME}.sha256"
