@@ -8,11 +8,13 @@ vi.mock("@/api/modules/chat", () => ({
 }));
 
 import {
+  decodeFileName,
   extractUrlFromText,
   formatAgentList,
   formatMemorySearch,
   getMediaInfo,
   hasMultimediaPreview,
+  shortFileName,
 } from "./utils";
 import type { ToolCallContent } from "./types";
 
@@ -151,6 +153,78 @@ describe("getMediaInfo", () => {
     expect(media?.name).toBe("file1.txt");
   });
 
+  it("shows the original Chinese name of an AgentScope DataBlock", () => {
+    // Shape produced by send_file_to_user: DataBlock serializes its URLSource
+    // with percent-encoding while carrying the real name in `name`. The URL
+    // tail differs from the name (stored files get a uuid prefix), so this
+    // pins that `name` is read rather than recovered from the URL.
+    const media = getMediaInfo(
+      baseToolCall({
+        params: { file_path: "需求规格说明书.docx" },
+        status: "done",
+        result: JSON.stringify([
+          {
+            type: "data",
+            source: {
+              type: "url",
+              url:
+                "file:///abs/path/9f2c1a4b7e8d_%E9%9C%80%E6%B1%82" +
+                "%E8%A7%84%E6%A0%BC%E8%AF%B4%E6%98%8E%E4%B9%A6.docx",
+              media_type:
+                "application/vnd.openxmlformats-officedocument" +
+                ".wordprocessingml.document",
+            },
+            name: "需求规格说明书.docx",
+          },
+          { type: "text", text: "File sent successfully." },
+        ]),
+      }),
+    );
+
+    expect(media?.name).toBe("需求规格说明书.docx");
+    expect(media?.type).toBe("file");
+  });
+
+  it("accepts the legacy `filename` field as well", () => {
+    // The 1.x dict path puts the file name in `filename`.
+    const media = getMediaInfo(
+      baseToolCall({
+        params: {},
+        status: "done",
+        result: JSON.stringify([
+          {
+            type: "file",
+            source: { type: "url", url: "file:///abs/path/uuid_legacy.txt" },
+            filename: "legacy.txt",
+          },
+        ]),
+      }),
+    );
+
+    expect(media?.name).toBe("legacy.txt");
+  });
+
+  it("decodes a percent-encoded name recovered from the URL", () => {
+    // No `name` on the block: the URL tail is the only source of a name.
+    const media = getMediaInfo(
+      baseToolCall({
+        params: { file_path: "file.docx" },
+        status: "done",
+        result: JSON.stringify([
+          {
+            type: "data",
+            source: {
+              type: "url",
+              url: "file:///abs/path/%E4%B8%AD%E6%96%87.docx",
+            },
+          },
+        ]),
+      }),
+    );
+
+    expect(media?.name).toBe("中文.docx");
+  });
+
   it("only auto-expands multimedia file previews", () => {
     expect(
       hasMultimediaPreview(
@@ -250,5 +324,50 @@ describe("formatAgentList", () => {
       "| Coder | `agent-1` | Coding agent | ready |",
     );
     expect(formattedResult).not.toContain("|  | `` |  |  |");
+  });
+});
+
+describe("decodeFileName", () => {
+  it("decodes percent-encoded UTF-8 names", () => {
+    expect(
+      decodeFileName(
+        "%E5%A4%9A%E8%AF%9D%E5%8D%95%E5%88%86%E6%9E%90%E7%B3%BB%E7%BB%9F.docx",
+      ),
+    ).toBe("多话单分析系统.docx");
+  });
+
+  it("decodes spaces encoded by URL builders", () => {
+    expect(decodeFileName("my%20report.docx")).toBe("my report.docx");
+  });
+
+  it("leaves plain ASCII names untouched", () => {
+    expect(decodeFileName("report.docx")).toBe("report.docx");
+  });
+
+  it("keeps a literal percent that is not a valid escape", () => {
+    expect(decodeFileName("100%done.docx")).toBe("100%done.docx");
+    expect(decodeFileName("50%+off.docx")).toBe("50%+off.docx");
+  });
+
+  it("handles an empty or missing name", () => {
+    expect(decodeFileName("")).toBe("");
+  });
+});
+
+describe("shortFileName", () => {
+  it("decodes the decoded tail of an encoded path", () => {
+    expect(
+      shortFileName(
+        "/app/working/workspaces/u_abc/%E9%9C%80%E6%B1%82.docx",
+      ),
+    ).toBe("需求.docx");
+  });
+
+  it("keeps a Chinese name that is already decoded", () => {
+    expect(shortFileName("/app/working/需求.docx")).toBe("需求.docx");
+  });
+
+  it("handles Windows separators", () => {
+    expect(shortFileName("C:\\Users\\a\\需求.docx")).toBe("需求.docx");
   });
 });

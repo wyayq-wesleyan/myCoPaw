@@ -27,7 +27,24 @@ export function toDisplayUrl(url: string): string {
 /** Extract short file name from a path */
 export function shortFileName(filePath: string): string {
   const parts = filePath.replace(/\\/g, "/").split("/");
-  return parts[parts.length - 1] || filePath;
+  return decodeFileName(parts[parts.length - 1] || filePath);
+}
+
+/**
+ * Decode a percent-encoded file name for display.
+ *
+ * AgentScope serializes a `DataBlock`'s `URLSource` with percent-encoding, so
+ * a Chinese attachment shows up as `%E5%A4%9A...` whenever a name has to be
+ * recovered from the URL. A literal `%` that is not a valid escape makes
+ * `decodeURIComponent` throw; such names are returned untouched.
+ */
+export function decodeFileName(name: string): string {
+  if (!name || !name.includes("%")) return name;
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
 }
 
 /** Count lines in a string */
@@ -138,10 +155,11 @@ function classifyMediaType(ext: string): MediaType {
 /**
  * Extract a URL and filename from a result that uses the MCP content-block
  * array format, e.g.:
- * `[{"type":"file","source":{"type":"url","url":"file:///..."},"filename":"a.txt"},
+ * `[{"type":"data","source":{"type":"url","url":"file:///..."},"name":"a.txt"},
  *   {"type":"text","text":"File sent successfully."}]`
  *
- * Also handles `{"type":"image","source":{...}}` etc.
+ * AgentScope's `DataBlock` carries the original file name in `name`; the
+ * `filename` variants are accepted for other producers/older payloads.
  */
 function extractUrlFromResultBlocks(
   result: unknown,
@@ -170,29 +188,28 @@ function extractUrlFromResultBlocks(
     if (b.source && typeof b.source === "object") {
       const src = b.source as Record<string, unknown>;
       if (typeof src.url === "string" && src.url) {
-        return {
-          url: src.url,
-          filename: typeof b.filename === "string" ? b.filename : undefined,
-        };
+        return { url: src.url, filename: blockFileName(b) };
       }
     }
 
     // Flat blocks: { url: "..." } or { path: "..." }
     if (typeof b.url === "string" && b.url) {
-      return {
-        url: b.url,
-        filename: typeof b.filename === "string" ? b.filename : undefined,
-      };
+      return { url: b.url, filename: blockFileName(b) };
     }
     if (typeof b.path === "string" && b.path) {
-      return {
-        url: b.path,
-        filename: typeof b.filename === "string" ? b.filename : undefined,
-      };
+      return { url: b.path, filename: blockFileName(b) };
     }
   }
 
   return null;
+}
+
+/** Read the original file name carried by a content block, if any. */
+function blockFileName(block: Record<string, unknown>): string | undefined {
+  for (const value of [block.name, block.filename, block.file_name]) {
+    if (typeof value === "string" && value) return value;
+  }
+  return undefined;
 }
 
 /** Read the first usable path from params (multiple key variants). */
@@ -241,10 +258,12 @@ export function getMediaInfo(tc: ToolCallContent): MediaInfo | null {
   const rawUrl = fromResult?.url || previewableParamPath || textUrl || "";
   if (!rawUrl) return null;
 
+  // Prefer the block's original name; only fall back to the URL tail (which
+  // may be percent-encoded) when the producer did not supply one.
   const name =
     fromResult?.filename ||
-    rawUrl.split("/").pop() ||
-    paramPath.split("/").pop() ||
+    decodeFileName(rawUrl.split("/").pop() || "") ||
+    decodeFileName(paramPath.split("/").pop() || "") ||
     "file";
   const ext = getFileExtFromPath(name);
   const mediaType = classifyMediaType(ext);
