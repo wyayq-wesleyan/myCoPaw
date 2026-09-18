@@ -1220,6 +1220,76 @@ admin 账号最终演变为整页卡死——连浏览器标签页都无法关�
   断言「外层引用的每个 `j.*` 列都被 LATERAL 子查询投影」，不需要数据库；已验证把修复
   回退后该测试会同时报出两处违规。
 
+### 9.13 Chat 驱动的入库：智能体代为建表/导入与上传知识空间
+
+**背景**：数据分析、知识空间、定时任务原本都要求用户先理解自己的数据，再去对应页面
+手动建表、上传、配置 cron。真实使用中大多数用户的数据是不规整、零散的，用户自己也
+说不清，只能给个大概背景然后把文件丢进聊天框。定时任务已经有「懂 crontab 自己配、
+不懂就让智能体配」的 skill + CLI 路径，本次把同一个模式补到数据分析与知识空间。
+
+**原先为什么做不到**（已核实）：agent 侧只有 `list_data_tables`、`describe_data_table`、
+`query_data_table` 三个只读工具（`query_data_table` 还硬拦非 SELECT/WITH）；建表和导入
+只有给控制台前端用的 HTTP 接口，且导入只接受浏览器 `UploadFile`。`list_data_tables`
+在没表时的原话就是「请先通过「数据分析」菜单创建数据表并导入数据」，即设计上是手工流程。
+
+**新增四个写工具**：
+
+| 工具 | 作用 |
+| --- | --- |
+| `create_data_table` | 用一句中文描述建表；不需要列定义 |
+| `import_data_table` | 把用户的 CSV/XLSX/XLS 导入指定表，返回成功行数或失败原因 |
+| `create_knowledge_space` | 新建知识空间；同名已存在则复用，不重复建 |
+| `upload_knowledge_document` | 把用户的文件上传到知识空间（留空则用默认空间） |
+
+**触发边界**（避免重蹈此前的误路由）：查询仍严格由精确短语「通过数据分析」门控，未
+改动。写工具只在**两条同时成立**时使用：(1) 本轮消息带了表格附件或用户明确指向工作区里
+的表格文件；(2) 用户表达了入库意图（建表/入库/存起来/以后能查）。只让智能体「看看
+数据」时不建表，而是在回答后主动提议一次「要不要建成数据表，以后可以直接查询」。
+
+**聊天附件的来源**：附件落在 `<工作区>/media`（`CONSOLE_MEDIA_DIR` 可覆盖），磁盘文件名
+是 `<32 位 uuid>_<原文件名>`。工具按文件名解析（模糊匹配最新的一个），对外展示和导入
+任务名会剥掉 uuid 前缀。边界控制：
+
+- 绝对路径必须落在此账号允许的根内（工作区 / 媒体目录 / 账号根），用 `resolve()` 后再做
+  包含性校验，符号链接指向外部会被拒绝；
+- 扩展名白名单、10GB 上限、传统 XLS 512MB 上限，全部复用 `data_tables/store.py` 的常量
+  （这些常量已从 `import_api` 挪到 `store.py`，避免工具为了一个路径常量把 pandas 拉进来）；
+- 只认调用账号自己的表（`owner_username` 精确匹配，不做 admin 越权），
+  与「数据分析每用户独立 PG 库」的隔离方向一致。
+
+**导入不消耗聊天附件**：`data_tables/importer.py` 导入成功后会删除源文件，所以工具先把
+附件**拷贝**到 `UPLOAD_DIR/<uuid>/` 再交给导入任务，用户的原附件保留。导入是后台任务，
+工具做有界等待（约 45 秒），小文件直接回报行数，大文件回报任务 ID 与当前状态。
+
+**权限说明（重要）**：本部署把工具审批硬写死为 `OFF`（`governance/tool_adapter.py` 在读取
+任何配置前就直接返回），策略引擎不会被调用，因此写工具的 `default_policy="ask"` 在当前
+版本**不构成任何拦截**，只为审批机制恢复后留下正确的种子。真正的门禁是工具函数体内的
+账号归属校验与路径包含性校验，以及按账号的工具开关。新工具默认 `enabled_by_default=True`，
+会经 `ToolsConfig._merge_default_tools` 自动补进已有和新建用户的 agent。
+
+**验证**：
+
+- 新增 42 个测试：`test_user_files.py`（11，含越权路径、符号链接逃逸、`../` 穿越、扩展名）、
+  `test_data_table_write_tools.py`（10，含表归属、附件不被消耗、部分失败、超时回报 job id）、
+  `test_knowledge_write_tools.py`（9，含就绪检查 409、重复上传、同名空间复用）、
+  `test_table_api.py`（6，建表核心允许空列、按 owner 隔离、无 admin 越权）、
+  `test_prompt_contributors.py`（+4，锁定触发边界与「通过数据分析」门控未被放宽）、
+  `test_unified_tool_registration.py`（+2，新工具的策略名与 target_param 登记）。
+- `tests/unit/governance` 与 `tests/unit/agents/tools` 全量回归通过；与干净 HEAD 逐项对比
+  失败清单，本次改动没有引入新的失败（既有失败均为与本功能无关的历史问题）。
+- 端到端实测（`scripts/verify_chat_ingest.py`，跑在真实 PostgreSQL 上）：按聊天附件的
+  真实命名方式造一个 `销售数据.csv` → `create_data_table` 建表 → `import_data_table`
+  导入 → `query_data_table` 得到 3 行；同时验证原附件未被消耗、工作区外路径被拒、
+  跨账号表不可达。脚本自带清理，验证后无残留表/库/任务。
+- 实测确认模型的参数 schema 由函数签名生成（`FunctionTool.input_schema`），四个工具的
+  参数与必填项正确；同族只读工具里的 `parameters=` 元数据其实从未被读取。
+- `data_tables/store.py` 的 `UPLOAD_DIR` 是容器内路径（`/app/working/data_uploads`），
+  在宿主机直接跑工具时需重定向；容器部署下无需处理。
+
+**已知边界**：聊天附件上限 20MB 且解析文本只截取首尾，大表仍建议走数据分析页面上传
+（支持到 10GB）；定时任务本轮未动，仍走 skill + CLI，其 slash 命令固定指向 `default`
+工作区的多用户隐患待单独处理。
+
 ## 10. 当前状态摘要
 
 | 项目 | 状态 |
