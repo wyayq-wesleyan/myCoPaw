@@ -58,7 +58,11 @@ from .routers.healthz import router as healthz_router
 from .routers.loops import router as loops_router
 from .routers.tool_calls import router as tool_calls_router
 from .routers.voice import voice_router
-from .user_space import migrate_all_user_workspaces, sync_admin_initial_skills
+from .user_space import (
+    heal_account_tool_allowlists,
+    migrate_all_user_workspaces,
+    sync_admin_initial_skills,
+)
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
@@ -195,6 +199,21 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     migrate_legacy_skills_to_skill_pool()
     ensure_qa_agent_exists()
     sync_admin_initial_skills()
+    # Tools shipped after an account's saved selection used to be written back
+    # as explicitly disabled, so they never reached the model. Re-apply the
+    # corrected selection once; the marker it writes makes this a no-op after.
+    try:
+        healed = heal_account_tool_allowlists()
+        if healed:
+            logger.info(
+                "Re-applied saved tool selections for %d account(s)",
+                healed,
+            )
+    except Exception:
+        logger.warning(
+            "Could not reconcile saved tool selections",
+            exc_info=True,
+        )
 
     # Migrate old conversations from sessions/*.json into each scroll agent's
     # history.db, so chats from before scroll existed stay recallable. This is

@@ -35,6 +35,7 @@ DISABLED_TOOLS = "disabled_tools"
 MENU_PERMISSIONS = "menu_permissions"
 ACCOUNT_SKILLS = "account_skills"
 ACCOUNT_TOOLS = "account_tools"
+ACCOUNT_TOOLS_KNOWN = "account_tools_known"
 RUNNING_CONFIG_OVERRIDE = "running_config_override"
 
 # Regular accounts start with the focused, day-to-day console.  The chat
@@ -258,12 +259,41 @@ def get_account_skills(username: str) -> list[str]:
     return [name for name in pool if name not in disabled]
 
 
+def _account_tools_from_state(state: dict) -> list[str]:
+    """Resolve one account's enabled tools, tolerating newly shipped tools.
+
+    ``account_tools`` is an allowlist captured when an administrator last made
+    an explicit choice. A tool added to the product afterwards is absent from
+    that list without ever having been considered — treating absence as
+    "disabled" silently hides every newly shipped tool from every account that
+    already had a saved selection (a new tool then looks broken from the chat
+    session, with no trace of why).
+
+    ``account_tools_known`` records which tools existed at that moment, so
+    "absent but never seen" is distinguishable from "deliberately excluded".
+    Tools that did ship enabled-by-default and were never seen fall back to
+    their own default. State saved before the marker existed has no way to
+    tell the two apart; there the same permissive fallback applies, and an
+    administrator who wants a default-on tool off must re-save the selection.
+    """
+    pool = _tool_pool()
+    selected = set(_names(state.get(ACCOUNT_TOOLS)))
+    known = set(_names(state.get(ACCOUNT_TOOLS_KNOWN)))
+
+    enabled: list[str] = []
+    for name, template in pool.items():
+        if name in selected:
+            enabled.append(name)
+        elif name not in known and bool(getattr(template, "enabled", True)):
+            enabled.append(name)
+    return enabled
+
+
 def get_account_tools(username: str) -> list[str]:
     state = load_user_state(username)
     pool = list(_tool_pool())
     if ACCOUNT_TOOLS in state:
-        selected = set(_names(state.get(ACCOUNT_TOOLS)))
-        return [name for name in pool if name in selected]
+        return _account_tools_from_state(state)
     disabled = set(get_disabled_names(username, DISABLED_TOOLS))
     return [name for name in pool if name not in disabled]
 
@@ -295,6 +325,60 @@ def set_account_skills(username: str, skill_names: list[str] | None) -> None:
                     logger.warning("Could not enable skill %s in %s", name, workspace, exc_info=True)
             else:
                 SkillService(workspace).disable_skill(name)
+
+
+def heal_account_tool_allowlists() -> int:
+    """Repair agent configs broken by the stale-allowlist bug.
+
+    Accounts whose saved selection predates a tool release were left with that
+    tool flagged ``enabled=False``, so it never reached the model even though
+    it shipped enabled-by-default. Re-applying the (now tolerant) selection
+    restores them and records the marker, so this runs at most once per
+    account.
+
+    Scope: only accounts whose state has no ``account_tools_known`` marker —
+    i.e. whose selection was saved before the marker existed. Accounts saved
+    afterwards keep their selections untouched, so later deliberate choices
+    are never overwritten.
+
+    Returns the number of accounts repaired.
+    """
+    try:
+        from .auth import list_users
+
+        usernames = [str(item["username"]) for item in list_users()]
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Could not enumerate accounts for tool selection repair",
+            exc_info=True,
+        )
+        return 0
+
+    repaired = 0
+    for username in usernames:
+        try:
+            state = load_user_state(username)
+        except Exception:  # noqa: BLE001
+            continue
+        if ACCOUNT_TOOLS not in state or ACCOUNT_TOOLS_KNOWN in state:
+            continue
+        try:
+            enabled = _account_tools_from_state(state)
+            set_account_tools(username, enabled)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Could not re-apply tool selection for %s",
+                username,
+                exc_info=True,
+            )
+            continue
+        repaired += 1
+        logger.info(
+            "Re-applied saved tool selection for %s (%d tools enabled)",
+            username,
+            len(enabled),
+        )
+    return repaired
 
 
 def sync_admin_initial_skills() -> int:
@@ -343,6 +427,9 @@ def set_account_tools(username: str, tool_names: list[str] | None) -> None:
         raise ValueError(f"Unknown tool(s): {', '.join(sorted(unknown))}")
     state = load_user_state(username)
     state[ACCOUNT_TOOLS] = [name for name in catalog if name in selected]
+    # Remember which tools this choice was made over, so tools shipped by a
+    # later upgrade are not mistaken for deliberate exclusions.
+    state[ACCOUNT_TOOLS_KNOWN] = list(catalog)
     state.pop(DISABLED_TOOLS, None)
     save_user_state(username, state)
 
@@ -393,8 +480,8 @@ def get_disabled_names(username: str, key: str) -> list[str]:
         selected = set(_names(state.get(ACCOUNT_SKILLS)))
         return [name for name in _skill_pool_names() if name not in selected]
     if key == DISABLED_TOOLS and ACCOUNT_TOOLS in state:
-        selected = set(_names(state.get(ACCOUNT_TOOLS)))
-        return [name for name in _tool_pool() if name not in selected]
+        enabled = set(_account_tools_from_state(state))
+        return [name for name in _tool_pool() if name not in enabled]
     value = state.get(key, [])
     return _names(value if isinstance(value, list) else [])
 
