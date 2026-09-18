@@ -11,6 +11,7 @@ from ...token_usage import (
     TokenUsageSummary,
     TokenUsageRecord,
 )
+from ...token_usage.visibility import visible_account
 from ..auth import require_admin_access
 from ..user_space import get_request_username
 
@@ -38,9 +39,13 @@ def _require_admin(request: Request) -> None:
 @router.get(
     "",
     summary="Get token usage summary",
-    description="Return aggregated token usage by date, model, and provider",
+    description=(
+        "Return aggregated token usage by date, model, and provider. "
+        "Administrators see every account; other accounts see only their own."
+    ),
 )
 async def get_token_usage(
+    request: Request,
     start_date: str
     | None = Query(
         None,
@@ -73,6 +78,7 @@ async def get_token_usage(
         end_date=end_d,
         model_name=model,
         provider_id=provider,
+        user_filter=visible_account(get_request_username(request)),
     )
 
 
@@ -125,9 +131,13 @@ async def get_account_usage(
 @router.get(
     "/details",
     summary="Get token usage details",
-    description="Return raw token usage records for frontend aggregation",
+    description=(
+        "Return raw token usage records for frontend aggregation. "
+        "Administrators see every account; other accounts see only their own."
+    ),
 )
 async def get_token_usage_details(
+    request: Request,
     start_date: str
     | None = Query(
         None,
@@ -160,4 +170,5 @@ async def get_token_usage_details(
         end_date=end_d,
         model_name=model,
         provider_id=provider,
+        user_filter=visible_account(get_request_username(request)),
     )

@@ -9,6 +9,30 @@ from agentscope.message import ToolResultState
 
 from ...runtime.tool_registry import tool_descriptor
 from ...token_usage import get_token_usage_manager
+from ...token_usage.visibility import visible_account
+
+
+def _resolve_caller() -> str | None:
+    """Resolve the account the tool is answering for.
+
+    Mirrors the account resolution used by the other account-scoped tools so a
+    scheduled run reports the owning account rather than nobody's usage.
+    """
+    from ...app.agent_context import get_current_agent_id, get_current_user_id
+
+    username = get_current_user_id()
+    if username and username != "default":
+        return str(username)
+    try:
+        from ...config import load_config
+
+        profile = load_config().agents.profiles.get(get_current_agent_id())
+        owner = getattr(profile, "owner_username", None) if profile else None
+        if isinstance(owner, str) and owner.strip():
+            return owner.strip()
+    except Exception:
+        pass
+    return None
 
 
 @tool_descriptor(
@@ -38,11 +62,15 @@ async def get_token_usage(
     """
     end = date.today()
     start = end - timedelta(days=max(1, min(days, 365)))
+    # Never answer with another account's usage: administrators get the global
+    # view, everyone else only their own numbers. Without this the tool read
+    # straight from the shared file and reported the combined total.
     summary = await get_token_usage_manager().get_summary(
         start_date=start,
         end_date=end,
         model_name=model_name,
         provider_id=provider_id,
+        user_filter=visible_account(_resolve_caller()),
     )
 
     lines: list[str] = []

@@ -194,8 +194,15 @@ class TokenUsageManager:
         end_date: date,
         model_name: Optional[str],
         provider_id: Optional[str],
+        user_filter: Optional[str] = None,
     ) -> list[TokenUsageRecord]:
-        """Return per-day records from the merged data dict."""
+        """Return per-day records from the merged data dict.
+
+        ``user_filter`` narrows the result to one account. It reads that
+        account's own counters rather than the entry totals, because the
+        totals also carry usage that could not be attributed to anyone; a
+        person's figures must not include other people's (or legacy) usage.
+        """
         results: list[TokenUsageRecord] = []
 
         current = start_date
@@ -203,20 +210,36 @@ class TokenUsageManager:
             date_str = current.isoformat()
             by_key = merged.get(date_str, {})
             for _key, entry in by_key.items():
+                if not isinstance(entry, dict):
+                    continue
                 rec_provider = entry.get("provider_id", "")
                 rec_model = entry.get("model_name") or _key
                 if model_name is not None and rec_model != model_name:
                     continue
                 if provider_id is not None and rec_provider != provider_id:
                     continue
+
+                if user_filter is not None:
+                    user_entry = (entry.get("by_user") or {}).get(user_filter)
+                    if not isinstance(user_entry, dict):
+                        # No attributed usage for this account on this model.
+                        continue
+                    prompt = user_entry.get("prompt_tokens", 0) or 0
+                    completion = user_entry.get("completion_tokens", 0) or 0
+                    calls = user_entry.get("call_count", 0) or 0
+                else:
+                    prompt = entry.get("prompt_tokens", 0) or 0
+                    completion = entry.get("completion_tokens", 0) or 0
+                    calls = entry.get("call_count", 0) or 0
+
                 results.append(
                     TokenUsageRecord(
                         date=date_str,
                         provider_id=rec_provider,
                         model=rec_model,
-                        prompt_tokens=entry.get("prompt_tokens", 0),
-                        completion_tokens=entry.get("completion_tokens", 0),
-                        call_count=entry.get("call_count", 0),
+                        prompt_tokens=prompt,
+                        completion_tokens=completion,
+                        call_count=calls,
                     ),
                 )
             current += timedelta(days=1)
@@ -229,6 +252,7 @@ class TokenUsageManager:
         end_date: Optional[date] = None,
         model_name: Optional[str] = None,
         provider_id: Optional[str] = None,
+        user_filter: Optional[str] = None,
     ) -> TokenUsageSummary:
         """Get aggregated token usage summary.
 
@@ -237,6 +261,9 @@ class TokenUsageManager:
             end_date: End of date range (inclusive). Default: today.
             model_name: Optional model name filter.
             provider_id: Optional provider ID filter.
+            user_filter: Optional account to scope the result to. ``None``
+                returns the global view; callers must have resolved
+                authorization before passing an unscoped value.
 
         Returns:
             TokenUsageSummary with totals, by_model, by_provider, by_date.
@@ -254,6 +281,7 @@ class TokenUsageManager:
             end_date,
             model_name,
             provider_id,
+            user_filter,
         )
 
         total_prompt = 0
@@ -317,6 +345,7 @@ class TokenUsageManager:
         end_date: Optional[date] = None,
         model_name: Optional[str] = None,
         provider_id: Optional[str] = None,
+        user_filter: Optional[str] = None,
     ) -> list[TokenUsageRecord]:
         """Get raw token usage records for frontend aggregation.
 
@@ -325,6 +354,9 @@ class TokenUsageManager:
             end_date: End of date range (inclusive). Default: today.
             model_name: Optional model name filter.
             provider_id: Optional provider ID filter.
+            user_filter: Optional account to scope the result to. ``None``
+                returns the global view; callers must have resolved
+                authorization before passing an unscoped value.
 
         Returns:
             List of TokenUsageRecord with per-date per-model data.
@@ -342,6 +374,7 @@ class TokenUsageManager:
             end_date,
             model_name,
             provider_id,
+            user_filter,
         )
 
         return records

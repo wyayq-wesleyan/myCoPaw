@@ -12,6 +12,7 @@ from .manager import (
     get_token_usage_manager,
 )
 from .model_wrapper import TokenRecordingModelWrapper
+from .visibility import visible_account
 from .turn_usage import (
     TURN_USAGE_META_KEY,
     fmt_tokens,
@@ -31,4 +32,5 @@ __all__ = [
     "fmt_tokens",
     "TURN_USAGE_META_KEY",
     "persist_turn_usage",
+    "visible_account",
 ]
