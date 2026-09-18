@@ -127,7 +127,7 @@ class LightRAGBridge:
         if not self.enabled:
             return {"indexed": 0, "failed": 0}
 
-        docs = store.list_documents(space_id, owner_id="", is_admin=True)
+        docs = store.list_documents_internal(space_id)
         indexed = 0
         failed = 0
         for doc in docs:
@@ -144,6 +144,25 @@ class LightRAGBridge:
             else:
                 failed += 1
         return {"indexed": indexed, "failed": failed}
+
+    async def delete_document(self, document_id: str) -> bool:
+        """Delete a document and all associated data from LightRAG."""
+        if not self.enabled:
+            return False
+        headers = {"X-API-Key": self.settings.lightrag_api_key} if self.settings.lightrag_api_key else {}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.delete(
+                    f"{self.settings.lightrag_url}/documents/delete_document",
+                    headers=headers,
+                    json={"doc_ids": [document_id], "delete_llm_cache": True},
+                )
+                if response.status_code == 409:
+                    return True
+                response.raise_for_status()
+                return True
+        except Exception:
+            return False
 
     async def health(self) -> dict[str, Any]:
         if not self.enabled:

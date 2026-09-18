@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import re
 import tempfile
 import uuid
+import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
@@ -22,11 +25,52 @@ from .store import Store
 
 settings = Settings.from_env()
 settings.ensure_dirs()
+logging.basicConfig(
+    level=getattr(logging, os.environ.get("KNOWLEDGE_LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s knowledge-api %(message)s",
+)
+logger = logging.getLogger("knowledge-api")
 store = Store(settings.database_url)
 lightrag = LightRAGBridge(settings)
 
 # 语义检索相关性地板（余弦分数）：实测分布 相关查询 0.45+，无关查询 <=0.36
 SEMANTIC_MIN_SCORE = 0.40
+
+
+def upload_readiness() -> dict[str, Any]:
+    """Return the capabilities required to turn files into usable RAG data.
+
+    Image understanding is deliberately not a readiness condition.  The
+    worker attempts it only for image chunks and skips it if the configured
+    chat model cannot accept images.
+    """
+    embedding_configured = bool(
+        settings.embedding_explicitly_configured
+        and settings.embedding_base_url
+        and settings.embedding_model
+    )
+    client = ModelClient(settings)
+    embedding_ready = (
+        client.supports_embedding() if embedding_configured else False
+    )
+    worker = store.get_worker_health()
+    reasons: list[str] = []
+    if not embedding_configured:
+        reasons.append("未配置独立的嵌入模型（EMBEDDING_BASE_URL、EMBEDDING_MODEL）")
+    elif not embedding_ready:
+        reasons.append("嵌入模型不可用，请检查地址、密钥和模型名称")
+    if not worker["available"]:
+        reasons.append(str(worker["reason"]))
+    return {
+        # Embeddings are necessary for retrieval. Image descriptions are an
+        # optional best-effort enrichment performed by the worker.
+        "upload_ready": embedding_ready and worker["available"],
+        "embedding_configured": embedding_configured,
+        "embedding_available": embedding_ready,
+        "worker": worker,
+        "upload_block_reason": "；".join(reasons) or None,
+        "upload_notice": "文档中的图片仅在当前模型支持多模态时解析；不支持时自动跳过图片，文字和表格仍会正常入库。",
+    }
 
 
 def _safe_filename(name: str) -> str:
@@ -89,15 +133,16 @@ app = FastAPI(title="汇智知识服务", version="0.1.4", lifespan=lifespan)
 async def health() -> dict[str, Any]:
     from .parsers import MinerUParser
 
-    mineru = MinerUParser(settings.mineru_command)
+    mineru = MinerUParser(settings.mineru_command, settings.mineru_timeout_seconds)
     return {
         "status": "ok",
         "service": "huizhi-knowledge",
         "parser_backend": settings.parser_backend,
+        "knowledge_offline": settings.knowledge_offline,
         "mineru_configured": bool(settings.mineru_command),
         "mineru_ready": mineru.available,
         "lightrag": await lightrag.health(),
-        "embedding_configured": bool(settings.embedding_base_url and settings.embedding_model),
+        **await asyncio.to_thread(upload_readiness),
         "reranker_configured": settings.reranker_enabled and bool(settings.reranker_base_url and settings.reranker_model),
     }
 
@@ -120,6 +165,12 @@ async def upload_document(
     space_id: str = Form(default=""),
     scope: tuple[str, bool] = Depends(request_scope),
 ) -> dict[str, Any]:
+    readiness = await asyncio.to_thread(upload_readiness)
+    if not readiness["upload_ready"]:
+        raise HTTPException(
+            status_code=409,
+            detail=readiness["upload_block_reason"],
+        )
     owner_id, is_admin = scope
     if not space_id:
         space_obj = await asyncio.to_thread(store.get_or_create_user_space, owner_id)
@@ -136,6 +187,7 @@ async def upload_document(
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / f"{document_id}-{filename}"
     size = 0
+    content_digest = hashlib.sha256()
     try:
         with target_path.open("wb") as output:
             while block := await file.read(1024 * 1024):
@@ -143,10 +195,33 @@ async def upload_document(
                 if size > settings.max_file_mb * 1024 * 1024:
                     raise HTTPException(status_code=413, detail="File exceeds configured size limit")
                 output.write(block)
+                content_digest.update(block)
     except Exception:
         target_path.unlink(missing_ok=True)
         raise
-    created = await asyncio.to_thread(store.create_document, space_id, owner_id, filename, str(target_path), file.content_type, document_id=document_id, size=size)
+    content_hash = content_digest.hexdigest()
+    existing = await asyncio.to_thread(store.find_document_by_hash, space_id, owner_id, content_hash, size)
+    if existing:
+        target_path.unlink(missing_ok=True)
+        return {
+            "id": existing["id"],
+            "job_id": existing.get("job_id"),
+            "status": existing["status"],
+            "filename": existing["filename"],
+            "duplicate": True,
+            "size": existing.get("size", size),
+        }
+    created = await asyncio.to_thread(
+        store.create_document,
+        space_id,
+        owner_id,
+        filename,
+        str(target_path),
+        file.content_type,
+        document_id=document_id,
+        size=size,
+        content_hash=content_hash,
+    )
     return {**created, "size": size}
 
 
@@ -192,8 +267,15 @@ async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
         tmp_path = Path(tmp_dir) / (file.filename or f"upload{suffix}")
         tmp_path.write_bytes(data)
         try:
-            result = extract_text_from_file(tmp_path, settings.parser_backend, settings.mineru_command)
+            result = extract_text_from_file(
+                tmp_path,
+                settings.parser_backend,
+                settings.mineru_command,
+                offline=settings.knowledge_offline,
+                mineru_timeout_seconds=settings.mineru_timeout_seconds,
+            )
         except Exception as exc:
+            logger.exception("document parse failed: filename=%s", file.filename)
             raise HTTPException(status_code=500, detail=f"Parse failed: {exc}")
     return result
 
@@ -202,9 +284,14 @@ async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
 async def delete_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """Delete a document and all its related data."""
     owner_id, is_admin = scope
-    deleted = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
-    if not deleted:
+    result = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
+    if result == "not_found":
         raise HTTPException(status_code=404, detail="Document not found")
+    if result == "processing":
+        raise HTTPException(status_code=409, detail="Document is being processed, please try again later")
+    # Local PostgreSQL is authoritative; graph cleanup is best-effort and
+    # must not make a successfully deleted document appear to fail.
+    asyncio.create_task(lightrag.delete_document(document_id))
     return {"deleted": True}
 
 
@@ -228,19 +315,30 @@ async def list_all_documents(
     created_after: str = Query(default=""),
     created_before: str = Query(default=""),
     doc_ids: str = Query(default=""),
+    status: str = Query(default=""),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     scope: tuple[str, bool] = Depends(request_scope),
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     owner_id, is_admin = scope
     ids = [x.strip() for x in doc_ids.split(",") if x.strip()] if doc_ids else None
-    return await asyncio.to_thread(
-        store.list_user_documents,
+    valid_statuses = {"queued", "processing", "completed", "failed"}
+    if status and status not in valid_statuses:
+        raise HTTPException(status_code=422, detail="Unsupported document status")
+    items, total = await asyncio.to_thread(
+        store.list_user_documents_page,
         owner_id,
         is_admin,
         filename_like=filename or None,
         created_after=created_after or None,
         created_before=created_before or None,
         doc_ids=ids,
+        status=status or None,
+        page=page,
+        page_size=page_size,
     )
+    pending_count = await asyncio.to_thread(store.count_pending_jobs, owner_id)
+    return {"items": items, "total": total, "page": page, "page_size": page_size, "pending_count": pending_count}
 
 
 @app.get("/v1/jobs", dependencies=[Depends(require_api_key)])
@@ -317,6 +415,18 @@ async def get_job(job_id: str, scope: tuple[str, bool] = Depends(request_scope))
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/v1/jobs/{job_id}/log", dependencies=[Depends(require_api_key)])
+async def get_job_log(job_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> PlainTextResponse:
+    owner_id, is_admin = scope
+    log = await asyncio.to_thread(store.get_job_log, job_id, owner_id, is_admin)
+    if log is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return PlainTextResponse(
+        log,
+        headers={"Content-Disposition": f'attachment; filename="job-{job_id}.log"'},
+    )
 
 
 async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:

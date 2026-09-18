@@ -43,6 +43,8 @@ class Settings:
     max_file_mb: int
     parser_backend: str
     mineru_command: str
+    mineru_timeout_seconds: int
+    knowledge_offline: bool
     lightrag_url: str
     lightrag_api_key: str
     lightrag_query_mode: str
@@ -52,6 +54,7 @@ class Settings:
     embedding_base_url: str
     embedding_api_key: str
     embedding_model: str
+    embedding_explicitly_configured: bool
     embedding_dimensions: int | None
     reranker_base_url: str
     reranker_api_key: str
@@ -72,9 +75,11 @@ class Settings:
         chat_model = _env("CHAT_MODEL")
 
         # Embedding model
-        embedding_base_url = _env("EMBEDDING_BASE_URL") or provider_base_url
+        explicit_embedding_base_url = _env("EMBEDDING_BASE_URL")
+        explicit_embedding_model = _env("EMBEDDING_MODEL")
+        embedding_base_url = explicit_embedding_base_url or provider_base_url
         embedding_api_key = _env("EMBEDDING_API_KEY") or provider_api_key
-        embedding_model = _env("EMBEDDING_MODEL")
+        embedding_model = explicit_embedding_model
 
         # Reranker model
         reranker_base_url = _env("RERANKER_BASE_URL") or provider_base_url
@@ -83,7 +88,7 @@ class Settings:
         reranker_enabled_str = _env("RERANKER_ENABLED")
 
         # Auto-discover models if not configured
-        if not chat_model or not embedding_model:
+        if not chat_model:
             all_models = _fetch_models_from_provider(chat_base_url, chat_api_key)
 
             if not chat_model:
@@ -101,9 +106,6 @@ class Settings:
                             chat_model = m["id"]
                             break
 
-            if not embedding_model:
-                embedding_model = _find_model_by_pattern(all_models, "embed")
-
             if not reranker_model:
                 reranker_model = _find_model_by_pattern(all_models, "rerank")
                 if reranker_model and not reranker_enabled_str:
@@ -117,9 +119,13 @@ class Settings:
             ),
             api_key=_env("KNOWLEDGE_API_KEY"),
             worker_interval=max(0.2, float(_env("KNOWLEDGE_WORKER_INTERVAL", "1"))),
-            max_file_mb=max(1, int(_env("KNOWLEDGE_MAX_FILE_MB", "100"))),
+            # Existing deployments may still have the old 100 MB setting in
+            # .env. Knowledge uploads are intentionally large-file capable.
+            max_file_mb=max(10240, int(_env("KNOWLEDGE_MAX_FILE_MB", "10240"))),
             parser_backend=_env("PARSER_BACKEND", "auto").lower(),
             mineru_command=_env("MINERU_COMMAND"),
+            mineru_timeout_seconds=max(60, int(_env("MINERU_TIMEOUT_SECONDS", "900"))),
+            knowledge_offline=_env("KNOWLEDGE_OFFLINE", "false").lower() in {"1", "true", "yes", "on"},
             lightrag_url=_env("LIGHTRAG_URL").rstrip("/"),
             lightrag_api_key=_env("LIGHTRAG_API_KEY"),
             lightrag_query_mode=_env("LIGHTRAG_QUERY_MODE", "mix"),
@@ -129,6 +135,9 @@ class Settings:
             embedding_base_url=embedding_base_url.rstrip("/"),
             embedding_api_key=embedding_api_key,
             embedding_model=embedding_model,
+            embedding_explicitly_configured=bool(
+                explicit_embedding_base_url and explicit_embedding_model
+            ),
             embedding_dimensions=int(dimensions) if dimensions.isdigit() else None,
             reranker_base_url=reranker_base_url.rstrip("/"),
             reranker_api_key=reranker_api_key,

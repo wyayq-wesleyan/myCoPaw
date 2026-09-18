@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
+import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+logger = logging.getLogger("knowledge-store")
 
 
 def now_utc() -> datetime:
@@ -47,7 +51,30 @@ class Store:
         except ImportError:
             # psycopg_pool 未安装时退回直连模式（开发环境可用）
             pass
-        self._init_db()
+        self._init_db_with_retry()
+
+    def _init_db_with_retry(self, attempts: int = 20, delay: float = 3.0) -> None:
+        """Initialize the schema, waiting out a PostgreSQL that is still starting.
+
+        PostgreSQL runs as its own Compose project, so recreating the stack can
+        bring this process up before the database accepts connections. Retry the
+        idempotent DDL instead of exiting and relying on the restart policy.
+        """
+        for attempt in range(1, attempts + 1):
+            try:
+                self._init_db()
+                return
+            except Exception as exc:
+                if attempt == attempts:
+                    raise
+                logger.warning(
+                    "schema init attempt %d/%d failed, retrying in %.0fs: %s",
+                    attempt,
+                    attempts,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
 
     def _connect(self):
         """Return a connection context manager; pooled when available."""
@@ -75,6 +102,9 @@ class Store:
               media_type TEXT,
               status TEXT NOT NULL,
               error TEXT,
+              processing_stage TEXT,
+              backend TEXT,
+              content_hash TEXT,
               size BIGINT DEFAULT 0,
               created_at TIMESTAMPTZ NOT NULL,
               updated_at TIMESTAMPTZ NOT NULL,
@@ -86,9 +116,21 @@ class Store:
               id TEXT PRIMARY KEY,
               document_id TEXT NOT NULL REFERENCES documents(id),
               status TEXT NOT NULL,
+              stage TEXT,
               attempts INTEGER NOT NULL DEFAULT 0,
               error TEXT,
+              log_excerpt TEXT,
+              next_retry_at TIMESTAMPTZ,
               created_at TIMESTAMPTZ NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS worker_heartbeats (
+              worker_id TEXT PRIMARY KEY,
+              status TEXT NOT NULL,
+              job_id TEXT,
+              stage TEXT,
               updated_at TIMESTAMPTZ NOT NULL
             )
             """,
@@ -156,16 +198,37 @@ class Store:
             db.execute("SELECT pg_advisory_xact_lock(2026082201)")
             for statement in statements:
                 db.execute(statement)
-            # Migration: add size column to documents if missing
+            # A database created by an older release predates some columns. A
+            # failed statement aborts the surrounding PostgreSQL transaction, so
+            # letting one failure escape silently skipped every later migration
+            # -- that is how jobs.stage stayed missing after an upgrade while
+            # the job queries kept failing. Each statement now runs in its own
+            # savepoint so the rest still apply, and failures are logged instead
+            # of swallowed.
+            self._migrate(
+                db,
+                [
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS size BIGINT DEFAULT 0",
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
+                    # parser backend is written after a document is parsed.
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS backend TEXT",
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash TEXT",
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_stage TEXT",
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS log_excerpt TEXT",
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ",
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stage TEXT",
+                ],
+            )
+
+    @staticmethod
+    def _migrate(db: Any, statements: list[str]) -> None:
+        """Apply additive DDL, isolating each failure in its own savepoint."""
+        for statement in statements:
             try:
-                db.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS size BIGINT DEFAULT 0")
-            except Exception:
-                pass  # column already exists or DB doesn't support IF NOT EXISTS
-            # Migration: add started_at column to documents if missing
-            try:
-                db.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ")
-            except Exception:
-                pass
+                with db.transaction():
+                    db.execute(statement)
+            except Exception as exc:
+                logger.warning("schema migration skipped (%s): %s", exc, statement)
 
     def create_space(self, name: str, owner_id: str) -> dict[str, Any]:
         space_id = str(uuid.uuid4())
@@ -179,16 +242,16 @@ class Store:
     def list_spaces(self, owner_id: str, is_admin: bool = False) -> list[dict[str, Any]]:
         with self._connect() as db:
             rows = db.execute(
-                "SELECT * FROM spaces WHERE owner_id = %s OR %s ORDER BY created_at",
-                (owner_id, is_admin),
+                "SELECT * FROM spaces WHERE owner_id = %s ORDER BY created_at",
+                (owner_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def space_exists(self, space_id: str, owner_id: str, is_admin: bool = False) -> bool:
         with self._connect() as db:
             row = db.execute(
-                "SELECT 1 FROM spaces WHERE id = %s AND (owner_id = %s OR %s)",
-                (space_id, owner_id, is_admin),
+                "SELECT 1 FROM spaces WHERE id = %s AND owner_id = %s",
+                (space_id, owner_id),
             ).fetchone()
         return row is not None
 
@@ -201,6 +264,7 @@ class Store:
         media_type: str | None,
         document_id: str | None = None,
         size: int = 0,
+        content_hash: str | None = None,
     ) -> dict[str, Any]:
         if space_id is None:
             space_id = self.get_or_create_user_space(owner_id)["id"]
@@ -211,25 +275,66 @@ class Store:
             db.execute(
                 """
                 INSERT INTO documents
-                  (id, space_id, owner_id, filename, path, media_type, status, error, size, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'queued', NULL, %s, %s, %s)
+                  (id, space_id, owner_id, filename, path, media_type, status, error, processing_stage, content_hash, size, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'queued', NULL, 'queued', %s, %s, %s, %s)
                 """,
-                (document_id, space_id, owner_id, filename, path, media_type, size, timestamp, timestamp),
+                (document_id, space_id, owner_id, filename, path, media_type, content_hash, size, timestamp, timestamp),
             )
             db.execute(
                 """
-                INSERT INTO jobs (id, document_id, status, attempts, error, created_at, updated_at)
-                VALUES (%s, %s, 'queued', 0, NULL, %s, %s)
+                INSERT INTO jobs (id, document_id, status, stage, attempts, error, created_at, updated_at)
+                VALUES (%s, %s, 'queued', 'queued', 0, NULL, %s, %s)
                 """,
                 (job_id, document_id, timestamp, timestamp),
             )
         return {"id": document_id, "job_id": job_id, "status": "queued", "filename": filename}
 
+    def find_document_by_hash(
+        self, space_id: str, owner_id: str, content_hash: str, size: int
+    ) -> dict[str, Any] | None:
+        """Return an existing document for an identical account-scoped upload."""
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT d.*, j.id AS job_id, j.status AS job_status
+                FROM documents d
+                LEFT JOIN LATERAL (
+                    SELECT id, status FROM jobs
+                    WHERE document_id = d.id ORDER BY created_at DESC, id DESC LIMIT 1
+                ) j ON TRUE
+                WHERE d.space_id = %s AND d.owner_id = %s
+                  AND d.content_hash = %s AND d.size = %s
+                ORDER BY d.created_at DESC, d.id DESC
+                LIMIT 1
+                """,
+                (space_id, owner_id, content_hash, size),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_documents_internal(self, space_id: str) -> list[dict[str, Any]]:
+        """List documents for trusted maintenance tasks, bypassing HTTP scopes."""
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT d.*, j.id AS job_id, j.status AS job_status,
+                       j.attempts AS job_attempts, j.error AS job_error
+                FROM documents d
+                LEFT JOIN LATERAL (
+                    SELECT id, status, attempts, error FROM jobs
+                    WHERE document_id = d.id ORDER BY created_at DESC, id DESC LIMIT 1
+                ) j ON TRUE
+                WHERE d.space_id = %s
+                ORDER BY d.created_at DESC
+                """,
+                (space_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> dict[str, Any] | None:
         with self._connect() as db:
             row = db.execute(
-                "SELECT * FROM documents WHERE id = %s AND (owner_id = %s OR %s)",
-                (document_id, owner_id, is_admin),
+                "SELECT * FROM documents WHERE id = %s AND owner_id = %s",
+                (document_id, owner_id),
             ).fetchone()
         return dict(row) if row else None
 
@@ -257,6 +362,7 @@ class Store:
             "document_id": document_id,
             "filename": document["filename"],
             "status": document["status"],
+            "processing_stage": document.get("processing_stage"),
             "error": document.get("error"),
             "size": document.get("size", 0),
             "chunk_count": chunks_row["cnt"] if chunks_row else 0,
@@ -272,11 +378,17 @@ class Store:
             ),
         }
 
-    def delete_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> bool:
-        """Delete a document and all related data. Returns True if deleted."""
+    def delete_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> str:
+        """Delete a document and related data.
+
+        Returns ``deleted``, ``not_found`` or ``processing`` so the API can
+        avoid racing the worker and report the correct outcome to callers.
+        """
         document = self.get_document(document_id, owner_id, is_admin)
         if not document:
-            return False
+            return "not_found"
+        if document.get("status") == "processing":
+            return "processing"
         import os
         with self._connect() as db:
             db.execute(
@@ -290,13 +402,39 @@ class Store:
             db.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
             db.execute("DELETE FROM jobs WHERE document_id = %s", (document_id,))
             db.execute("DELETE FROM documents WHERE id = %s", (document_id,))
+            # Entities are shared within a space. Remove only entities that
+            # became unreachable after this document's mentions/relations were
+            # deleted; entities still referenced by another document remain.
+            db.execute(
+                """
+                DELETE FROM relations r
+                WHERE r.space_id = %s
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM mentions m WHERE m.entity_id = r.subject_id)
+                    OR NOT EXISTS (SELECT 1 FROM mentions m WHERE m.entity_id = r.object_id)
+                  )
+                """,
+                (document["space_id"],),
+            )
+            db.execute(
+                """
+                DELETE FROM entities e
+                WHERE e.space_id = %s
+                  AND NOT EXISTS (SELECT 1 FROM mentions m WHERE m.entity_id = e.id)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM relations r
+                    WHERE r.subject_id = e.id OR r.object_id = e.id
+                )
+                """,
+                (document["space_id"],),
+            )
         try:
             file_path = document.get("path", "")
             if file_path and os.path.exists(file_path):
                 os.remove(file_path)
         except OSError:
             pass
-        return True
+        return "deleted"
 
     def list_documents(self, space_id: str, owner_id: str, is_admin: bool = False) -> list[dict[str, Any]]:
         with self._connect() as db:
@@ -312,10 +450,10 @@ class Store:
                     ORDER BY created_at DESC, id DESC
                     LIMIT 1
                 ) j ON TRUE
-                WHERE d.space_id = %s AND (d.owner_id = %s OR %s)
+                WHERE d.space_id = %s AND d.owner_id = %s
                 ORDER BY d.created_at DESC
                 """,
-                (space_id, owner_id, is_admin),
+                (space_id, owner_id),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -325,9 +463,9 @@ class Store:
                 """
                 SELECT j.*, d.owner_id, d.filename, d.space_id
                 FROM jobs j JOIN documents d ON d.id = j.document_id
-                WHERE j.id = %s AND (d.owner_id = %s OR %s)
+                WHERE j.id = %s AND d.owner_id = %s
                 """,
-                (job_id, owner_id, is_admin),
+                (job_id, owner_id),
             ).fetchone()
         return dict(row) if row else None
 
@@ -344,6 +482,7 @@ class Store:
                 """
                 SELECT * FROM jobs
                 WHERE status = 'queued'
+                  AND (next_retry_at IS NULL OR next_retry_at <= now())
                 ORDER BY created_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
@@ -352,24 +491,102 @@ class Store:
             if row is None:
                 return None
             db.execute(
-                "UPDATE jobs SET status = 'processing', attempts = attempts + 1, updated_at = %s WHERE id = %s",
+                "UPDATE jobs SET status = 'processing', stage = 'parsing', attempts = attempts + 1, updated_at = %s WHERE id = %s",
                 (timestamp, row["id"]),
             )
             db.execute(
-                "UPDATE documents SET status = 'processing', started_at = COALESCE(started_at, %s), updated_at = %s WHERE id = %s",
+                "UPDATE documents SET status = 'processing', processing_stage = 'parsing', started_at = COALESCE(started_at, %s), updated_at = %s WHERE id = %s",
                 (timestamp, timestamp, row["document_id"]),
             )
+            row["attempts"] = int(row.get("attempts") or 0) + 1
+            row["stage"] = "parsing"
         return dict(row)
+
+    def update_job_stage(self, job_id: str, document_id: str, stage: str) -> None:
+        """Persist the current worker phase so long tasks remain observable."""
+        timestamp = now_utc()
+        with self._connect() as db:
+            db.execute(
+                "UPDATE jobs SET stage = %s, updated_at = %s WHERE id = %s",
+                (stage, timestamp, job_id),
+            )
+            db.execute(
+                "UPDATE documents SET processing_stage = %s, updated_at = %s WHERE id = %s",
+                (stage, timestamp, document_id),
+            )
+
+    def touch_worker_heartbeat(
+        self,
+        worker_id: str,
+        status: str,
+        job_id: str | None = None,
+        stage: str | None = None,
+    ) -> None:
+        """Record worker liveness independently from a potentially long parse."""
+        with self._connect() as db:
+            db.execute(
+                """INSERT INTO worker_heartbeats (worker_id, status, job_id, stage, updated_at)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (worker_id) DO UPDATE SET
+                     status = EXCLUDED.status,
+                     job_id = EXCLUDED.job_id,
+                     stage = EXCLUDED.stage,
+                     updated_at = EXCLUDED.updated_at""",
+                (worker_id, status, job_id, stage, now_utc()),
+            )
+
+    def get_worker_health(self, max_age_seconds: int = 30) -> dict[str, Any]:
+        """Return whether at least one worker has reported in recently."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM worker_heartbeats ORDER BY updated_at DESC LIMIT 1",
+            ).fetchone()
+        if not row:
+            return {"available": False, "reason": "知识处理 Worker 尚未启动或未连接到当前数据库"}
+        value = dict(row)
+        updated_at = value.get("updated_at")
+        age = (now_utc() - updated_at).total_seconds() if updated_at else float("inf")
+        available = age <= max_age_seconds
+        return {
+            "available": available,
+            "status": value.get("status"),
+            "job_id": value.get("job_id"),
+            "stage": value.get("stage"),
+            "updated_at": updated_at.isoformat() if updated_at else None,
+            "age_seconds": round(age, 1),
+            "reason": None if available else "知识处理 Worker 心跳已超时，请检查 worker 容器和数据库连接",
+        }
+
+    def recover_interrupted_jobs(self) -> int:
+        """Requeue jobs left in processing state by a process/container stop."""
+        timestamp = now_utc()
+        with self._connect() as db:
+            row = db.execute(
+                """
+                UPDATE jobs SET status = 'queued', stage = 'queued', updated_at = %s,
+                    next_retry_at = NULL,
+                    error = COALESCE(error, '任务因服务重启中断，已自动恢复')
+                WHERE status = 'processing'
+                RETURNING id
+                """,
+                (timestamp,),
+            ).fetchall()
+            db.execute(
+                """UPDATE documents SET status = 'queued', processing_stage = 'queued', updated_at = %s
+                 WHERE status = 'processing'""",
+                (timestamp,),
+            )
+        return len(row)
 
     def finish_job(self, job_id: str, document_id: str) -> None:
         timestamp = now_utc()
         with self._connect() as db:
             db.execute(
-                "UPDATE jobs SET status = 'completed', updated_at = %s, error = NULL WHERE id = %s",
+                "UPDATE jobs SET status = 'completed', stage = 'completed', updated_at = %s, error = NULL WHERE id = %s",
                 (timestamp, job_id),
             )
             db.execute(
-                "UPDATE documents SET status = 'completed', updated_at = %s, error = NULL WHERE id = %s",
+                "UPDATE documents SET status = 'completed', processing_stage = 'completed', updated_at = %s, error = NULL WHERE id = %s",
                 (timestamp, document_id),
             )
 
@@ -380,28 +597,47 @@ class Store:
                 (backend, document_id),
             )
 
-    def fail_job(self, job_id: str, document_id: str, error: str) -> None:
+    def fail_job(self, job_id: str, document_id: str, error: str, *, retry: bool = False) -> None:
         timestamp = now_utc()
         with self._connect() as db:
+            # The ::timestamptz cast is required: when retry is False the bind
+            # param is None (untyped), and PostgreSQL would otherwise infer the
+            # whole CASE expression as text and reject the assignment.
             db.execute(
-                "UPDATE jobs SET status = 'failed', updated_at = %s, error = %s WHERE id = %s",
-                (timestamp, error[:4000], job_id),
+                """UPDATE jobs SET status = %s, stage = %s, updated_at = %s, error = %s,
+                   log_excerpt = %s,
+                   next_retry_at = CASE WHEN %s THEN %s::timestamptz ELSE NULL END
+                   WHERE id = %s""",
+                ("queued" if retry else "failed", "queued" if retry else "failed", timestamp, error[:4000], error[-12000:], retry,
+                 timestamp + timedelta(hours=1) if retry else None, job_id),
             )
             db.execute(
-                "UPDATE documents SET status = 'failed', updated_at = %s, error = %s WHERE id = %s",
-                (timestamp, error[:4000], document_id),
+                "UPDATE documents SET status = %s, processing_stage = %s, updated_at = %s, error = %s WHERE id = %s",
+                ("queued" if retry else "failed", "queued" if retry else "failed", timestamp, error[:4000], document_id),
             )
+
+    def get_job_log(self, job_id: str, owner_id: str, is_admin: bool = False) -> str | None:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT j.log_excerpt, j.error FROM jobs j
+                   JOIN documents d ON d.id = j.document_id
+                   WHERE j.id = %s AND d.owner_id = %s""",
+                (job_id, owner_id),
+            ).fetchone()
+        if not row:
+            return None
+        return row.get("log_excerpt") or row.get("error") or "暂无失败日志"
 
     def requeue_job_for_retry(self, job_id: str, document_id: str) -> None:
         """Requeue a failed attempt without resetting the attempts counter."""
         timestamp = now_utc()
         with self._connect() as db:
             db.execute(
-                "UPDATE jobs SET status = 'queued', updated_at = %s WHERE id = %s",
+                "UPDATE jobs SET status = 'queued', stage = 'queued', updated_at = %s WHERE id = %s",
                 (timestamp, job_id),
             )
             db.execute(
-                "UPDATE documents SET status = 'queued', updated_at = %s WHERE id = %s",
+                "UPDATE documents SET status = 'queued', processing_stage = 'queued', updated_at = %s WHERE id = %s",
                 (timestamp, document_id),
             )
 
@@ -409,8 +645,8 @@ class Store:
         timestamp = now_utc()
         with self._connect() as db:
             document = db.execute(
-                "SELECT * FROM documents WHERE id = %s AND (owner_id = %s OR %s)",
-                (document_id, owner_id, is_admin),
+                "SELECT * FROM documents WHERE id = %s AND owner_id = %s",
+                (document_id, owner_id),
             ).fetchone()
             if document is None:
                 return None
@@ -421,11 +657,11 @@ class Store:
             if job is None:
                 return None
             db.execute(
-                "UPDATE jobs SET status = 'queued', attempts = 0, error = NULL, updated_at = %s WHERE id = %s",
+                "UPDATE jobs SET status = 'queued', stage = 'queued', attempts = 0, error = NULL, updated_at = %s WHERE id = %s",
                 (timestamp, job["id"]),
             )
             db.execute(
-                "UPDATE documents SET status = 'queued', error = NULL, updated_at = %s WHERE id = %s",
+                "UPDATE documents SET status = 'queued', processing_stage = 'queued', error = NULL, updated_at = %s WHERE id = %s",
                 (timestamp, document_id),
             )
         return {"id": document_id, "job_id": job["id"], "status": "queued", "filename": document["filename"]}
@@ -790,9 +1026,9 @@ class Store:
         """列出该用户所有文档（跨所有空间），可选文件名模糊、时间、指定文档ID过滤。"""
         conditions: list[str] = []
         params: list[Any] = []
-        if not is_admin:
-            conditions.append("d.owner_id = %s")
-            params.append(owner_id)
+        # Knowledge spaces are private per account, including for admin.
+        conditions.append("d.owner_id = %s")
+        params.append(owner_id)
         if filename_like:
             conditions.append("d.filename ILIKE %s")
             params.append(f"%{filename_like}%")
@@ -808,27 +1044,123 @@ class Store:
             params.extend(doc_ids)
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         sql = f"""
-            SELECT d.id, d.filename, d.status, d.error, d.size, d.created_at, d.updated_at,
-                   j.id AS job_id, j.status AS job_status, j.attempts, j.error AS job_error
-            FROM documents d
-            LEFT JOIN LATERAL (
-                SELECT id, status, attempts, error FROM jobs
-                WHERE document_id = d.id ORDER BY created_at DESC, id DESC LIMIT 1
-            ) j ON TRUE
-            {where}
-            ORDER BY d.created_at DESC
+            SELECT * FROM (
+                SELECT DISTINCT ON (
+                    d.owner_id,
+                    d.space_id,
+                    d.filename,
+                    CASE WHEN d.content_hash IS NULL
+                         THEN d.filename || ':' || d.size::text
+                         ELSE d.content_hash END,
+                    d.size
+                )
+                       d.id, d.owner_id, d.space_id, d.filename, d.status, d.processing_stage, d.error, d.size,
+                       d.created_at, d.updated_at,
+                       j.id AS job_id, j.status AS job_status, j.stage AS job_stage, j.attempts, j.error AS job_error
+                FROM documents d
+                LEFT JOIN LATERAL (
+                    SELECT id, status, stage, attempts, error FROM jobs
+                    WHERE document_id = d.id ORDER BY created_at DESC, id DESC LIMIT 1
+                ) j ON TRUE
+                {where}
+                ORDER BY d.owner_id, d.space_id, d.filename,
+                         CASE WHEN d.content_hash IS NULL
+                              THEN d.filename || ':' || d.size::text
+                              ELSE d.content_hash END,
+                         d.size,
+                         d.created_at DESC, d.id DESC
+            ) deduplicated
+            ORDER BY created_at DESC
         """
         with self._connect() as db:
             rows = db.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def list_user_documents_page(
+        self,
+        owner_id: str,
+        is_admin: bool = False,
+        filename_like: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        doc_ids: list[str] | None = None,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return one account-scoped, de-duplicated document page and its total."""
+        conditions: list[str] = ["d.owner_id = %s"]
+        params: list[Any] = [owner_id]
+        if filename_like:
+            conditions.append("d.filename ILIKE %s")
+            params.append(f"%{filename_like}%")
+        if created_after:
+            conditions.append("d.created_at >= %s")
+            params.append(created_after)
+        if created_before:
+            conditions.append("d.created_at <= %s")
+            params.append(created_before)
+        if doc_ids:
+            placeholders = ",".join(["%s"] * len(doc_ids))
+            conditions.append(f"d.id IN ({placeholders})")
+            params.extend(doc_ids)
+        if status:
+            conditions.append("d.status = %s")
+            params.append(status)
+
+        where = " WHERE " + " AND ".join(conditions)
+        deduplicated = f"""
+            SELECT DISTINCT ON (
+                d.owner_id,
+                d.space_id,
+                d.filename,
+                CASE WHEN d.content_hash IS NULL
+                     THEN d.filename || ':' || d.size::text
+                     ELSE d.content_hash END,
+                d.size
+            )
+                   d.id, d.owner_id, d.space_id, d.filename, d.status, d.processing_stage, d.error, d.size,
+                   d.created_at, d.updated_at,
+                   j.id AS job_id, j.status AS job_status, j.stage AS job_stage, j.attempts, j.error AS job_error
+            FROM documents d
+            LEFT JOIN LATERAL (
+                SELECT id, status, stage, attempts, error FROM jobs
+                WHERE document_id = d.id ORDER BY created_at DESC, id DESC LIMIT 1
+            ) j ON TRUE
+            {where}
+            ORDER BY d.owner_id, d.space_id, d.filename,
+                     CASE WHEN d.content_hash IS NULL
+                          THEN d.filename || ':' || d.size::text
+                          ELSE d.content_hash END,
+                     d.size,
+                     d.created_at DESC, d.id DESC
+        """
+        page = max(1, page)
+        page_size = min(max(1, page_size), 100)
+        offset = (page - 1) * page_size
+        with self._connect() as db:
+            count = db.execute(
+                f"WITH deduplicated AS ({deduplicated}) SELECT COUNT(*) AS total FROM deduplicated",
+                params,
+            ).fetchone()
+            rows = db.execute(
+                f"""
+                WITH deduplicated AS ({deduplicated})
+                SELECT * FROM deduplicated
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s OFFSET %s
+                """,
+                [*params, page_size, offset],
+            ).fetchall()
+        return [dict(row) for row in rows], int(count["total"] if count else 0)
+
     def list_user_jobs(self, owner_id: str, is_admin: bool = False) -> list[dict[str, Any]]:
         """列出该用户所有 job 状态。"""
         conditions: list[str] = []
         params: list[Any] = []
-        if not is_admin:
-            conditions.append("d.owner_id = %s")
-            params.append(owner_id)
+        # Knowledge jobs follow the same strict account isolation as documents.
+        conditions.append("d.owner_id = %s")
+        params.append(owner_id)
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         sql = f"""
             SELECT j.id, j.document_id, j.status, j.attempts, j.error, j.created_at, j.updated_at,
@@ -841,6 +1173,16 @@ class Store:
         with self._connect() as db:
             rows = db.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
+
+    def count_pending_jobs(self, owner_id: str) -> int:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT COUNT(*) AS cnt FROM jobs j
+                   JOIN documents d ON d.id = j.document_id
+                   WHERE d.owner_id = %s AND j.status IN ('queued', 'processing')""",
+                (owner_id,),
+            ).fetchone()
+        return int(row["cnt"] if row else 0)
 
     def get_document_evidence(self, document_id: str) -> list[dict[str, Any]]:
         with self._connect() as db:

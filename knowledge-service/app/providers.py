@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Generator
 
 import httpx
@@ -13,9 +14,53 @@ class ModelClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
+    _embedding_probe_cache: dict[tuple[str, str], tuple[float, bool]] = {}
+    _EMBEDDING_PROBE_TTL_SECONDS = 300
+
     @staticmethod
     def _headers(api_key: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    def supports_embedding(self) -> bool:
+        """Return whether the configured embedding endpoint is usable.
+
+        Configuration presence alone is not enough: an invalid URL, key, or
+        model name would otherwise let a document enter the queue without a
+        semantic index.  A minimal request is cached for five minutes so the
+        UI health polling does not add material model load.
+        """
+        if not self.settings.embedding_base_url or not self.settings.embedding_model:
+            return False
+        cache_key = (
+            self.settings.embedding_base_url,
+            self.settings.embedding_model,
+        )
+        now = time.monotonic()
+        cached = self._embedding_probe_cache.get(cache_key)
+        if cached and now - cached[0] < self._EMBEDDING_PROBE_TTL_SECONDS:
+            return cached[1]
+
+        supported = False
+        try:
+            response = httpx.post(
+                f"{self.settings.embedding_base_url}/embeddings",
+                headers=self._headers(self.settings.embedding_api_key),
+                json={
+                    "model": self.settings.embedding_model,
+                    "input": "汇智知识服务嵌入模型健康检查",
+                },
+                timeout=12,
+            )
+            response.raise_for_status()
+            data = response.json().get("data")
+            vector = data[0].get("embedding") if isinstance(data, list) and data else None
+            supported = isinstance(vector, list) and bool(vector) and all(
+                isinstance(value, (int, float)) for value in vector
+            )
+        except Exception:
+            supported = False
+        self._embedding_probe_cache[cache_key] = (now, supported)
+        return supported
 
     # 每批送入 LLM 的字符上限。超过会截断导致大文档实体覆盖不全，
     # 分批处理保证全部内容参与抽取。

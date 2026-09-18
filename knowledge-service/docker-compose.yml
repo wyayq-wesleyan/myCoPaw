@@ -3,6 +3,9 @@ services:
     image: "postgres:17-alpine"
     container_name: huizhi-knowledge-postgres
     restart: unless-stopped
+    mem_limit: "${KNOWLEDGE_POSTGRES_MEMORY_LIMIT:-32g}"
+    cpus: "${KNOWLEDGE_POSTGRES_CPU_LIMIT:-4.0}"
+    pids_limit: "${KNOWLEDGE_POSTGRES_PIDS_LIMIT:-256}"
     environment:
       POSTGRES_DB: "${KNOWLEDGE_POSTGRES_DB:-huizhi_knowledge}"
       POSTGRES_USER: "${KNOWLEDGE_POSTGRES_USER:-huizhi_knowledge}"
@@ -22,16 +25,22 @@ services:
     build:
       context: .
       args:
-        BASE_IMAGE: "${BASE_IMAGE:-py311-base:2.0.1-arm64}"
+        BASE_IMAGE: "${BASE_IMAGE:-py312-base:2.0.2-amd64}"
         INSTALL_KNOWLEDGE_EXTRAS: "${INSTALL_KNOWLEDGE_EXTRAS:-0}"
+        PRELOAD_MINERU_MODELS: "${PRELOAD_MINERU_MODELS:-1}"
     image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-knowledge-api
     restart: unless-stopped
+    mem_limit: "${KNOWLEDGE_API_MEMORY_LIMIT:-16g}"
+    cpus: "${KNOWLEDGE_API_CPU_LIMIT:-4.0}"
+    pids_limit: "${KNOWLEDGE_API_PIDS_LIMIT:-256}"
     env_file:
       - .env
     environment:
       KNOWLEDGE_ROLE: api
       KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
+      KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
+      MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
     depends_on:
       knowledge-postgres:
@@ -52,11 +61,16 @@ services:
     image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-knowledge-worker
     restart: unless-stopped
+    mem_limit: "${KNOWLEDGE_WORKER_MEMORY_LIMIT:-80g}"
+    cpus: "${KNOWLEDGE_WORKER_CPU_LIMIT:-14.0}"
+    pids_limit: "${KNOWLEDGE_WORKER_PIDS_LIMIT:-256}"
     env_file:
       - .env
     environment:
       KNOWLEDGE_ROLE: worker
       KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
+      KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
+      MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
     depends_on:
       knowledge-postgres:
@@ -71,6 +85,9 @@ services:
     image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-lightrag
     restart: unless-stopped
+    mem_limit: "${LIGHTRAG_MEMORY_LIMIT:-32g}"
+    cpus: "${LIGHTRAG_CPU_LIMIT:-4.0}"
+    pids_limit: "${LIGHTRAG_PIDS_LIMIT:-256}"
     env_file:
       - .env
     environment:
@@ -89,7 +106,7 @@ services:
       WORKING_DIR: /data/lightrag
       TIKTOKEN_CACHE_DIR: /data/lightrag/tiktoken_cache
       LIGHTRAG_API_KEY: "${LIGHTRAG_API_KEY:-}"
-    command: ["python", "-m", "lightrag.server", "--host", "0.0.0.0", "--port", "9621"]
+    command: ["python", "-m", "lightrag.api.lightrag_server", "--host", "0.0.0.0", "--port", "9621"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

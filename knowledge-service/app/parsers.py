@@ -9,8 +9,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import logging
+import zipfile
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class ParseError(RuntimeError):
@@ -176,8 +181,9 @@ class SimpleReader:
 class MinerUParser:
     """Uses an explicitly configured local MinerU command and normalizes JSON output."""
 
-    def __init__(self, command: str) -> None:
+    def __init__(self, command: str, timeout_seconds: int = 900) -> None:
         self.command = command
+        self.timeout_seconds = timeout_seconds
 
     @property
     def available(self) -> bool:
@@ -195,7 +201,14 @@ class MinerUParser:
             raise ParseError("MinerU is not available. Install it in the image and set MINERU_COMMAND.")
         with tempfile.TemporaryDirectory(prefix="huizhi-mineru-") as output_dir:
             command = self.command.format(input=str(path), output=output_dir)
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, check=False, timeout=1800)
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self.timeout_seconds,
+            )
             if result.returncode != 0:
                 raise ParseError(f"MinerU failed: {result.stderr[-1000:] or result.stdout[-1000:]}")
             json_files = sorted(Path(output_dir).rglob("*.json"))
@@ -346,44 +359,88 @@ class PdfFallbackParser:
         return chunks
 
 
-def parse_document(path: Path, backend: str, mineru_command: str) -> tuple[str, list[dict[str, Any]]]:
+def parse_document(
+    path: Path,
+    backend: str,
+    mineru_command: str,
+    *,
+    offline: bool = False,
+    mineru_timeout_seconds: int = 900,
+) -> tuple[str, list[dict[str, Any]]]:
     """Route documents to the best available parser.
 
-    - PDF/DOC/DOCX → MinerU pipeline (layout, tables, OCR). DOC/DOCX are first
-      converted to PDF via LibreOffice so images and table structures survive.
+    - PDF/DOC/DOCX → MinerU pipeline (layout, tables, OCR) when available.
+      In auto mode, a failed local MinerU run falls back to pdfplumber/python-docx
+      so an offline model download cannot mark an otherwise readable document as
+      failed. DOC/DOCX are first converted to PDF via LibreOffice for MinerU.
     - TXT/MD/CSV/JSON/XLS/XLSX/XLSM → lightweight readers (no layout to preserve).
-    MinerU is mandatory for document formats; there is no silent quality loss.
+    `backend=mineru` remains strict; `backend=auto` is resilient for offline
+    deployments.
     """
     suffix = path.suffix.lower()
-    mineru = MinerUParser(mineru_command)
+    mineru = MinerUParser(mineru_command, mineru_timeout_seconds)
+    use_mineru = mineru.available and not offline and backend in {"auto", "mineru"}
+    if suffix in {".pdf", ".doc", ".docx"} and backend == "mineru" and not use_mineru:
+        reason = "offline mode is enabled" if offline else "MinerU is unavailable"
+        raise ParseError(f"MinerU-only backend requested but {reason}; preload MinerU models or use PARSER_BACKEND=auto")
 
     if suffix in {".pdf", ".doc", ".docx"}:
         source = path
         converted = False
         if suffix in {".doc", ".docx"}:
-            if mineru.available:
+            if use_mineru:
                 if shutil.which("soffice") is None:
                     raise ParseError("LibreOffice (soffice) is not installed; cannot convert DOC/DOCX for the MinerU pipeline")
                 source = _convert_to_pdf(path)
                 converted = True
             else:
-                # MinerU not available — use python-docx directly
+                # MinerU is unavailable or explicitly disabled: use the
+                # dependency-light DOCX reader. Legacy .doc files need a
+                # LibreOffice conversion and cannot be parsed by python-docx.
                 try:
-                    return "simple", DocxFallbackParser().parse(path)
+                    if suffix == ".doc":
+                        raise ParseError("旧版 .doc 在离线模式下需要 LibreOffice 转换；请安装 soffice 或上传 .docx")
+                    chunks = DocxFallbackParser().parse(path)
+                    logger.info("Parsed %s with python-docx fallback (%d chunks)", path.name, len(chunks))
+                    return "simple", chunks
                 except Exception as e:
                     raise ParseError(f"Failed to parse DOCX: {e}")
-        if mineru.available:
+        if use_mineru:
+            mineru_succeeded = False
             try:
-                return "mineru", mineru.parse(source)
+                chunks = mineru.parse(source)
+                mineru_succeeded = True
+                return "mineru", chunks
+            except Exception as exc:
+                if backend != "auto":
+                    raise
+                logger.warning(
+                    "MinerU failed for %s; falling back to pdfplumber/python-docx: %s",
+                    path.name,
+                    exc,
+                )
             finally:
-                if converted:
+                if converted and (mineru_succeeded or suffix != ".doc"):
                     source.unlink(missing_ok=True)
-        else:
-            # MinerU not available — use pdfplumber fallback for PDF
-            try:
-                return "simple", PdfFallbackParser().parse(path)
-            except Exception as e:
-                raise ParseError(f"Failed to parse PDF: {e}")
+        # MinerU is unavailable, disabled, or failed — use pdfplumber fallback.
+        try:
+            if suffix == ".docx":
+                chunks = DocxFallbackParser().parse(path)
+                fallback_name = "python-docx"
+            else:
+                fallback_path = source if converted and source.exists() else path
+                chunks = PdfFallbackParser().parse(fallback_path)
+                fallback_name = "pdfplumber"
+            logger.info("Parsed %s with %s fallback (%d chunks)", path.name, fallback_name, len(chunks))
+            return "simple", chunks
+        except Exception as e:
+            raise ParseError(
+                f"Failed to parse PDF: {e}. This may be an image-only/scanned PDF; "
+                "offline OCR requires preloaded MinerU/OCR models."
+            ) from e
+        finally:
+            if converted:
+                source.unlink(missing_ok=True)
 
     if backend == "mineru":
         # 显式要求全量 MinerU：纯文本类也走统一管线（当前不支持，明确报错）
@@ -423,12 +480,29 @@ def _convert_to_pdf(path: Path) -> Path:
         return target
 
 
-def extract_text_from_file(path: Path, backend: str, mineru_command: str) -> dict[str, Any]:
+def extract_text_from_file(
+    path: Path,
+    backend: str,
+    mineru_command: str,
+    *,
+    offline: bool = False,
+    mineru_timeout_seconds: int = 900,
+) -> dict[str, Any]:
     """Parse a file and return plain text with metadata."""
-    used_backend, chunks = parse_document(path, backend, mineru_command)
+    used_backend, chunks = parse_document(
+        path,
+        backend,
+        mineru_command,
+        offline=offline,
+        mineru_timeout_seconds=mineru_timeout_seconds,
+    )
     pages = set()
     parts = []
+    images: list[str] = []
     for chunk in chunks:
+        image_data = chunk.get("_image_data")
+        if isinstance(image_data, str) and image_data.startswith("data:image/"):
+            images.append(image_data)
         text = (chunk.get("content") or "").strip()
         if not text:
             continue
@@ -442,9 +516,58 @@ def extract_text_from_file(path: Path, backend: str, mineru_command: str) -> dic
             parts.append(f"[图片] {text}")
         else:
             parts.append(text)
+    # Fallback readers do not have MinerU's image blocks. Extract embedded
+    # DOCX media and PDF page images for chat's full-context path as well.
+    if not images:
+        images.extend(_extract_embedded_images(path))
     return {
         "content": "\n\n".join(parts),
         "backend": used_backend,
         "pages": len(pages) if pages else None,
         "truncated": False,
+        "images": images,
     }
+
+
+def _extract_embedded_images(path: Path) -> list[str]:
+    """Return bounded data URIs for images embedded in PDF/DOCX files."""
+    max_each = 12 * 1024 * 1024
+    max_total = 20 * 1024 * 1024
+    candidates: list[tuple[str, bytes]] = []
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        try:
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    if not name.startswith("word/media/"):
+                        continue
+                    raw = archive.read(name)
+                    media_type = mimetypes.guess_type(name)[0] or "image/png"
+                    candidates.append((media_type, raw))
+        except (OSError, zipfile.BadZipFile):
+            return []
+    elif suffix == ".pdf":
+        try:
+            import fitz  # type: ignore[import-not-found]
+
+            with fitz.open(str(path)) as document:
+                for page in document:
+                    for image in page.get_images(full=True):
+                        raw = document.extract_image(image[0])
+                        candidates.append((
+                            raw.get("mime", "image/png"),
+                            raw.get("image", b""),
+                        ))
+        except (ImportError, OSError, RuntimeError):
+            return []
+
+    output: list[str] = []
+    total = 0
+    for media_type, raw in candidates:
+        if not raw or len(raw) > max_each or total + len(raw) > max_total:
+            continue
+        total += len(raw)
+        output.append(
+            f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        )
+    return output
