@@ -4,9 +4,167 @@
 
 当前代码基线：`v2.1.0`
 
-当前开发目录：`/Users/wesley/Desktop/projects/mycopaw-v2.0.1`
+当前开发目录：`/Users/wesley/Desktop/projects/huizhi-assistant-v2.2.1`
 
 当前本机验证容器：`huizhi-v210-check`
+
+> 本文件是本项目当前实现、部署约束和已知问题的主说明。README 中较早的
+> “新闻”、官方安装方式和上游 QwenPaw 介绍仅用于保留来源信息；正式环境应以
+> 本文件的“项目背景与正式环境实施记录”、部署文件和 `.env` 为准。
+
+## 项目背景与正式环境实施记录
+
+### A. 真实使用场景和验收目标
+
+本项目不是单用户演示程序，而是部署在内网服务器上的多用户系统。通常同时有
+8–10 名用户登录，每个人会创建会话、上传文档、运行智能体、使用知识空间和数据
+分析。少数用户可能同时处理大 PDF、Excel 或 CSV，或者让智能体编写 Python 脚本
+执行长时间数据处理任务。
+
+正式环境的最低设计目标如下：
+
+- 用户之间的账号、会话、智能体、文件、技能、工具、知识空间和数据表必须隔离。
+- 普通用户只能读取自己的用户路径和被明确分享给自己的资源；不能通过菜单、接口
+  或智能体工具读取其他用户文件。
+- 长任务不能因为浏览器暂时断线而被误判为失败；刷新页面后应能看到已产生的内容。
+- 服务重启或升级时，知识空间和数据分析的处理中任务要能恢复；失败任务按每小时
+  重试，初次执行失败后最多再重试 3 次，仍失败则保留失败状态和可下载日志片段。
+- 文档、图表、Word、Excel、PDF 等产出默认在聊天消息中提供下载链接，而不是只写
+  到用户无法访问的容器后台目录。
+- 服务器建议至少 256 GB 内存、30 个 CPU 核和 4 TB 磁盘。Docker 的资源上限必须
+  根据实际机器在 `.env` 中调整，并预留操作系统、PostgreSQL、LightRAG 和模型服务
+  的资源，不能把宿主机全部内存无条件分给单个容器。
+
+### B. 系统组成
+
+```text
+浏览器
+  └─ 汇智小助手主应用（FastAPI + Console 前端）
+       ├─ 用户/权限/会话/文件/技能/工具/定时任务
+       ├─ 智能体运行时、模型流式输出和文件下载
+       └─ 知识服务 REST API
+            ├─ 知识服务 API
+            ├─ 知识服务 Worker（MinerU、Embedding、实体抽取）
+            ├─ PostgreSQL 17（可独立 Compose 维护）
+            └─ LightRAG（知识图谱，可选）
+```
+
+主应用和知识服务代码均采用 code-mount 方式更新：底座镜像保存系统依赖，代码包
+替换宿主机的 `app` 目录后重启容器。数据库、密钥、用户数据和日志必须独立挂载，
+不得打进代码包。
+
+### C. 改造过程和踩过的坑
+
+#### 1. 单用户逻辑不能直接用于多人环境
+
+早期实现把 `default`、工作区路径和会话状态当成全局值，存在串数据风险。后续将
+用户名映射为稳定的内部账号标识（中文用户名也能正常登录），并在用户目录、会话、
+智能体、文件、技能、工具、知识空间和数据分析数据库层逐层校验归属。管理员也不
+能借普通用户的会话标识读取他人数据；只有明确的分享审批才会产生访问关系。
+
+#### 2. 大文件不能一次性读入内存
+
+初始知识服务和聊天附件路径会把整份文件、所有 embedding 或所有检索证据一次性
+放进内存，多个用户同时上传时容易触发 OOM 或长时间阻塞。现在采用 8 MB 上传块、
+CSV 分块读取、XLSX read-only、Embedding 32 块一批、有限大小的检索结果和聊天附件
+上限。知识空间单文件上限为 10 GB；聊天当前轮附件文本和图片另有更严格的上下文
+上限，避免把大文件直接塞进模型上下文。
+
+#### 3. SQLite 和同步数据库调用不适合并发入库
+
+SQLite 单文件写锁、无中文分词和每次操作新建数据库连接在多人场景下会放大延迟。
+已改用 PostgreSQL 17、连接池（默认 2–20）、CJK 二元组检索、向量化计算，并把
+FastAPI 中的同步数据库操作移到线程池，避免一个用户的导入阻塞所有请求。
+
+#### 4. 模型或解析服务长时间无输出会导致页面断线
+
+单纯依赖 HTTP 超时会出现“页面一直等待，稍后白屏/崩溃；刷新后只剩问题”的现象。
+现已加入：
+
+- SSE 心跳，默认每 10 秒发送一次；
+- LLM 首内容和稳定阶段空闲看门狗；
+- 流式事件有界缓冲和磁盘短期恢复副本；
+- 任务结束后保留约 10 分钟重放内容，应用进程重启后也尝试从磁盘恢复；
+- 前端对损坏 JSON、未知事件和缺少 `msg_id` 的帧做容错；
+- 长重连内容按批次快进；
+- Chat 渲染区错误边界，单个消息或工具卡失败时不应拖垮整个页面。
+
+#### 5. Docker 启动和日志挂载曾导致容器一秒重启
+
+代码挂载入口脚本、旧底座镜像中的 Supervisor 模板和日志目录挂载必须匹配。入口
+脚本不可执行时，必须使用 `exec /bin/sh /entrypoint.sh` 方式启动；旧镜像不支持新
+日志模板时，挂载入口脚本会造成启动循环。升级前应先用目标架构镜像执行配置检查，
+确认容器能稳定运行后再替换正式目录。应用日志、Supervisor 日志和子进程日志现在
+支持写入宿主机目录，不能只依赖容量有限的 `docker logs`。
+
+#### 6. 知识库检索初期会返回无关答案
+
+PostgreSQL `simple` 全文检索对中文没有分词能力，LightRAG 又会在没有相关性分数时
+拼入噪声结果。现在采用中文二元组覆盖率、语义最低分 0.40、本地检索为空时丢弃图谱
+结果，并把“先搜索、再按需读取文档详情”的流程交给智能体决策。
+
+### D. 当前资源分配建议
+
+Compose 中的 `mem_limit` 和 `cpus` 是上限，不是常驻占用。当前默认值为：主应用
+48 GB/8 核，知识服务 API 16 GB/4 核，Worker 80 GB/14 核，PostgreSQL 32 GB/4 核，
+LightRAG 32 GB/4 核。总上限约 208 GB/34 核，仍需根据模型服务是否独立部署调整。
+
+如果希望明确给这套程序预留约 200 GB 内存和 30 核 CPU，应在正式 `.env` 中设置并
+压测确认，例如提高主应用的 `QWENPAW_MEMORY_LIMIT`/`QWENPAW_CPU_LIMIT`，同时不要
+让多个容器上限简单相加超过宿主机可用资源。模型推理若运行在同一台服务器，还必须
+单独为模型预留内存和 CPU/GPU，不能把 Docker 上限当成模型可用资源。
+
+### E. 已完成、已缓解和未完成事项
+
+#### 已完成并有自动化或本地验证
+
+- 多用户目录、会话、智能体、技能、工具、知识空间和数据分析的归属校验。
+- 中文用户名的稳定内部标识和登录显示兼容。
+- 普通用户文件菜单及后端路径限制；普通用户不能读取其他用户文件。
+- 指定接收人的技能/工具/会话分享审批。
+- PostgreSQL 17、连接池、流式大文件上传和每用户数据分析数据库。
+- MinerU/LibreOffice 文档解析、中文检索、LightRAG 隔离和文档级联清理。
+- 失败任务每小时重试，初次失败后最多 3 次；错误日志片段可在页面下载。
+- 聊天文件自动解析，Word/Excel/PDF/图表产出提供聊天下载链接。
+- SSE 心跳、LLM 流看门狗、有限缓冲、短期重放和前端异常帧容错。
+- 知识文档列表的 LATERAL 子查询投影缺陷已修复，并有静态回归测试兜住同类错误。
+- 代码挂载、独立 PostgreSQL Compose、宿主机日志目录和主应用/知识服务打包脚本。
+
+#### 已缓解但必须在正式环境持续观察
+
+- Chat 页面崩溃/卡死：已针对 SSE 空闲、异常帧、长重放和渲染异常增加保护；9.11
+  追加了四层渲染压力治理（O(N)+引用稳定的工具消息合并、SSE 字节节流、热路径
+  零分配、工具卡解析缓存），针对长任务工具执行期间（尤其大文件参数流式生成）
+  的渐进卡顿与 admin 整页卡死。尚未取得正式浏览器 F12 Console
+  堆栈，不能宣称所有浏览器/WebView 卡死都已根治；正式环境需用 admin 账号执行
+  复杂任务（触发大量工具调用与大文件创建）复测验证。
+- 长会话和大量工具输出：Scroll Context、think-fold 和有界缓冲已降低内存压力，
+  仍需用真实模型、真实大文件和 8–10 人并发做长时间压测。
+- MinerU、视觉模型和 LightRAG：离线模型预置及降级路径已完成，但模型服务本身的
+  显存、并发队列和响应稳定性仍决定最终处理速度。
+
+#### 明确尚未解决或不在当前范围
+
+- 页面崩溃的最终浏览器级根因定位（需要正式环境浏览器 Console、Network 和崩溃时刻
+  的服务日志配对）。
+- 跨多台应用实例的共享任务队列和共享实时重放；当前 TaskTracker 以单主应用实例
+  为边界，横向扩容前需要 Redis/数据库任务协调。
+- 传统企业业务系统的细粒度数据权限；当前数据分析隔离的是汇智账号和其独立数据库，
+  外部 Oracle/MySQL 等系统的业务行级权限仍由外部系统负责。
+- 旧版第三方 API/iframe/回调方案已撤回，不能按历史文档重新启用。
+
+### F. 故障排查所需信息
+
+遇到“页面崩溃、回答消失、容器重启”时，不要只截 `docker logs`。应同时保留：
+
+1. 宿主机日志目录中的 `qwenpaw.log`、`supervisor-app.stderr.log` 和
+   `supervisor-app.stdout.log`；
+2. 浏览器 F12 Console 的红色错误和 Network 中 `/api/console/chat` 的最后响应；
+3. 崩溃前后的时间、账号、会话名称、是否上传文件、是否正在调用工具；
+4. `docker compose ps`、容器退出码和最近一次启动命令。
+
+没有浏览器 Console 时，只能确认后端是否断流，无法证明 React/AgentScope SDK 是否
+在前端渲染阶段抛错。
 
 ## 1. 改造目标
 
@@ -733,16 +891,17 @@ Embedding 单次全量调用 214 块（易超时）。向量检索用 Python 循
 
 改动 6：失败任务自动重试
 - 原因：MinerU 模型加载偶尔失败（内存不足/OOM），任务永久失败需手动重试。
-- 改动：`MAX_JOB_ATTEMPTS = 2`，失败任务自动重新入队一次，10 秒退避。
-- 效果：模型加载失败后自动重试，无需人工干预。
+- 改动：`MAX_ATTEMPTS = 4`，包含首次执行在内最多 4 次；每次失败后延迟 1 小时，
+  即初次失败后最多再重试 3 次。超过次数后保持失败状态，并保留可下载的日志片段。
+- 效果：短暂的模型、网络或资源故障无需人工干预；持续失败不会无限重试。
 
 涉及文件：
 - `knowledge-service/app/providers.py`：`extract_facts()` 新增 `_extract_batch()` +
   `ThreadPoolExecutor(max_workers=3)` 并行抽取；`embed()` 改为 32 块/批调用
 - `knowledge-service/app/store.py`：`search_by_embedding()` 改用 numpy 向量化；
   新增 `_cjk_bigrams()` + `ConnectionPool`
-- `knowledge-service/app/worker.py`：新增 `requeue_job_for_retry()` +
-  `MAX_JOB_ATTEMPTS = 2`
+- `knowledge-service/app/worker.py`：失败任务重试和日志片段保存，
+  `MAX_ATTEMPTS = 4`
 
 **F. Console 前端改动**
 
@@ -884,8 +1043,7 @@ MinerU 解析 PDF → 返回纯文本
 
 **模型配置拆分与上传就绪检查**：
 - Embedding 模型不再自动猜测，必须显式配置 `EMBEDDING_BASE_URL` + `EMBEDDING_MODEL`；`.env` 拆分为 `CHAT_*` / `EMBEDDING_*` 两组（`PROVIDER_*` 向后兼容）。
-- 新增 `supports_vision()`：用 1×1 PNG 实际发多模态请求探测模型能否看图，结果缓存 5 分钟。
-- 新增 `upload_ready` 健康检查：视觉模型或 embedding 未就绪时 `/v1/documents/upload` 直接 409 并说明缺什么，前端同步禁用上传按钮。
+- 新增 `upload_ready` 健康检查：仅 embedding 未就绪时 `/v1/documents/upload` 直接 409 并说明缺什么。该检查会实际请求 embedding 端点验证地址、密钥和模型名，避免生成没有语义索引的文档。视觉模型不参与上传前判断：Worker 对图片做最佳努力解析，当前模型支持多模态则写入图片描述，不支持则自动跳过，文字、表格和文档主体仍可上传和索引。
 
 **大文件与图片**：
 - `KNOWLEDGE_MAX_FILE_MB` 默认提到 10240（10GB）。
@@ -953,13 +1111,114 @@ MinerU 解析 PDF → 返回纯文本
 | `scripts/package_merge_updates.sh` | **合并包**：主应用 + 知识服务 + deploy 一次打包，单包双服务更新 |
 | `scripts/docker_build_knowledge.sh` | 构建 arm64 知识服务镜像（可选预装 MinerU 模型），全新部署用 |
 
-**日志直通 Docker stdout**：
-- supervisord 所有程序日志改为 `/dev/fd/1`、`/dev/fd/2`（不再写 /var/log），`docker logs` 直接可看；`QWENPAW_LOG_LEVEL`/`QWENPAW_LOG_DIR` 可配。
-- 老基座镜像没有新模板，`code-mount-entrypoint.sh` 启动时用正则运行时改写 supervisor 配置兜底。
+**包名约定**：一律用「前缀 + 日期」，即 `huizhi-knowledge-code-YYYYMMDD.tar.gz`、
+`huizhi-assistant-code-YYYYMMDD.tar.gz`、`huizhi-assistant-app-code-YYYYMMDD.tar.gz`
+（仅代码、不含 deploy 层）和 `huizhi-code-update-YYYYMMDD.tar.gz`（合并包）。
+不要加 git SHA、架构后缀或 `-schema-selfheal` 这类描述性尾巴；包内容是架构无关的
+Python 代码和前端产物，架构差异体现在 compose 与镜像里。同名包在同一天重复打包会
+覆盖，需要留档时显式传入自定义文件名（脚本第一个参数），校验值始终写在同名
+`.sha256` 里。该约定同时写入仓库根目录的 `AGENTS.md`，供后续会话直接读取；该文件
+按 `.gitignore` 规则不纳入版本管理（沿用上游做法）。
+
+**日志持久化**：
+- 应用日志写入 `QWENPAW_LOG_DIR`；Supervisor 和其子进程日志也会写入同一目录，避免仅依赖容量有限的 `docker logs`。
+- 老基座镜像没有新模板时，`code-mount-entrypoint.sh` 会在启动时改写 Supervisor 配置，使日志仍落入挂载目录。
+
+**正式环境日志落盘**：
+- `deploy/docker-compose.code-mount.arm64.yml` 将容器 `/app/working/logs` 挂载至宿主机 `${QWENPAW_HOST_LOG_DIR:-./data/logs}`。应用日志为 `qwenpaw.log`，Supervisor 与各子进程日志为 `supervisord.log`、`supervisor-app.stdout.log` 和 `supervisor-app.stderr.log`。
+- 每个 Supervisor 文件单文件上限 20MB，保留 5 个历史文件；可避免异常高频输出占满磁盘。`QWENPAW_HOST_LOG_DIR` 只表示宿主机目录，不要设置为容器内路径。
 
 **Compose 拆分**：
-- `docker-compose.code-mount.arm64.yml`：ARM64 生产部署（不含 PG，数据库外部化或与 postgres compose 合并），api/worker 只读挂载宿主机 `./app`。
-- `knowledge-service/docker-compose.postgres.yml`：独立 PG17 容器（仅绑定 127.0.0.1），可与 code-mount compose 一条命令合并启动。
+- `docker-compose.code-mount.arm64.yml`：ARM64 生产部署（不含 PG，数据库通过独立 Compose 或外部 PG 提供），api/worker 只读挂载宿主机 `./app`。
+- `knowledge-service/docker-compose.postgres.yml`：独立 PG17 容器（仅绑定 127.0.0.1），应先单独启动，再启动知识服务 Compose。
+
+### 9.11 Chat 长任务卡死修复：渲染压力四层治理
+
+**问题**：执行复杂任务时，某个工具动作长时间转圈（如"创建 文件 处理中"——
+模型正在把大文件内容作为工具参数流式生成）期间，页面越来越卡，交互明显迟滞；
+admin 账号最终演变为整页卡死——连浏览器标签页都无法关闭，只能杀掉整个浏览器。
+普通用户同样会卡顿（"干什么都反应慢一拍"），只是授权工具少、单次任务工具调用
+与大参数更少，未达完全卡死阈值。v1.1.12 因未使用 AgentScopeRuntimeWebUI 的
+响应卡渲染链路，无此问题。
+
+**根因**（四个因素叠加，随任务时长单调恶化）：
+
+1. **SDK 的 `AgentScopeRuntimeResponseBuilder.mergeToolMessages` 为 O(N²)**：
+   每个 tool output 匹配时对全部已有消息做 `resMessages.map()` 线性扫描。N 次
+   工具调用 → N²/2 次遍历，且每次渲染（节流后仍每 80ms 一次）都重新执行。
+2. **SDK 的 `useChatRequest` 对每个 SSE 帧调用 `updateMessage`**：活跃流式输出
+   时 20–50 次/秒，每次都触发 React 状态更新；字节层面无任何节流。
+3. **`responseParser` 每帧新建 `INTERNAL_INJECTION_NAMES` Set**：长任务数千帧
+   = 数千个临时对象，放大 GC 压力。
+4. **渲染链破坏对象身份，导致已完成工具卡每 tick 重复 JSON 解析**（9.15 补充
+   定位，"创建文件处理中"转圈越久越卡的直接原因）：响应 builder 每个流式 delta
+   都产出新 output 数组 → merge 每次重跑并新建全部已合并工具消息对象 → SDK
+   `Tool` 组件的 `React.memo` 因 `data` 引用变化失效 → 所有历史工具卡重渲染 →
+   `v1Adapter.parseV1Props` 对每个已完成卡 `JSON.parse(完整参数)`、
+   `ToolCardShell` 再 `JSON.stringify` 美化打印参数。创建大文件时模型把文件内容
+   作为工具参数逐 token 流式生成，历史参数随任务越积越大，每 tick 的 JSON
+   解析/序列化成本线性增长（每 tick ≈ 2× 全部参数体积），最终主线程饱和。
+
+当单次渲染耗时超过节流间隔后，渲染任务排队堆积，主线程被完全占满，浏览器失去
+响应（无法关闭标签页）。普通用户同样受第 1/2/4 项影响，表现为"页面特别卡、
+干什么都反应慢一拍"，只是工具调用数量少、未达完全卡死阈值。
+
+**修复**（四层叠加）：
+
+| 层 | 修改 | 效果 |
+|---|---|---|
+| 渲染算法 | `HostBubbles.tsx` 新增 `mergeToolMessagesLinear`（Map 索引 O(1) 匹配 + WeakMap 合并结果缓存）替换 SDK 的 O(N²) 实现；渲染节流 80ms → 150ms | 每次渲染成本与工具数线性相关；已完成工具卡跨 tick 保持引用稳定，`React.memo` 生效 |
+| SSE 传输 | `turnUsage.ts` 新增 `createSseThrottleStream`：原始字节按 50ms 批量透传（上限 256KB/批），Completed/Failed/Canceled 终端帧立即透传 | 让 React 18 automatic batching 合并一批内的多次 `updateMessage` 为一次 re-render |
+| 热路径分配 | `index.tsx` 将 `INTERNAL_INJECTION_NAMES` 与知识注入前缀常量提到模块级 | 消除每帧临时对象分配 |
+| 卡片解析 | `v1Adapter.tsx` 包裹层加 `React.memo` + 按消息对象身份缓存 `parseV1Props` 结果（WeakMap） | 已完成工具卡的 `JSON.parse(参数)` 只在消息首次出现时执行一次；流式中只有活跃卡重渲染（预览有界 4KB） |
+
+**验证**：
+- `npx tsc --noEmit` 通过。
+- `src/pages/Chat/`、`src/components/Chat/`、`src/hooks/` 共 42 个测试文件
+  312 个测试通过（含 `HostBubbles.test.ts` 14 个用例：合并、乱序、交叉调用、
+  50 次工具调用性能 <10ms、跨 tick 合并结果引用稳定性等；`v1Adapter.test.tsx`
+  5 个用例：参数 JSON.parse 单次执行、React.memo 身份跳过、流式 delta 预览）。
+- `RichFileReferenceInput.test.tsx` 的 2 个失败为既有问题（文件引用输入组件
+  chip 渲染），与本修复无关。
+
+**遗留观察项**（非本次根因，待后续优化）：
+- `turnUsage.ts` 的 `schedulePatchLastResponseCardUsage` setTimeout 重试链
+  （最多 40×50ms）在组件 unmount 后不清理，且每次重试走 `ReactDOM.flushSync`。
+- SDK 内部消息列表无 `maxMessages` 裁剪（有分页渲染兜底，DOM 不失控）。
+- 反向消息列表 wheel 拦截 `passive: false` 在超长消息列表下的 DOM 遍历成本。
+
+### 9.12 知识服务文档列表查询修复：LATERAL 子查询漏投影
+
+**问题**（正式环境 2026-09-18 09:47）：知识空间文档列表接口 500，
+`psycopg.errors.UndefinedColumn: column j.stage does not exist`，堆栈为
+`main.py` 的 `list_all_documents` → `store.py` 的 `list_user_documents_page`；
+前端知识空间文档列表打不开（`GET /v1/documents`）。
+
+**根因**：`list_user_documents` 和 `list_user_documents_page` 的外层 select 引用
+`j.stage AS job_stage`，但配套的 `LEFT JOIN LATERAL (...)` 子查询只投影了
+`id, status, attempts, error`，没有 `stage`。报错位置在外层那一行（`LINE 13`），
+与「表缺列」的表现不同：如果真是表缺列，指针会落在子查询内部。
+
+**为什么先前的 schema 自愈没有生效**：同日上午已经给 `_init_db` 补上
+`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stage TEXT` 并打包上线，但子查询不投影
+`stage` 时，外层引用在任何 schema 下都非法——迁移再正确也修不好这个查询。这就是
+补列之后错误依旧复现的原因。诊断时容易误判成纯 schema 漂移，实际是 SQL 写错了。
+
+**修复**：两处 LATERAL 子查询改为 `SELECT id, status, stage, attempts, error FROM jobs`。
+另一处 `list_documents_internal`、`list_documents` 只引用 `id/status/attempts/error`，
+不受影响。
+
+**验证**：
+
+- 用 `pg_dump --schema-only` 把本地旧库（`jobs` 仅 7 列、无 `stage`）克隆成临时库，
+  在同一库上做对照：修复前 `FAIL: column j.stage does not exist`（与线上完全一致），
+  修复后返回 `OK`，`job_stage` 正确往返为 `embedding`。
+- schema 漂移审计：旧库缺 `documents.content_hash`/`processing_stage`、
+  `jobs.log_excerpt`/`next_retry_at`/`stage`，全部有对应迁移；`worker_heartbeats`
+  是整张新表，由 `CREATE TABLE IF NOT EXISTS` 建立，不需要单独迁移。
+- 新增静态回归测试 `tests/unit/knowledge_service/test_store_lateral_job_projection.py`：
+  断言「外层引用的每个 `j.*` 列都被 LATERAL 子查询投影」，不需要数据库；已验证把修复
+  回退后该测试会同时报出两处违规。
 
 ## 10. 当前状态摘要
 
@@ -978,7 +1237,7 @@ MinerU 解析 PDF → 返回纯文本
 | 代码挂载部署 | 已完成，ARM64 已验证 |
 | 容器数据持久化 | 已完成，必须正确挂载 |
 | 第三方 API/iframe | 已撤回 |
-| 知识服务部署 | 已完成，4 容器架构（api / worker / postgres / lightrag） |
+| 知识服务部署 | 已完成，4 个组件（api / worker / postgres / lightrag），PG 可独立维护 |
 | 知识服务纯检索接口 | 已完成 `/v1/search` |
 | 按需获取文档详情 | 已完成 `get_document_detail` |
 | 知识空间流式查询 | 已完成前端流式显示 |
@@ -1011,8 +1270,12 @@ MinerU 解析 PDF → 返回纯文本
 | 大文件导入 | 已完成，10GB 流式上传 + 分块导入 |
 | 知识服务离线部署 | 已完成，MinerU 模型预置 + auto 降级 + upload_ready 检查 |
 | 知识文档去重 | 已完成，SHA-256 秒传 + 列表去重 |
-| 代码挂载部署体系 | 已完成，合并更新包脚本 + 日志直通 stdout |
+| 知识文档列表查询 | 已修复 LATERAL 漏投影（j.stage），静态回归测试覆盖 |
+| 代码挂载部署体系 | 已完成，合并更新包脚本 + 宿主机日志落盘 |
 | 图表生成工具 | 已完成，generate_chart 六种图型，配合 send_file 投递 |
+| 流式回答断线恢复 | 已完成心跳、看门狗、短期磁盘重放；重启恢复受保留时间限制 |
+| Chat 页面崩溃 | 已增加异常帧容错、分批重放和渲染错误边界；正式浏览器根因仍待日志验证 |
+| 知识/数据处理任务恢复 | 已完成启动恢复、每小时重试（最多 3 次）和失败日志片段下载 |
 
 ## 11. 维护原则
 
@@ -1025,14 +1288,14 @@ MinerU 解析 PDF → 返回纯文本
 
 ## 12. 知识服务部署
 
-### 11.1 容器信息
+### 12.1 容器信息
 
 - 容器名称：`huizhi-knowledge-api`
 - 端口映射：`18100:18100`
 - 数据目录：`/data`
 - 代码目录：`/opt/huizhi-knowledge/app/`
 
-### 11.2 模型配置
+### 12.2 模型配置
 
 知识服务使用 OpenAI 兼容接口，模型不打进镜像：
 
@@ -1044,7 +1307,7 @@ Reranker：Qwen3-Reranker-0.6B-4bit
 API Key：thinker
 ```
 
-### 11.3 常用命令
+### 12.3 常用命令
 
 ```bash
 # 重启知识服务
@@ -1067,7 +1330,7 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-### 11.4 API 接口
+### 12.4 API 接口
 
 ```text
 GET  /health                          健康检查
@@ -1083,7 +1346,7 @@ GET  /v1/spaces/{id}/documents        列出空间文档
 DELETE /v1/documents/{id}             删除文档（级联清理）
 ```
 
-### 11.5 已知问题
+### 12.5 已知问题
 
 - gemma-4 模型在长上下文中可能被旧内容干扰，建议开启新会话测试
 - API key 加密解密失败时需手动替换为明文
