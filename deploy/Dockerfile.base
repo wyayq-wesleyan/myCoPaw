@@ -7,10 +7,19 @@ ARG APT_MIRROR=mirrors.aliyun.com
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 ARG NPM_REGISTRY=https://registry.npmmirror.com
+# Playwright's browser download comes from Microsoft's CDN, which is often
+# unreachable/slow from mainland networks. npmmirror mirrors the same builds.
+ARG PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright
 
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV TZ=Asia/Shanghai
+# Mirror access on this network is intermittent: a build has failed mid-install
+# with "Could not find a version that satisfies the requirement ... (from
+# versions: none)" while the same command succeeded moments later. Retry inside
+# pip instead of losing a long dependency layer to a transient hiccup.
+ENV PIP_RETRIES=10
+ENV PIP_TIMEOUT=60
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV HADOOP_HOME=/opt/hadoop
@@ -237,7 +246,8 @@ RUN set -eux; \
     ; \
     npm config set registry "${NPM_REGISTRY}"; \
     npm install -g docx pptxgenjs; \
-    python -m playwright install chromium
+    PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST}" \
+        python -m playwright install chromium
 
 RUN python - <<'PY'
 from pathlib import Path

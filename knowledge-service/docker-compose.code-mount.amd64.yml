@@ -1,6 +1,6 @@
 services:
   knowledge-api:
-    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-amd64}"
+    image: "${KNOWLEDGE_IMAGE:-huizhi-runtime:2.2.1-amd64}"
     container_name: huizhi-knowledge-api
     restart: unless-stopped
     mem_limit: "${KNOWLEDGE_API_MEMORY_LIMIT:-16g}"
@@ -34,7 +34,7 @@ services:
       retries: 5
 
   knowledge-worker:
-    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-amd64}"
+    image: "${KNOWLEDGE_IMAGE:-huizhi-runtime:2.2.1-amd64}"
     container_name: huizhi-knowledge-worker
     restart: unless-stopped
     mem_limit: "${KNOWLEDGE_WORKER_MEMORY_LIMIT:-80g}"
@@ -59,7 +59,7 @@ services:
     command: ["python", "-m", "app.worker"]
 
   lightrag:
-    image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-amd64}"
+    image: "${KNOWLEDGE_IMAGE:-huizhi-runtime:2.2.1-amd64}"
     container_name: huizhi-lightrag
     restart: unless-stopped
     mem_limit: "${LIGHTRAG_MEMORY_LIMIT:-32g}"

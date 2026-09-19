@@ -19,6 +19,7 @@ APT_MIRROR="${APT_MIRROR:-mirrors.aliyun.com}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST:-https://registry.npmmirror.com/-/binary/playwright}"
 PLATFORM="${PLATFORM:-}"
 
 if [[ -n "$PLATFORM" ]]; then
@@ -53,6 +54,7 @@ docker build -f "$TMP_CONTEXT/deploy/Dockerfile.base" \
     --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
     --build-arg PIP_TRUSTED_HOST="$PIP_TRUSTED_HOST" \
     --build-arg NPM_REGISTRY="$NPM_REGISTRY" \
+    --build-arg PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_DOWNLOAD_HOST" \
     -t "$TAG" "$@" "$TMP_CONTEXT"
 echo "[docker_build_base] Done."
 echo "[docker_build_base] Base image tag: $TAG"

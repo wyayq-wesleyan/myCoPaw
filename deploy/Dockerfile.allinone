@@ -1,0 +1,186 @@
+# All-in-one runtime image for the offline deployment.
+#
+# One image carries the dependency superset for every service, and each service
+# starts from it with its own command (see the compose files):
+#
+#   huizhi-assistant        /entrypoint.sh                (supervisor, port 8088)
+#   huizhi-knowledge-api    uvicorn app.main:app          (port 18100)
+#   huizhi-knowledge-worker python -m app.worker
+#   huizhi-lightrag         python -m lightrag.api...     (port 9621)
+#
+# Why one image instead of one per service: the shared base layers are then
+# counted once when the image is exported and transferred to the server,
+# instead of being duplicated across two archives. Code is bind-mounted in the
+# code-mount deployment, so this image is purely the dependency layer.
+ARG BASE_IMAGE=py312-base:2.0.2-arm64
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+# CPU-only torch: the default PyPI wheel drags in ~4.4GB of CUDA runtime that a
+# GPU-less deployment can never use, and simply uninstalling those packages
+# breaks torch (libcublasLt is loaded eagerly). Aliyun mirrors the official CPU
+# wheels; they are installed by exact URL, since pip cannot use that directory
+# as an index and enumerating it via --find-links is far too slow.
+ARG TORCH_BASE_URL=https://mirrors.aliyun.com/pytorch-wheels/cpu
+
+FROM ${BASE_IMAGE}
+
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+ARG TORCH_BASE_URL
+# BuildKit provides TARGETARCH automatically, but only when declared.
+ARG TARGETARCH
+# Knowledge parsing extras. Torch/MinerU are large; keep them in by default so
+# the offline deployment never silently falls back to the lightweight parser.
+ARG INSTALL_KNOWLEDGE_EXTRAS=1
+ARG INSTALL_LIGHTRAG=1
+ARG PRELOAD_MINERU_MODELS=1
+ARG QWENPAW_DISABLED_CHANNELS=""
+ARG QWENPAW_ENABLED_CHANNELS="console"
+
+# Mirror access on this network is intermittent: installs have failed with
+# "Could not find a version that satisfies the requirement ... (from versions:
+# none)" while the same command succeeded moments later. Retry inside pip so a
+# long dependency layer is not lost to a transient hiccup.
+ENV PIP_RETRIES=10 \
+    PIP_TIMEOUT=60
+
+# Assistant runtime defaults. Absolute paths only: the service's own compose
+# entry sets them again, but a plain `docker run` should still work.
+ENV NODE_ENV=production \
+    WORKSPACE_DIR=/app \
+    QWENPAW_WORKING_DIR=/app/working \
+    QWENPAW_SECRET_DIR=/app/working.secret \
+    QWENPAW_BACKUP_DIR=/app/working.backups \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    QWENPAW_RUNNING_IN_CONTAINER=1 \
+    QWENPAW_DISABLED_CHANNELS=${QWENPAW_DISABLED_CHANNELS} \
+    QWENPAW_ENABLED_CHANNELS=${QWENPAW_ENABLED_CHANNELS} \
+    QWENPAW_PORT=8088 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Knowledge-service defaults.
+ENV KNOWLEDGE_DATA_DIR=/data \
+    PARSER_BACKEND=auto \
+    KNOWLEDGE_OFFLINE=false \
+    MINERU_MODEL_SOURCE=local \
+    MINERU_TOOLS_CONFIG_JSON=/root/mineru.json
+
+# Runtime download endpoints, all pointed at mainland mirrors so an on-line
+# start never reaches for an unreachable upstream host:
+#   HF_ENDPOINT     - huggingface_hub model/dataset pulls
+#   TIKTOKEN_CACHE_DIR - tiktoken fetches its BPE files from OpenAI's CDN on
+#                        first use; lightrag sets a cache dir of its own, but a
+#                        writable default keeps other callers from failing.
+ENV HF_ENDPOINT=https://hf-mirror.com \
+    TIKTOKEN_CACHE_DIR=/root/.cache/tiktoken
+
+# ---------------------------------------------------------------- assistant
+WORKDIR /app
+COPY app/pyproject.toml app/setup.py app/README.md ./
+COPY app/src ./src
+COPY app/plugins/bundle/omp_workflows /opt/huizhi/offline-plugins/omp-workflows
+COPY app/website/public/docs/ ./src/qwenpaw/docs/
+COPY app/console/dist/ ./src/qwenpaw/console/
+
+RUN python -m pip install --no-cache-dir \
+      --index-url ${PIP_INDEX_URL} \
+      --trusted-host ${PIP_TRUSTED_HOST} \
+      --upgrade pip setuptools wheel \
+ && python -m pip install --no-cache-dir \
+      --index-url ${PIP_INDEX_URL} \
+      --trusted-host ${PIP_TRUSTED_HOST} \
+      .[local] \
+ && python - <<'PY'
+from importlib.util import find_spec
+
+required = [
+    "agentscope", "reme", "playwright", "fitz", "openpyxl", "pypdf",
+    "pdfplumber", "docx", "fastapi", "oracledb", "pyhive", "impala",
+]
+missing = [name for name in required if find_spec(name) is None]
+if missing:
+    raise SystemExit(f"Missing assistant runtime modules: {missing}")
+print("assistant dependencies verified")
+PY
+
+RUN qwenpaw init --defaults --accept-security
+
+# ------------------------------------------------------- knowledge service
+# Kept in the same image so api / worker / lightrag reuse these layers.
+WORKDIR /opt/huizhi-knowledge
+COPY knowledge-service/pyproject.toml knowledge-service/README.md ./
+COPY knowledge-service/app ./app
+COPY knowledge-service/scripts ./scripts
+
+RUN python -m pip install --no-cache-dir --no-build-isolation \
+      --index-url ${PIP_INDEX_URL} \
+      --trusted-host ${PIP_TRUSTED_HOST} \
+      . \
+ && if [ "${INSTALL_LIGHTRAG}" = "1" ]; then \
+      python -m pip install --no-cache-dir \
+        --index-url ${PIP_INDEX_URL} \
+        --trusted-host ${PIP_TRUSTED_HOST} \
+        'lightrag-hku[api]==1.5.6'; \
+    fi \
+ && if [ "${INSTALL_KNOWLEDGE_EXTRAS}" = "1" ]; then \
+      echo "Installing CPU-only torch for ${TARGETARCH}"; \
+      case "${TARGETARCH}" in \
+        arm64) TORCH_WHEEL="torch-2.14.0+cpu-cp312-cp312-manylinux_2_28_aarch64.whl"; \
+               VISION_WHEEL="torchvision-0.29.0+cpu-cp312-cp312-manylinux_2_28_aarch64.whl" ;; \
+        amd64) TORCH_WHEEL="torch-2.14.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl"; \
+               VISION_WHEEL="torchvision-0.29.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;; \
+        *)     TORCH_WHEEL=""; VISION_WHEEL="" ;; \
+      esac; \
+      if [ -n "${TORCH_WHEEL}" ]; then \
+        cd /tmp; \
+        TORCH_URL="$(printf '%s' "${TORCH_WHEEL}" | sed 's/+/%2B/g')"; \
+        VISION_URL="$(printf '%s' "${VISION_WHEEL}" | sed 's/+/%2B/g')"; \
+        curl -fsSL -o "${TORCH_WHEEL}" "${TORCH_BASE_URL}/${TORCH_URL}" \
+          && curl -fsSL -o "${VISION_WHEEL}" "${TORCH_BASE_URL}/${VISION_URL}" \
+          && python -m pip install --no-cache-dir \
+               --index-url ${PIP_INDEX_URL} \
+               --trusted-host ${PIP_TRUSTED_HOST} \
+               "/tmp/${TORCH_WHEEL}" "/tmp/${VISION_WHEEL}" \
+          && rm -f "/tmp/${TORCH_WHEEL}" "/tmp/${VISION_WHEEL}" \
+        || { echo "CPU wheel install failed; falling back to the default PyPI build"; \
+             python -m pip install --no-cache-dir \
+               --index-url ${PIP_INDEX_URL} \
+               --trusted-host ${PIP_TRUSTED_HOST} \
+               'torch' 'torchvision'; }; \
+        cd /opt/huizhi-knowledge; \
+      else \
+        python -m pip install --no-cache-dir \
+          --index-url ${PIP_INDEX_URL} \
+          --trusted-host ${PIP_TRUSTED_HOST} \
+          'torch' 'torchvision'; \
+      fi; \
+      python -m pip install --no-cache-dir \
+        --index-url ${PIP_INDEX_URL} \
+        --trusted-host ${PIP_TRUSTED_HOST} \
+        'lightrag-hku==1.5.6' 'mineru[core]==3.4.5'; \
+      if [ "${PRELOAD_MINERU_MODELS}" = "1" ]; then \
+        mineru-models-download -s modelscope -m all; \
+      fi; \
+    fi \
+ && python - <<'PY'
+from importlib.util import find_spec
+
+required = ["app", "lightrag", "mineru", "torch"]
+missing = [name for name in required if find_spec(name) is None]
+if missing:
+    raise SystemExit(f"Missing knowledge runtime modules: {missing}")
+print("knowledge dependencies verified")
+PY
+
+# ---------------------------------------------------------------- entrypoints
+COPY deploy/config/supervisord.conf.template /etc/supervisor/conf.d/supervisord.conf.template
+COPY --chmod=755 deploy/entrypoint.sh /entrypoint.sh
+
+# Each service's compose entry sets its own working_dir and command; this is
+# the fallback for a bare `docker run`.
+WORKDIR /opt/huizhi-knowledge
+
+EXPOSE 8088 18100 9621
+
+CMD ["/entrypoint.sh"]

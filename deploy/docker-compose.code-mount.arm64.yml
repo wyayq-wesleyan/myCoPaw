@@ -1,6 +1,6 @@
 services:
   qwenpaw:
-    image: "${MYCOPAW_IMAGE:-huizhi-assistant:2.1.0-arm64}"
+    image: "${MYCOPAW_IMAGE:-huizhi-runtime:2.2.1-arm64}"
     container_name: huizhi-assistant
     restart: unless-stopped
     # Resource ceilings keep one user's script/import from taking down the
