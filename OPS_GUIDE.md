@@ -1,15 +1,32 @@
 # 运维指南 — 镜像管理与升级策略
 
-> 核心原则：**不要重新构建镜像**。所有变更直接在运行中的容器内完成，然后 `docker commit` 保存为新镜像。
+> 核心原则：**代码变更走代码挂载，不要重建镜像**。镜像只承载依赖；日常更新替换
+> 挂载目录中的代码并重启容器即可（见 README 打包约定）。只有依赖、MinerU、
+> LightRAG、PyTorch 或 Dockerfile 变化时才重建。
 
 ## 1. 当前镜像清单
 
-| 镜像 | 标签 | 大小 | 用途 | 基座 |
-|------|------|------|------|------|
-| `huizhi-assistant` | `2.1.0-base` | ~19GB | 汇智小助手主应用 | `huizhi-assistant:2.1.0-arm64` |
-| `huizhi-knowledge` | `0.1.4-base` | ~23GB | 知识服务（API + Worker + LightRAG） | `huizhi-knowledge:0.1.4-arm64` |
+**全部服务共用一个镜像**，各自用不同命令启动：
 
-> **基座镜像**（`2.1.0-arm64`、`0.1.4-arm64`）是最初从 Dockerfile 构建的，仅用于 emergency reset。日常升级一律在 `-base` 镜像上操作。
+| 服务 | 容器 | 启动命令 | 端口 |
+|------|------|----------|------|
+| 汇智小助手 | `huizhi-assistant` | `/entrypoint.sh`（Supervisor） | `8088` |
+| 知识服务 API | `huizhi-knowledge-api` | `uvicorn app.main:app` | `18100` |
+| 知识服务 Worker | `huizhi-knowledge-worker` | `python -m app.worker` | — |
+| LightRAG | `huizhi-lightrag` | `python -m lightrag.api.lightrag_server` | `9621` |
+
+| 镜像 | 大小 | 说明 |
+|------|------|------|
+| `huizhi-runtime:2.2.1-arm64` / `-amd64` | 约 20GB（导出 6.8GB） | 依赖超集，内置 MinerU 模型（4.6GB）与 CPU 版 torch |
+| `py312-base:2.0.2-arm64` / `-amd64` | 约 7.8GB | 系统依赖底座；与全量镜像共享层，仅用于重建 |
+
+> **为什么合并成一个镜像**：小助手与知识服务的依赖层高度重叠。分成两个镜像会让
+> 这些层在导出包里各存一份，白白多占服务器与本机空间。合并后两服务共享依赖层，
+> 导出包只多出一份代码体积。
+
+> **为什么用 CPU 版 torch**：默认 PyPI 的 torch 会拖入约 4.4GB 的 CUDA 运行时，
+> 而无 GPU 部署完全用不到。直接卸载这些包会让 torch 崩溃（`libcublasLt` 是启动时
+> 加载的），因此改为从阿里云镜像安装 `+cpu` 版本。
 
 ## 2. 升级流程（两个服务通用）
 
@@ -32,15 +49,26 @@ vi /workspace/app/src/qwenpaw/xxx.py           # 汇智小助手
 vi /opt/huizhi-knowledge/app/xxx.py            # 知识服务
 ```
 
-### 2.2 保存为新镜像
+### 2.2 不推荐 docker commit
+
+`docker commit` 曾用于把容器内的改动固化成镜像，但**合并成单镜像后不要再用**：
+所有服务共享同一个镜像，从一个容器 commit 会连带覆盖其他服务的应用代码，
+很容易把某个服务的旧代码写进共享镜像。
+
+依赖变化请改用脚本重建（会带上正确的源与 MinerU 预置）：
 
 ```bash
-# 汇智小助手
-docker commit huizhi-v210-check huizhi-assistant:2.1.0-base
+# 本机（arm64）重建
+bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-arm64
+# 生产（amd64；跨架构构建很慢，优先在同架构机器上执行）
+PLATFORM=linux/amd64 bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-amd64
 
-# 知识服务（任一容器均可，代码共享）
-docker commit huizhi-knowledge-worker huizhi-knowledge:0.1.4-base
+# 导出给内网服务器
+bash scripts/docker_export_image.sh huizhi-runtime:2.2.1-amd64
 ```
+
+只改应用代码时不需要动镜像：替换挂载目录里的 `app/` 与 `knowledge-service/app/`
+再重启容器即可。
 
 ### 2.3 重启容器验证
 
@@ -58,7 +86,7 @@ docker restart huizhi-knowledge-api
 # docker-compose.yml
 services:
   knowledge-worker:
-    image: "huizhi-knowledge:0.1.4-base"   # 改为新标签
+    image: "huizhi-runtime:2.2.1-arm64"   # 改为新标签
 ```
 
 ## 3. 汇智小助手（huizhi-v210-check）
@@ -68,7 +96,7 @@ services:
 | 项目 | 值 |
 |------|-----|
 | 容器名 | `huizhi-v210-check` |
-| 镜像 | `huizhi-assistant:2.1.0-base` |
+| 镜像 | `huizhi-runtime:2.2.1-arm64` |
 | 端口 | `18088` |
 | 代码路径（容器内） | `/workspace/app/` |
 | 前端静态文件 | `/workspace/app/console/dist/` |
@@ -95,9 +123,11 @@ docker restart huizhi-v210-check
 ```
 
 **安装 Python 依赖：**
+
+依赖必须固化进镜像（容器内直接 pip 安装会在容器重建时丢失），因此改用重建脚本，
+不要在容器里 `docker commit`——所有服务共享该镜像，commit 会覆盖其他服务的代码：
 ```bash
-docker exec huizhi-v210-check pip install <package>
-docker commit huizhi-v210-check huizhi-assistant:2.1.0-base
+bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-arm64
 ```
 
 **查看日志：**
@@ -111,9 +141,9 @@ docker logs huizhi-v210-check --tail 100
 
 | 容器 | 镜像 | 端口 | 用途 |
 |------|------|------|------|
-| `huizhi-knowledge-api` | `huizhi-knowledge:0.1.4-base` | `18100` | REST API |
-| `huizhi-knowledge-worker` | `huizhi-knowledge:0.1.4-base` | — | 异步文档处理 |
-| `huizhi-lightrag` | `huizhi-knowledge:0.1.4-base` | `19621` | 知识图谱 |
+| `huizhi-knowledge-api` | `huizhi-runtime:2.2.1-arm64` | `18100` | REST API |
+| `huizhi-knowledge-worker` | `huizhi-runtime:2.2.1-arm64` | — | 异步文档处理 |
+| `huizhi-lightrag` | `huizhi-runtime:2.2.1-arm64` | `19621` | 知识图谱 |
 | `huizhi-knowledge-postgres` | `postgres:17-alpine` | `15432` | 数据库 |
 
 ### 4.2 容器内路径
@@ -171,9 +201,10 @@ conn.close()
 ```
 
 **安装新依赖：**
+
+同样需要重建镜像（见 2.2），不要 `docker commit`：
 ```bash
-docker exec huizhi-knowledge-worker pip install <package>
-docker commit huizhi-knowledge-worker huizhi-knowledge:0.1.4-base
+bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-arm64
 ```
 
 **查看 Worker 日志：**
@@ -189,20 +220,20 @@ docker logs huizhi-knowledge-worker --tail 100
 # 重置汇智小助手（回到原始构建镜像）
 docker stop huizhi-v210-check
 docker rm huizhi-v210-check
-# 用 docker-compose 或手动启动命令重新创建容器，镜像改为 huizhi-assistant:2.1.0-arm64
+# 用 docker-compose 或手动启动命令重新创建容器，镜像改为 huizhi-runtime:2.2.1-arm64
 
 # 重置知识服务（回到原始构建镜像）
 docker stop huizhi-knowledge-worker huizhi-knowledge-api
 docker rm huizhi-knowledge-worker huizhi-knowledge-api
-# 用 docker-compose 重新创建，镜像改为 huizhi-knowledge:0.1.4-arm64
+# 用 docker-compose 重新创建，镜像改为 huizhi-runtime:2.2.1-arm64
 ```
 
 ## 6. 备份
 
 ```bash
 # 导出镜像
-docker save huizhi-assistant:2.1.0-base | gzip > huizhi-assistant-2.1.0-base.tar.gz
-docker save huizhi-knowledge:0.1.4-base | gzip > huizhi-knowledge-0.1.4-base.tar.gz
+docker save huizhi-runtime:2.2.1-arm64 | gzip > huizhi-assistant-2.1.0-base.tar.gz
+docker save huizhi-runtime:2.2.1-arm64 | gzip > huizhi-knowledge-0.1.4-base.tar.gz
 
 # 导出数据库
 docker exec huizhi-knowledge-postgres pg_dump -U huizhi_knowledge huizhi_knowledge > huizhi_knowledge_backup.sql
@@ -219,8 +250,8 @@ docker cp huizhi-knowledge-api:/data/ ./knowledge-data-backup/
 # 1. 验证包可用
 docker exec <container> python3 -c "import <package>; print('ok')"
 
-# 2. 提交为新镜像
-docker commit <container> <image>:<tag>
+# 2. 重建镜像（不要 docker commit，见 2.2）
+bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-arm64
 
 # 3. 更新本文档的「已安装的关键依赖」表格
 ```

@@ -374,6 +374,56 @@ Docker 容器访问宿主机上的模型服务时：
 
 Oracle 客户端和 Hadoop/Hive 客户端属于架构相关资产，ARM64 和 AMD64 不应混用。离线构建前必须准备目标架构的压缩包或安装包。
 
+#### 3.2.1 全量镜像（单镜像多服务）
+
+**所有服务共用一个镜像**，各自用不同命令启动：
+
+| 服务 | 启动命令 | 端口 |
+| --- | --- | --- |
+| 汇智小助手 | `/entrypoint.sh`（Supervisor） | 8088 |
+| 知识服务 API | `uvicorn app.main:app` | 18100 |
+| 知识服务 Worker | `python -m app.worker` | — |
+| LightRAG | `python -m lightrag.api.lightrag_server` | 9621 |
+
+镜像命名 `huizhi-runtime:2.2.1-arm64` / `huizhi-runtime:2.2.1-amd64`，约 20GB
+（zstd 导出后约 6.8GB），内置 MinerU 模型（4.6GB）与 CPU 版 torch。
+
+**为什么合并成一个镜像**：小助手与知识服务的依赖层高度重叠，分成两个镜像会让这些层
+在导出包里各存一份，白白多占本机与服务器空间；合并后所有服务共享依赖层。
+
+**为什么用 CPU 版 torch**：默认 PyPI 的 torch 会拖入约 4.4GB 的 CUDA 运行时，而无 GPU
+部署完全用不到。注意**直接卸载这些包会让 torch 崩溃**（`libcublasLt` 在导入时即加载，
+实测报 `ValueError: libcublasLt.so.*[0-9] not found`），必须改为安装 `+cpu` 版本；
+阿里云镜像提供官方 CPU wheel，且该目录是扁平结构，需用精确 URL 下载而不是当索引使用
+（`--index-url` 无效、`--find-links` 慢到不可用）。
+
+**构建与导出**：
+
+```bash
+# 底座（每个架构各一份，与全量镜像共享层）
+bash scripts/docker_build_base.sh py312-base:2.0.2-arm64
+PLATFORM=linux/amd64 bash scripts/docker_build_base.sh py312-base:2.0.2-amd64
+
+# 全量镜像（会自动选对应的底座）
+bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-arm64
+PLATFORM=linux/amd64 bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-amd64
+
+# 导出（默认 zstd；gzip 在此体积下又慢又不划算）
+bash scripts/docker_export_image.sh huizhi-runtime:2.2.1-arm64
+```
+
+**构建环境注意**：本机为 arm64 时 amd64 走 Rosetta 模拟，实测约慢 2.1 倍，全量镜像
+构建需数小时；有条件应在目标架构机器上构建。Dockerfile 内的 `RUN` 由 `/bin/sh`（dash）
+执行，**不支持 `${var//pat/rep}` 这类 bash 专有替换**，写了会静默报 `Bad substitution`。
+
+**镜像维护的最小化原则**（正式环境已清空过一次镜像，务必遵守）：
+
+- 只保留 `huizhi-runtime:*`、`py312-base:*` 和运行时必需的 `postgres:17-alpine`；
+  底座与全量镜像共享层，删底座 tag 并不释放空间，因此保留以便快速重建。
+- 构建后执行 `docker builder prune -af` 清理构建缓存（本项目一次构建可产生 30GB+ 缓存）。
+- 不要在容器里 `docker commit` 固化改动：所有服务共享一个镜像，从一个容器 commit 会
+  覆盖其他服务的代码。依赖变化请重建镜像，代码变化走挂载更新。
+
 ## 4. Docker 部署
 
 ### 4.1 代码挂载模式
