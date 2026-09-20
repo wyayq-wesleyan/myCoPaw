@@ -1571,16 +1571,115 @@ agent 工具各自实现导致口径不一致。判定用 `is_admin_user()`（�
 （alice 只见自己的、bob 只见自己的）、trace 归属（alice 可读、bob 不可读、admin 可读）。
 与干净 HEAD 逐项对比失败清单：**未引入新失败**（唯一差异是既有 flaky 用例）。
 
-**后续阶段**（已定方案，未实施）：
+### 9.19 多用户隔离系统审计：第二阶段（工具层路径限制）
 
-- **阶段 2 工具层路径限制**：给 `read_file`/`write_file`/`edit_file`/`grep_search`/
-  `glob_search`/`send_file_to_user`/`view_image`/`view_video`/`desktop_screenshot`/
-  `run_tool_batch` 加账号根包含性检查（这些工具自身零校验）；shell 的 `cwd` 与命令串
-  限制到本人路径。**已知残余风险**：`browser` 工具执行模型写的任意 Python（注入完整
-  `__builtins__`），纯路径校验无法限制其能力，要真正隔离需启用沙箱。
-- **阶段 3 共享位置按用户拆分**：`data_uploads`（硬编码全局，子目录仅 uuid）、
-  `inbox_traces`、`media` 兜底目录、日志端点；并把 admin 语义统一为「与普通用户同等
-  隔离」（移除数据分析/预览的 admin 旁路），避免「有的旁路有的严格」这种隐患。
+**前提**（决定本阶段必要性）：审批硬编码为 OFF，且 `security.sandbox_enabled` 默认
+`False` 且部署未覆盖 —— 治理策略规则与沙箱这两层**都不会执行**。因此唯一还生效的防线
+是「工具自身有没有做包含性检查」。
+
+**审计结论**：以下内置工具（均默认启用）**自身零校验**，完全依赖那两层已失效的机制：
+
+| 工具 | 原有问题 |
+| --- | --- |
+| `read_file` / `write_file` / `edit_file` | 共用解析器对绝对路径原样返回，无包含性检查 |
+| `grep_search` / `glob_search` | 搜索根只判「存在」，不判范围 |
+| `send_file_to_user` | 可把宿主机上任意可读文件发给用户 |
+| `view_image` / `view_video` | 只校验扩展名/MIME |
+| `desktop_screenshot` | `path` 参数原样使用 |
+| `run_tool_batch` | `file_path` 原样解析 |
+| `execute_shell_command` | `cwd` 原样传给 subprocess，命令串无任何限制 |
+
+实测：在**真实治理包装层**（`PolicyGuardedTool` + OFF 模式）下，普通账号可读到他人
+工作区文件，甚至读到 `working.secret/auth.json` 的 `jwt_secret`。
+
+**修复**：新增单一规则 `user_files.ensure_inside_account()` —— `resolve()` 后做账号根
+包含性校验，越界抛 `AccountScopeError` 并告知「可访问范围 + 本人根目录」。`resolve()`
+在前，所以指向账号外的符号链接会被识别而不是跟随。
+
+接入方式按影响面选择，避免逐处重复实现：
+
+- **共享解析器** `file_io._resolve_file_path` 直接接入，一次覆盖 `read`/`write`/`edit`/
+  `append`/`grep`/`glob`/`send_file`/`view_media`；四个具体工具改为接住异常并返回可读
+  错误（实测若不接住会变成未捕获异常，虽不泄露但不是可用提示）。
+- `shell` 的 `cwd` 走同一校验；命令串加「命名了其他账号路径」的拦截。
+- `run_tool_batch` 的 `file_path`、`desktop_screenshot` 的 `path` 单独接入。
+
+**能力边界（必须明确）**：shell 的命令串检查是**字符串级尽力而为**，看不出引号、变量、
+glob 或运行期才构造的路径（例如 `python -c "open('/…')"`）。它提高误读成本，**不是隔离
+边界**。`browser` 工具执行模型写的任意 Python（`browser/execution/worker.py` 注入完整
+`__builtins__` 后 `eval`），纯路径校验限不住 —— 要真正隔离需启用沙箱。按既定决策本阶段
+**不收回这些工具的权限**，残余风险记录于此。
+
+**验证**：新增 18 用例（符号链接逃逸、`edit`/`append` 未污染目标、四个工具返回可读拒绝
+而非异常、shell 越界的 `cwd` 与命令、以及「正常命令与本人路径不受影响」的回归断言）。
+回退验证：退回共享解析器与 shell 校验后 **8 个用例精确失败**。容器内端到端实测读他人/
+写他人被拒、读自己正常、越界 `cwd` 被拒、`echo && ls` 正常。
+
+**测试基建**：`tests/unit/agents/tools/` 新增 `conftest.py`，让「只测行为」的工具单测在
+无账号边界下运行（它们的 fixture 建在 pytest 临时目录，本就在账号根外）；测隔离本身的
+用例用 `real_account_scope` 标记跳过该宽化。同时修正 `test_file_io` 中「绝对路径原样返回」
+的断言 —— 原样返回正是被修复的行为，现改为断言规范化后仍指向同一文件。
+
+### 9.20 多用户隔离系统审计：第三阶段（共享位置与 admin 语义）
+
+**一、共享存储位置按账号拆分**（原路径不含任何账号成分，仅靠随机 id 分隔）：
+
+| 位置 | 原状 | 现状 |
+| --- | --- | --- |
+| 数据分析导入暂存 | `<root>/<uuid>/<文件>` | `<root>/<账号>/<uuid>/<文件>`；账号名为非 ASCII（中文用户名）时用 sha256 短哈希，避免不可用路径 |
+| 收件箱 trace | `<root>/<run_id>.json` | `<root>/<账号>/<run_id>.json`，读侧新增 `_locate_trace()` 先查账号子树再回落旧的扁平路径，升级期间在跑的 run 不会丢 |
+| 长期记忆 `user_id` | 恒为字面量 `"shared"`，`memory_isolation=false` 时所有账号共享一个记忆命名空间 | 始终以归属账号为准；解析不到则退回 `agent_id`（仍不跨账号合并）。`agent_id` 不能替代账号：同一账号多智能体会互相串记忆 |
+
+已确认**本就按账号隔离**、无需改动：`workspaces/<slug>`（账号根）、`users/<slug>/state.json`、
+`sessions`、`checkpoints`、`memory`、`chats.json`、`jobs.json`、`.browser-profile`、
+`.browser-cdp`，以及知识服务的空间/文档（`owner_id` 严格，admin 也无旁路）。
+
+**二、admin 语义统一**为「与普通用户同等隔离」。此前是**三种状态混用**（知识空间与
+智能体归属严格、数据分析与文件预览给 admin 旁路），本身就是隐患 —— 漏改任一处即成为
+后门。移除的旁路：数据分析的 `list_tables` owner 过滤 / `get_table` / `delete_table` /
+`batch_delete` / `import_api` 三处 / `preview_api` 一处；文件预览的 `is_admin` 短路
+（该处叠加 `allow_preview_outside_workspace` 默认 `True`，可让 admin 读宿主机任意非敏感
+路径，含他人工作区、`config.json`、备份）；项目目录浏览/设置/导入三处。
+
+**管理能力不受影响**：用户管理、模型/供应商配置、插件安装、备份等本就是 admin-only API，
+不属于「看别人文件」。另经确认前端**没有任何**跨用户查看数据表的入口，收紧不会破坏管理
+功能。
+
+**三、补漏的管理员校验**（原先任何已登录用户可操作全局资源）：`local-models` 全部端点
+（共用一个模型服务与模型目录，改用 router 级守卫）、`settings` 的 `PUT /offload-policy`
+（全局设置；同文件的用户级 `/language` 不受影响）、`console` 的
+`GET /debug/backend-logs`（全局日志含所有账号活动）。
+
+**验证**：新增 18 用例；回退验证退回暂存、trace、admin 旁路三处后 **4 个用例精确失败**。
+容器内端到端确认暂存与 trace 的账号隔离。既有 `inbox/test_inbox_trace_store.py` 原本断言
+扁平路径，改为用 store 自身的 `_locate_trace` 定位（让断言关注内容而非布局），并保留一处
+直写扁平文件以覆盖「旧布局仍可读」。
+
+### 9.21 多用户隔离审计总结与遗留
+
+**三阶段覆盖范围**：跨账号越权面（备份 / cron 路由 / agent 编排工具 / PawApp 卸载 /
+推送 / trace）→ 工具层路径限制（8 个文件类工具 + shell）→ 共享位置按账号拆分 + admin
+语义统一。
+
+**尚未处理、需要时单独决策的项**：
+
+1. **沙箱未启用**：`security.sandbox_enabled=False`。启用后可给 `shell`/`browser` 提供
+   执行层隔离（镜像内已有 bubblewrap/linux sandbox 实现），但需先在容器内验证其可用性，
+   并评估对现有「写 Python 脚本处理数据」这一使用场景的影响。
+2. **`browser` 可执行任意 Python**：目前只加了显式路径参数的校验，代码执行能力按既定
+   决策保留（见 9.19 的残余风险说明）。
+3. **全局单例的可疑项**（未发现跨账号数据泄露，但物理上共享）：语音频道为进程级单例且
+   转录用系统临时文件；本地模型服务、`plugins/`、`skill_pool/` 为全局资源（已归管理员
+   操作）。
+4. **多实例横向扩容**：`TaskTracker` 与实时重放以单主应用实例为边界，需要 Redis/数据库
+   协调（见第 10 节未解决清单）。
+5. **既有缺陷（非本次引入）**：`data_tables/importer.py:525` 存在 `F821 undefined name
+   'Path'`，`agent_context.py` 有两处 `F811` 重复导入 —— 经 stash 对照确认在本次改动前
+   就已存在，建议单独修复。
+
+**审计方法论**（供后续复用）：先确认哪些防护层**实际生效**（本项目里治理与沙箱都不生效，
+只剩工具自校验），再按「HTTP 全局路由 / agent 作用域路由 / 工具内部」三层分别核对；
+每个修复都做**回退验证**（故意移除校验，确认测试精确失败），避免测试只是恰好通过。
 
 ## 10. 当前状态摘要
 
@@ -1637,7 +1736,7 @@ agent 工具各自实现导致口径不一致。判定用 `is_admin_user()`（�
 | 用量可见性 | 已完成，普通用户仅见自己（Web 接口与聊天工具三处出口均已收口） |
 | 工具权限快照 | 已修复，新上线工具不再被旧权限名单隐藏；启动时自动自愈存量配置 |
 | 生成文件预览 | 已修复，DOCX/图表落点改为按请求的工作区，不再因越界被拒 403 |
-| 多用户隔离审计 | 进行中；阶段 1 已收口 6 处跨账号越权（备份/cron 路由/agent 工具/PawApp/推送/trace） |
+| 多用户隔离审计 | 三阶段完成：越权收口 + 工具路径限制 + 共享位置/admin 语义统一；沙箱与 browser 代码执行为已知残余 |
 | 代码挂载部署体系 | 已完成，合并更新包脚本 + 宿主机日志落盘 |
 | 图表生成工具 | 已完成，generate_chart 六种图型，配合 send_file 投递 |
 | 流式回答断线恢复 | 已完成心跳、看门狗、短期磁盘重放；重启恢复受保留时间限制 |
