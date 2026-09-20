@@ -19,6 +19,23 @@ from ...schemas import RunStatus
 logger = logging.getLogger(__name__)
 
 
+def _trace_owner(workspace: Any) -> str | None:
+    """Account owning the workspace a cron trace is produced for.
+
+    Traces live in one shared directory and are read by run id, so each one has
+    to record its account or any authenticated user could read it.
+    """
+    agent_id = getattr(workspace, "agent_id", None)
+    if not agent_id:
+        return None
+    try:
+        from ..user_space import owner_for_agent
+
+        return owner_for_agent(agent_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class CronExecutor:
     def __init__(self, *, workspace: Any, channel_manager: Any):
         self._workspace = workspace
@@ -162,6 +179,7 @@ class CronExecutor:
                 "target_session_id": target_session_id,
                 "silent": job.dispatch.silent,
             },
+            owner=_trace_owner(self._workspace),
         )
 
         final_no_content = False

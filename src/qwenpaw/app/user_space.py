@@ -112,6 +112,23 @@ def get_user_state_root(username: str) -> Path:
     return USER_STATE_ROOT / _slug(username)
 
 
+def owner_for_agent(agent_id: str | None) -> str | None:
+    """Return the account that owns *agent_id*, or ``None`` if unknown.
+
+    Lets code that only holds an agent id (a cron manager, a console channel,
+    a push-message writer) attribute a record to an account without threading
+    the identity through every call site.
+    """
+    if not agent_id:
+        return None
+    try:
+        profile = load_config().agents.profiles.get(agent_id)
+    except Exception:  # noqa: BLE001
+        return None
+    owner = getattr(profile, "owner_username", None) if profile else None
+    return owner.strip() if isinstance(owner, str) and owner.strip() else None
+
+
 def is_admin_user(username: str | None) -> bool:
     if not username:
         return False
@@ -170,6 +187,36 @@ def _account_agent_workspace(username: str, agent_id: str) -> Path:
     if agent_id == default_id or agent_id.endswith("_default"):
         return get_user_root(username)
     return get_user_root(username) / "agents" / agent_id
+
+
+def owner_for_workspace_dir(workspace_dir: "Path | str | None") -> str | None:
+    """Return the account owning a workspace directory, or ``None``.
+
+    Inverse of :func:`_account_agent_workspace`. Used by code that only holds
+    a workspace path (a console channel instance) and needs to attribute a
+    record to an account. Matches on the resolved path so a symlinked or
+    differently-spelled workspace still resolves.
+    """
+    if not workspace_dir:
+        return None
+    try:
+        target = Path(workspace_dir).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        config = load_config()
+    except Exception:  # noqa: BLE001
+        return None
+    for agent_id, profile in getattr(config.agents, "profiles", {}).items():
+        owner = getattr(profile, "owner_username", None)
+        if not isinstance(owner, str) or not owner.strip():
+            continue
+        try:
+            if _account_agent_workspace(owner, agent_id).resolve() == target:
+                return owner.strip()
+        except (OSError, RuntimeError):
+            continue
+    return None
 
 
 def _ensure_account_directories(username: str) -> None:

@@ -152,10 +152,46 @@ def test_list_agents_data_uses_shared_client(monkeypatch):
         "create_agent_api_client",
         lambda _base_url: fake_client,
     )
+    # The list is narrowed to the caller's own agents, so the identity has to
+    # be resolvable for anything to be returned (unresolved is covered below).
+    monkeypatch.setattr(
+        agent_management,
+        "owned_agent_ids",
+        lambda _username: {"default"},
+    )
 
     result = agent_management.list_agents_data("http://127.0.0.1:8088")
 
     assert result["agents"][0]["id"] == "default"
+
+
+def test_list_agents_data_returns_nothing_when_identity_is_unresolved(monkeypatch):
+    """The local API is called without credentials and treats a missing
+    identity as the single-user unrestricted mode, so its list must not be
+    passed through unfiltered."""
+    fake_client = _FakeClient(
+        get_response=_FakeResponse(
+            json_data={
+                "agents": [
+                    {"id": "someone-elses", "name": "Other", "enabled": True},
+                ],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        agent_management,
+        "create_agent_api_client",
+        lambda _base_url: fake_client,
+    )
+    monkeypatch.setattr(
+        agent_management,
+        "owned_agent_ids",
+        lambda _username: None,
+    )
+
+    result = agent_management.list_agents_data("http://127.0.0.1:8088")
+
+    assert result["agents"] == []
 
 
 def test_extract_agent_ids_normalizes_values():

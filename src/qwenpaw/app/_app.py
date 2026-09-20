@@ -251,27 +251,35 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
         _api_action_command_specs: list[Any] = []
         try:
             from ..api_action import ManagerRegistry
-            from ._api_action_routes import (
-                collect_slash_specs_from_api_actions,
-                register_http_routes,
-            )
+            from ._api_action_routes import collect_slash_specs_from_api_actions
             from .crons.manager import CronManager
 
             manager_registry = ManagerRegistry()
 
-            def _get_default_cron_mgr(app_inst: Any) -> Any:
-                mam = getattr(app_inst.state, "multi_agent_manager", None)
-                if mam is None:
-                    return None
-                # pylint: disable-next=protected-access
-                ws = mam._workspaces.get("default")
-                return getattr(ws, "cron_manager", None) if ws else None
+            def _get_cron_mgr_for_request(_app_inst: Any) -> Any:
+                """Fail closed: never resolve another account's cron manager.
 
-            manager_registry.register(CronManager, _get_default_cron_mgr)
+                This getter used to return the ``default`` workspace's manager,
+                which belongs to the administrator. Any consumer of it would
+                therefore operate on the admin account rather than the caller's.
+                Cron access is served by the per-agent routes
+                (``/api/agents/{agentId}/cron/*``) and the CLI, both of which
+                carry an explicit agent id and enforce ownership, so returning
+                ``None`` here is safe.
+                """
+                return None
+
+            manager_registry.register(CronManager, _get_cron_mgr_for_request)
             app.state.manager_registry = manager_registry
 
-            n_routes = register_http_routes(app, manager_registry)
-            logger.debug("Auto-registered %d HTTP routes", n_routes)
+            # NOTE: the auto-generated HTTP routes (``register_http_routes``)
+            # are deliberately NOT registered. They mount ``CronManager``'s
+            # ``@api_action`` methods at absolute paths such as ``/crons/jobs``
+            # — outside the ``/api`` prefix the auth middleware guards (see
+            # ``AuthMiddleware._should_skip_auth``), so they were reachable
+            # without any credentials and operated on the admin workspace.
+            # Cron is exposed only through the authenticated, ownership-checked
+            # routes and the CLI.
 
             _api_action_command_specs.extend(
                 collect_slash_specs_from_api_actions(manager_registry),

@@ -574,20 +574,23 @@ async def get_push_messages(
     """
     from ..console_push_store import get_recent, take
     from ..approvals import get_approval_service
+    from ..user_space import get_request_username, is_admin_user
 
-    # Get messages (session-specific or global)
+    username = get_request_username(request)
+
+    # Get messages (session-specific or global). Without a session id the poll
+    # is bounded to the caller's own account — this store is process-wide and
+    # the fallback previously returned every account's message bodies.
     if session_id:
         messages = await take(session_id)
     else:
-        messages = await get_recent()
+        messages = await get_recent(owner=username)
 
     # Get ALL pending approvals (not filtered by session)
     approval_svc = get_approval_service()
     # pylint: disable=protected-access
     async with approval_svc._lock:
         all_pending = list(approval_svc._pending.values())
-    from ..user_space import get_request_username, is_admin_user
-    username = get_request_username(request)
     if not is_admin_user(username):
         all_pending = [
             p for p in all_pending
@@ -704,10 +707,16 @@ async def delete_inbox_event(event_id: str, request: Request):
 
 
 @router.get("/inbox/traces/{run_id}")
-async def get_inbox_trace(run_id: str):
+async def get_inbox_trace(run_id: str, request: Request):
     from ..inbox_trace_store import get_trace
+    from ..user_space import get_request_username, is_admin_user
 
-    trace = await get_trace(run_id)
+    username = get_request_username(request)
+    trace = await get_trace(
+        run_id,
+        requester=username,
+        is_admin=is_admin_user(username),
+    )
     if trace is None:
         raise HTTPException(
             status_code=404,

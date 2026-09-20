@@ -38,6 +38,16 @@ from ..crons.models import _crontab_dow_to_name
 
 logger = logging.getLogger(__name__)
 
+
+def _owner_for_agent(agent_id: str | None) -> str | None:
+    """Account owning *agent_id*, so a trace can be attributed to it."""
+    try:
+        from ..user_space import owner_for_agent
+
+        return owner_for_agent(agent_id)
+    except Exception:  # noqa: BLE001
+        return None
+
 # Pattern for "30m", "1h", "2h30m", "90s"
 _EVERY_PATTERN = re.compile(
     r"^(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?(?:(?P<seconds>\d+)s)?$",
@@ -292,6 +302,7 @@ async def run_heartbeat_once(
                 "user_id": req["user_id"],
                 "channel": req["channel"],
             },
+            owner=_owner_for_agent(agent_id),
         )
 
         async def _run_only() -> None:

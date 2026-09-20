@@ -19,8 +19,19 @@ _MAX_AGE_SECONDS = 60
 _MAX_MESSAGES = 500
 
 
-async def append(session_id: str, text: str, *, sticky: bool = False) -> None:
-    """Append a message (bounded: oldest dropped if over _MAX_MESSAGES)."""
+async def append(
+    session_id: str,
+    text: str,
+    *,
+    sticky: bool = False,
+    owner: str | None = None,
+) -> None:
+    """Append a message (bounded: oldest dropped if over _MAX_MESSAGES).
+
+    ``owner`` records the account the message belongs to. The console polls
+    this store without a session id, and the fallback used to return every
+    account's message bodies; the owner lets that read be narrowed.
+    """
     if not session_id or not text:
         return
     async with _lock:
@@ -31,6 +42,7 @@ async def append(session_id: str, text: str, *, sticky: bool = False) -> None:
                 "sticky": sticky,
                 "ts": time.time(),
                 "session_id": session_id,
+                "owner": owner or "",
             },
         )
         if len(_list) > _MAX_MESSAGES:
@@ -83,14 +95,21 @@ def _prune_expired_locked(max_age_seconds: int) -> None:
 
 async def get_recent(
     max_age_seconds: int = _MAX_AGE_SECONDS,
+    owner: str | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Return recent messages (not consumed). Drop older than max_age_seconds
     from store to bound memory.
+
+    When *owner* is given, only that account's messages are returned — the
+    session-less console poll must not surface another account's message text.
     """
     if max_age_seconds < 0:
         raise ValueError("max_age_seconds must be non-negative")
 
     async with _lock:
         _prune_expired_locked(max_age_seconds)
-        return _strip_ts(_list)
+        messages = _list
+        if owner is not None:
+            messages = [m for m in messages if m.get("owner") == owner]
+        return _strip_ts(list(messages))

@@ -17,6 +17,8 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
+from ._admin_guard import require_admin_request
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pawapps", tags=["pawapps"])
@@ -173,7 +175,13 @@ async def uninstall_pawapp(app_id: str, request: Request) -> Dict[str, Any]:
     Falls back to unloading a plugin-based PawApp via the plugin loader
     when no matching directory exists. A backend restart may be needed to
     fully unmount any already-mounted backend routers.
+
+    Administrator-only: installed PawApps live in the shared plugins directory
+    and are visible to every account, so removing one is a deployment-level
+    change rather than a per-user action.
     """
+    require_admin_request(request)
+
     # Security: app_id must be a single, non-traversal path segment.
     if not app_id or "/" in app_id or "\\" in app_id or app_id in (".", ".."):
         raise HTTPException(status_code=400, detail="Invalid app id")

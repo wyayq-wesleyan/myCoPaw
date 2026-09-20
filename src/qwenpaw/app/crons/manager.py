@@ -26,6 +26,16 @@ from ..inbox_store import append_event as append_inbox_event
 from ..console_push_store import append as push_store_append
 from .contracts import ServiceCronJob
 from .executor import CronExecutor
+
+
+def _owner_of_agent(agent_id: str | None) -> str | None:
+    """Account owning *agent_id*; used to attribute pushed messages."""
+    from ..user_space import owner_for_agent
+
+    try:
+        return owner_for_agent(agent_id)
+    except Exception:  # noqa: BLE001
+        return None
 from .heartbeat import (
     is_cron_expression,
     parse_heartbeat_cron,
@@ -442,7 +452,11 @@ class CronManager(ManagerBase):
             if session_id:
                 error_text = f"❌ Cron job [{job.name}] failed: {exc}"
                 asyncio.ensure_future(
-                    push_store_append(session_id, error_text),
+                    push_store_append(
+                        session_id,
+                        error_text,
+                        owner=_owner_of_agent(self._agent_id),
+                    ),
                 )
 
     # ----- internal -----

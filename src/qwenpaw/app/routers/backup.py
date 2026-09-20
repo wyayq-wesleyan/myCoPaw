@@ -10,7 +10,15 @@ import tempfile
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, File
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from ...backup import (
@@ -43,10 +51,19 @@ from ._backup_helpers import (
     upload_suffix_for_trust_mode,
     validation_detail,
 )
+from ._admin_guard import require_admin_request
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/backups", tags=["backups"])
+# Backups are a deployment-level maintenance capability: an archive bundles
+# every account's workspace plus the global config, so a normal account must
+# not be able to list, export, import, restore or delete one. The guard sits on
+# the router so every current and future route inherits it.
+router = APIRouter(
+    prefix="/backups",
+    tags=["backups"],
+    dependencies=[Depends(require_admin_request)],
+)
 
 _UPLOAD_TMP_MAX_AGE = 3600  # 1 hour
 

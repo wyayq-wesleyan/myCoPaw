@@ -66,6 +66,9 @@ const ADMIN_ONLY_MENU_IDS = new Set([
   "core.agent-config",
   "core.user-management",
   "core.account-usage",
+  // Backups bundle every account's workspace, so the API is admin-only; hide
+  // the entry too rather than leading a normal user to a 403.
+  "core.backups",
 ]);
 const ALWAYS_USER_MENU_IDS = new Set(["core.knowledge", "core.data-analysis"]);
 

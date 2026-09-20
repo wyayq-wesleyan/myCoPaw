@@ -106,6 +106,61 @@ def resolve_calling_agent_id(from_agent: Optional[str] = None) -> str:
     return get_current_agent_id()
 
 
+def _resolve_calling_username() -> Optional[str]:
+    """Resolve the account these tools are acting for.
+
+    Mirrors the resolution used by the other account-scoped tools: the request
+    context first, falling back to the agent profile's owner so a scheduled run
+    still resolves an account.
+    """
+    try:
+        from ...app.agent_context import get_current_user_id
+
+        username = get_current_user_id()
+        if username and username != "default":
+            return str(username)
+    except Exception:
+        pass
+    try:
+        from ...config import load_config
+
+        profile = load_config().agents.profiles.get(
+            resolve_calling_agent_id(),
+        )
+        owner = getattr(profile, "owner_username", None) if profile else None
+        if isinstance(owner, str) and owner.strip():
+            return owner.strip()
+    except Exception:
+        pass
+    return None
+
+
+def owned_agent_ids(username: Optional[str]) -> Optional[set[str]]:
+    """Agent ids the calling account may address.
+
+    Returns ``None`` when the account cannot be resolved, which callers must
+    treat as "no cross-agent access" rather than "unrestricted": these tools
+    call the local HTTP API without credentials, and the server treats a
+    missing identity as the historical unrestricted single-user mode. Relying
+    on that would let a normal account drive another account's agent, so the
+    scope is resolved here and enforced before dispatching.
+    """
+    if not username:
+        return None
+    try:
+        from ...app.user_space import load_config as _load_config
+        from ...app.user_space import user_agent_ids
+
+        return set(user_agent_ids(_load_config(), username))
+    except Exception:
+        logger.warning(
+            "Could not resolve owned agents for %s; denying cross-agent access",
+            username,
+            exc_info=True,
+        )
+        return None
+
+
 def resolve_agent_session_id(
     from_agent: Optional[str],
     to_agent: str,
@@ -169,11 +224,36 @@ def extract_agent_text_content(response_data: Dict[str, Any]) -> str:
 def list_agents_data(
     base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Fetch the configured agent list from the local API."""
+    """Fetch the caller's own agents from the local API.
+
+    The local API is called without credentials, so an unresolvable identity
+    would let it return every account's agents (including their workspace
+    paths). The result is therefore narrowed to the caller's owned agents
+    before it is handed back — this is also what keeps ``chat_with_agent`` and
+    ``submit_to_agent`` from driving another account's agent, since they gate on
+    ``agent_exists`` (which reads this list).
+    """
     with create_agent_api_client(base_url) as client:
         response = client.get("/agents")
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+
+    allowed = owned_agent_ids(_resolve_calling_username())
+    if allowed is None:
+        # Unresolvable account: expose nothing rather than everything.
+        return {**payload, "agents": []}
+
+    agents = payload.get("agents")
+    if not isinstance(agents, list):
+        return payload
+    return {
+        **payload,
+        "agents": [
+            agent
+            for agent in agents
+            if isinstance(agent, dict) and agent.get("id") in allowed
+        ],
+    }
 
 
 def extract_agent_ids(agent_list_data: Dict[str, Any]) -> set[str]:

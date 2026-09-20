@@ -714,7 +714,11 @@ class ConsoleChannel(BaseChannel):
             and text.strip()
             and not (meta or {}).get("suppress_console_push")
         ):
-            await push_store_append(sid, text.strip())
+            await push_store_append(
+                sid,
+                text.strip(),
+                owner=self._owner_username(),
+            )
 
     async def send_content_parts(
         self,
@@ -730,7 +734,24 @@ class ConsoleChannel(BaseChannel):
         if sid and not (meta or {}).get("suppress_console_push"):
             body = self._parts_to_text(parts, meta)
             if body.strip():
-                await push_store_append(sid, body.strip())
+                await push_store_append(
+                    sid,
+                    body.strip(),
+                    owner=self._owner_username(),
+                )
+
+    def _owner_username(self) -> str | None:
+        """Account owning this channel's workspace, for push attribution.
+
+        The console polls the push store without a session id; without an owner
+        on each message that read would return every account's message bodies.
+        """
+        try:
+            from ....app.user_space import owner_for_workspace_dir
+
+            return owner_for_workspace_dir(self._workspace_dir)
+        except Exception:  # noqa: BLE001
+            return None
 
     # ── lifecycle ───────────────────────────────────────────────────
 

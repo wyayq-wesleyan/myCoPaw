@@ -68,7 +68,14 @@ async def create_trace(
     run_id: str,
     *,
     meta: dict[str, Any] | None = None,
+    owner: str | None = None,
 ) -> None:
+    """Create a trace file.
+
+    ``owner`` records the account the run belongs to. Traces are stored in one
+    shared directory and read by run id, so without it any authenticated
+    account that learned a run id could read another account's full trace.
+    """
     async with _LOCK:
         payload = {
             "run_id": run_id,
@@ -76,6 +83,7 @@ async def create_trace(
             "completed_at": None,
             "status": "running",
             "meta": _to_jsonable(meta or {}),
+            "owner": owner or "",
             "events": [],
         }
         await run_sync_io(_write_trace, run_id, payload)
@@ -210,12 +218,28 @@ async def finalize_trace(
         await run_sync_io(_write_trace, run_id, payload)
 
 
-async def get_trace(run_id: str) -> dict[str, Any] | None:
+async def get_trace(
+    run_id: str,
+    *,
+    requester: str | None = None,
+    is_admin: bool = False,
+) -> dict[str, Any] | None:
+    """Return one trace.
+
+    When *requester* is given the trace is returned only if it belongs to that
+    account (administrators may read any). A trace with no recorded owner is
+    treated as admin-only rather than public, so legacy files cannot leak.
+    """
     path = _trace_path(run_id)
     if not path.exists():
         return None
     async with _LOCK:
-        return await run_sync_io(_read_trace, run_id)
+        payload = await run_sync_io(_read_trace, run_id)
+    if requester is not None and not is_admin:
+        owner = payload.get("owner") or ""
+        if owner != requester:
+            return None
+    return payload
 
 
 async def delete_trace(run_id: str) -> bool:
