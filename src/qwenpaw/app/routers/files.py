@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import FileResponse
 
 from qwenpaw.constant import WORKING_DIR
-from ..user_space import get_request_username, get_user_root, is_admin_user
+from ..user_space import get_request_username, get_user_root
 from qwenpaw.security.tool_guard.guardians.file_guardian import (
     FilePathToolGuardian,
     _normalize_path,
@@ -86,7 +86,13 @@ async def preview_file(
     from ..auth import is_auth_enabled
     if is_auth_enabled() and not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if username and not is_admin_user(username):
+    if username:
+        # Confine to the caller's own account, administrators included. This
+        # used to skip the check for admins, which — combined with
+        # ``allow_preview_outside_workspace`` defaulting to True — let an admin
+        # read any non-sensitive path on the host (other accounts' workspaces,
+        # config.json, backups). Knowledge spaces and agent ownership already
+        # treat admins as ordinary accounts; preview now matches.
         try:
             path.relative_to(get_user_root(username).resolve())
         except ValueError as exc:

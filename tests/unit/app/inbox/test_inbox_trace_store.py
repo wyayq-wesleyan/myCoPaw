@@ -31,6 +31,19 @@ def trace_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return target
 
 
+def _trace_file(trace_dir: Path, run_id: str) -> Path:
+    """Locate a trace file wherever the store put it.
+
+    Traces are written under an account subtree now; ``_locate_trace`` is the
+    store's own resolution, so using it keeps these tests about content rather
+    than layout.
+    """
+    del trace_dir
+    located = trace_store._locate_trace(run_id)
+    assert located is not None, f"trace {run_id} was not written"
+    return located
+
+
 # ---------------------------------------------------------------------------
 # _to_jsonable
 # ---------------------------------------------------------------------------
@@ -82,7 +95,7 @@ def test_to_jsonable_falls_back_to_repr():
 @pytest.mark.asyncio
 async def test_create_trace_writes_initial_payload(trace_dir: Path):
     await trace_store.create_trace("run-1", meta={"agent": "a"})
-    path = trace_dir / "run-1.json"
+    path = _trace_file(trace_dir, "run-1")
     assert path.exists()
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["run_id"] == "run-1"
@@ -96,7 +109,7 @@ async def test_create_trace_writes_initial_payload(trace_dir: Path):
 @pytest.mark.asyncio
 async def test_create_trace_default_meta_is_empty_dict(trace_dir: Path):
     await trace_store.create_trace("run-2")
-    data = json.loads((trace_dir / "run-2.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-2")).read_text(encoding="utf-8"))
     assert data["meta"] == {}
 
 
@@ -116,7 +129,7 @@ async def test_append_trace_events_appends_to_existing(trace_dir: Path):
         "run-1",
         [{"at": 2.0, "event": {"text": "second"}}],
     )
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     events = data["events"]
     assert len(events) == 2
     assert events[0]["event"]["text"] == "first"
@@ -132,7 +145,7 @@ async def test_append_trace_events_creates_trace_if_missing(trace_dir: Path):
         [{"at": 1.0, "event": {"x": 1}}],
     )
     data = json.loads(
-        (trace_dir / "run-bootstrap.json").read_text(encoding="utf-8"),
+        (_trace_file(trace_dir, "run-bootstrap")).read_text(encoding="utf-8"),
     )
     assert len(data["events"]) == 1
 
@@ -145,7 +158,7 @@ async def test_append_trace_events_defaults_at_timestamp(trace_dir: Path):
         "run-1",
         [{"event": {"text": "no-at"}}],
     )
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     at = data["events"][0]["at"]
     assert isinstance(at, float)
     assert at >= before
@@ -163,7 +176,7 @@ async def test_append_trace_events_filters_non_dict_items(trace_dir: Path):
             None,
         ],
     )
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     assert len(data["events"]) == 1
     assert data["events"][0]["event"] == {"keep": True}
 
@@ -179,7 +192,7 @@ async def test_append_trace_events_normalizes_pydantic_event(trace_dir: Path):
         "run-1",
         [{"at": 1.0, "event": FakeModel()}],
     )
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     assert data["events"][0]["event"] == {
         "role": "assistant",
         "content": "hi",
@@ -191,7 +204,7 @@ async def test_append_trace_events_empty_list_is_noop(trace_dir: Path):
     await trace_store.create_trace("run-1")
     # Empty input should not raise and should not mutate the file.
     await trace_store.append_trace_events("run-1", [])
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     assert data["events"] == []
 
 
@@ -199,7 +212,7 @@ async def test_append_trace_events_empty_list_is_noop(trace_dir: Path):
 async def test_append_trace_events_all_non_dict_is_noop(trace_dir: Path):
     await trace_store.create_trace("run-1")
     await trace_store.append_trace_events("run-1", ["x", 1, None])
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     assert data["events"] == []
 
 
@@ -418,7 +431,7 @@ async def test_append_trace_from_session_delta_appends_only_new(
     assert delta[0]["content"] == "m2"
     assert delta[1]["content"] == "m3"
     data = json.loads(
-        (trace_dir / "run-delta.json").read_text(encoding="utf-8"),
+        (_trace_file(trace_dir, "run-delta")).read_text(encoding="utf-8"),
     )
     assert len(data["events"]) == 2
     # Parsed timestamps should be floats, not None (ISO strings are parseable).
@@ -480,7 +493,7 @@ async def test_finalize_trace_sets_status_and_completed_at(trace_dir: Path):
     await trace_store.create_trace("run-1")
     before = time.time()
     await trace_store.finalize_trace("run-1", status="success")
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     assert data["status"] == "success"
     assert isinstance(data["completed_at"], float)
     assert data["completed_at"] >= before
@@ -490,7 +503,7 @@ async def test_finalize_trace_sets_status_and_completed_at(trace_dir: Path):
 async def test_finalize_trace_records_error_message(trace_dir: Path):
     await trace_store.create_trace("run-1")
     await trace_store.finalize_trace("run-1", status="error", error="boom")
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     assert data["status"] == "error"
     assert data["error"] == "boom"
 
@@ -501,7 +514,7 @@ async def test_finalize_trace_without_error_keeps_field_absent(
 ):
     await trace_store.create_trace("run-1")
     await trace_store.finalize_trace("run-1", status="success")
-    data = json.loads((trace_dir / "run-1.json").read_text(encoding="utf-8"))
+    data = json.loads((_trace_file(trace_dir, "run-1")).read_text(encoding="utf-8"))
     assert "error" not in data
 
 
@@ -529,6 +542,8 @@ async def test_get_trace_on_invalid_json_raises(trace_dir: Path):
     # _read_trace raises ValueError for non-dict JSON. get_trace forwards
     # that — callers must not silently swallow corrupted trace files.
     trace_dir.mkdir(parents=True, exist_ok=True)
+    # Written directly in the flat (legacy) layout, which also proves the read
+    # path still finds traces that predate the per-account split.
     (trace_dir / "run-bad.json").write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="invalid trace file"):
         await trace_store.get_trace("run-bad")
@@ -552,7 +567,7 @@ async def test_delete_trace_returns_false_when_missing(trace_dir: Path):
 @pytest.mark.asyncio
 async def test_delete_trace_removes_file_and_returns_true(trace_dir: Path):
     await trace_store.create_trace("run-1")
-    path = trace_dir / "run-1.json"
+    path = _trace_file(trace_dir, "run-1")
     assert path.exists()
     assert await trace_store.delete_trace("run-1") is True
     assert not path.exists()

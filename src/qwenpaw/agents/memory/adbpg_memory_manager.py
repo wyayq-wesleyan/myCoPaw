@@ -52,6 +52,28 @@ class ADBPGMemoryManager(BaseMemoryManager):
     # Abstract methods (required)
     # ------------------------------------------------------------------
 
+    def _resolve_memory_user_id(self) -> str:
+        """Account owning this agent, used as the long-term memory namespace.
+
+        Falls back to the agent id when the owner cannot be resolved, which
+        still separates agents (and therefore accounts) rather than collapsing
+        everyone into one shared namespace.
+        """
+        try:
+            from ...app.user_space import owner_for_agent
+
+            owner = owner_for_agent(self.agent_id)
+            if owner:
+                return owner
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Could not resolve the owning account for agent '%s'; "
+                "scoping memory to the agent id instead",
+                self.agent_id,
+                exc_info=True,
+            )
+        return self.agent_id
+
     async def start(self) -> None:
         """Initialize ADBPGMemoryClient from agent config."""
         agent_config = load_agent_config(self.agent_id)
@@ -75,6 +97,13 @@ class ADBPGMemoryManager(BaseMemoryManager):
         self._effective_agent_id = (
             self.agent_id if cfg.memory_isolation else "shared"
         )
+
+        # Long-term memory must always be scoped to the owning account. This
+        # used to stay the literal "shared" for every account, so disabling
+        # memory_isolation made all accounts read and write one memory
+        # namespace. Agent-id separation is not a substitute: one account with
+        # several agents would still merge their memories.
+        self._effective_user_id = self._resolve_memory_user_id()
 
         try:
             if not cfg.rest_base_url.strip():

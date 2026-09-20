@@ -7,7 +7,7 @@ import psycopg2.extras
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from ..app.user_space import get_request_username, is_admin_user
+from ..app.user_space import get_request_username
 from .connection import drop_table, ensure_user_database, generate_table_name
 from .store import SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
 
@@ -131,15 +131,17 @@ async def list_tables(
     created_end: str | None = Query(None),
 ):
     username = get_request_username(request) or "admin"
-    is_admin = is_admin_user(username)
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             conditions = []
             params: list = []
-            if not is_admin:
-                conditions.append("owner_username = %s")
-                params.append(username)
+            # Strictly per account, including for administrators: data tables
+            # follow the same rule as knowledge spaces and agent ownership.
+            # The admin bypass that used to be here was one of three
+            # inconsistent admin semantics in the codebase.
+            conditions.append("owner_username = %s")
+            params.append(username)
             if keyword:
                 conditions.append("(table_name ILIKE %s OR description ILIKE %s)")
                 params.extend([f"%{keyword}%", f"%{keyword}%"])
@@ -212,7 +214,6 @@ async def create_table(payload: CreateTableRequest, request: Request):
 @router.get("/{table_id}")
 async def get_table(table_id: str, request: Request):
     username = get_request_username(request) or "admin"
-    is_adm = is_admin_user(username)
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -220,7 +221,7 @@ async def get_table(table_id: str, request: Request):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="表不存在")
-            if not is_adm and row["owner_username"] != username:
+            if row["owner_username"] != username:
                 raise HTTPException(status_code=403, detail="无权查看此表")
             cols = row["columns"] or []
             # Count import jobs
@@ -251,7 +252,6 @@ async def get_table(table_id: str, request: Request):
 @router.delete("/{table_id}")
 async def delete_table(table_id: str, request: Request):
     username = get_request_username(request) or "admin"
-    is_adm = is_admin_user(username)
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -259,7 +259,7 @@ async def delete_table(table_id: str, request: Request):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="表不存在")
-            if not is_adm and row["owner_username"] != username:
+            if row["owner_username"] != username:
                 raise HTTPException(status_code=403, detail="无权删除此表")
             if row["initialized"]:
                 drop_table(row["db_name"], row["table_name"])
@@ -279,7 +279,6 @@ async def batch_delete_tables(payload: dict, request: Request):
     if not ids:
         raise HTTPException(status_code=400, detail="请选择要删除的数据表")
     username = get_request_username(request) or "admin"
-    is_adm = is_admin_user(username)
     conn = _get_conn()
     deleted = 0
     try:
@@ -289,7 +288,7 @@ async def batch_delete_tables(payload: dict, request: Request):
                 row = cur.fetchone()
                 if not row:
                     continue
-                if not is_adm and row["owner_username"] != username:
+                if row["owner_username"] != username:
                     continue
                 if row["initialized"]:
                     try:

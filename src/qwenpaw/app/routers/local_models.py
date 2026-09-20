@@ -20,8 +20,16 @@ from ...local_models import (
 )
 from ...providers.provider import ModelInfo
 from ...providers.provider_manager import ProviderManager
+from ._admin_guard import require_admin_request
 
-router = APIRouter(prefix="/local-models", tags=["local-models"])
+# Local model serving is a host-level resource (one shared server process and
+# model directory for every account), so the whole surface is administrator
+# only. The guard sits on the router so a route added later inherits it.
+router = APIRouter(
+    prefix="/local-models",
+    tags=["local-models"],
+    dependencies=[Depends(require_admin_request)],
+)
 
 
 async def get_local_model_manager(request: Request) -> LocalModelManager:

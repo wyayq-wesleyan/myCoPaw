@@ -324,15 +324,16 @@ def _job_status_sync(job_id: str) -> dict | None:
         _put_conn(conn)
 
 
-def _stage_import_file(source: Path) -> Path:
-    """Copy an upload into the import staging area.
+def _stage_import_file(source: Path, username: str) -> Path:
+    """Copy an upload into the calling account's import staging area.
 
     The importer deletes its source file once the import succeeds, so the chat
-    attachment has to be copied rather than handed over directly.
+    attachment has to be copied rather than handed over directly. The copy goes
+    under the account's own subtree, not the shared staging root.
     """
-    from qwenpaw.data_tables.store import UPLOAD_DIR
+    from qwenpaw.data_tables.store import user_upload_dir
 
-    target_dir = Path(UPLOAD_DIR) / uuid.uuid4().hex
+    target_dir = Path(user_upload_dir(username)) / uuid.uuid4().hex
     target_dir.mkdir(parents=True, exist_ok=True)
     staged = target_dir / source.name
     shutil.copy2(source, staged)
@@ -483,7 +484,7 @@ async def import_data_table(table_name: str, file: str) -> str:
         return "单个文件不能超过 10GB。"
 
     try:
-        staged = await run_sync_io(_stage_import_file, path)
+        staged = await run_sync_io(_stage_import_file, path, username)
     except Exception as exc:
         return f"准备导入文件失败：{exc}"
 

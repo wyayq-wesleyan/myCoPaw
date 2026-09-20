@@ -9,7 +9,7 @@ import psycopg2.extras
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
-from ..app.user_space import get_request_username, is_admin_user
+from ..app.user_space import get_request_username
 from .importer import start_import_task
 from .store import (
     ALLOWED_EXTENSIONS,
@@ -17,10 +17,10 @@ from .store import (
     MAX_XLS_FILE_BYTES,
     SYSTEM_TABLE_IMPORT_JOB,
     SYSTEM_TABLE_REGISTRY,
-    UPLOAD_DIR,
     _get_conn,
     _put_conn,
     init_data_tables_schema,
+    user_upload_dir,
 )
 
 router = APIRouter(tags=["data-import"], dependencies=[Depends(init_data_tables_schema)])
@@ -56,7 +56,7 @@ async def import_data(table_id: str, files: list[UploadFile] = File(...), reques
             table = cur.fetchone()
             if not table:
                 raise HTTPException(status_code=404, detail="表不存在")
-            if not is_admin_user(username) and table["owner_username"] != username:
+            if table["owner_username"] != username:
                 raise HTTPException(status_code=403, detail="无权操作此表")
     finally:
         _put_conn(conn)
@@ -68,7 +68,7 @@ async def import_data(table_id: str, files: list[UploadFile] = File(...), reques
             errors.append({"filename": file.filename, "error": f"不支持的文件格式: {ext}"})
             continue
         task_id = str(uuid.uuid4())
-        task_dir = os.path.join(UPLOAD_DIR, task_id)
+        task_dir = os.path.join(user_upload_dir(username), task_id)
         os.makedirs(task_dir, exist_ok=True)
         file_path = os.path.join(task_dir, file.filename or "data.csv")
         file_size = await _save_upload_file(file, Path(file_path))
@@ -93,7 +93,6 @@ async def list_import_jobs(
     page_size: int = Query(10, ge=1, le=50),
 ):
     username = get_request_username(request) or "admin"
-    is_adm = is_admin_user(username)
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -105,9 +104,9 @@ async def list_import_jobs(
             if status:
                 conditions.append("j.status = %s")
                 params.append(status)
-            if not is_adm:
-                conditions.append("t.owner_username = %s")
-                params.append(username)
+            # Strictly per account, administrators included.
+            conditions.append("t.owner_username = %s")
+            params.append(username)
             where = ""
             if conditions:
                 where = " WHERE " + " AND ".join(conditions)
@@ -180,7 +179,7 @@ async def get_import_job(job_id: str, request: Request):
             r = cur.fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail="任务不存在")
-            if not is_admin_user(username) and r["owner_username"] != username:
+            if r["owner_username"] != username:
                 raise HTTPException(status_code=403, detail="无权查看此任务")
             return {
                 "id": str(r["id"]),
@@ -220,7 +219,7 @@ async def get_import_job_log(job_id: str, request: Request):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="任务不存在")
-            if not is_admin_user(username) and row["owner_username"] != username:
+            if row["owner_username"] != username:
                 raise HTTPException(status_code=403, detail="无权查看此任务")
             text = row.get("log_excerpt") or json.dumps(row.get("errors") or [], ensure_ascii=False, indent=2)
             return PlainTextResponse(text, headers={"Content-Disposition": f'attachment; filename="import-{job_id}.log"'})

@@ -15,6 +15,7 @@ from ...utils.io_utils import (
     read_json_async,
     write_json_atomic_async,
 )
+from ._admin_guard import require_admin_request
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -89,6 +90,9 @@ async def set_offload_policy(
     body: OffloadPolicyRequest,
     request: Request,
 ) -> dict[str, str]:
+    # One global setting for every account, so it is administrator-only.
+    require_admin_request(request)
+
     async with get_path_lock(_SETTINGS_FILE):
         settings = await _load()
         settings["offload_policy"] = body.default_action

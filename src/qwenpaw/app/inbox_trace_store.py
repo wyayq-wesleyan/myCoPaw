@@ -19,8 +19,35 @@ _TRACE_DIR = WORKING_DIR / "inbox_traces"
 _LOCK = asyncio.Lock()
 
 
-def _trace_path(run_id: str) -> Path:
-    return _TRACE_DIR / f"{run_id}.json"
+def _owner_slug(owner: str | None) -> str:
+    """Filesystem-safe directory name for an account.
+
+    Traces used to share one flat directory, so any account that learned a run
+    id could read another's trace. Each account now writes under its own
+    subtree; the name is hashed for non-ASCII accounts so CJK usernames cannot
+    produce an unusable path.
+    """
+    import hashlib
+
+    name = (owner or "").strip()
+    if not name:
+        return "_unowned"
+    if name.isascii() and name.isalnum():
+        return name
+    return "u_" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
+
+
+def _trace_path(run_id: str, owner: str | None = None) -> Path:
+    """Path for one trace file.
+
+    ``owner`` selects the account subtree. Callers that only have a run id (the
+    read path) resolve the file by searching the subtrees, so the layout change
+    is not visible to them.
+    """
+    safe_run = Path(run_id).name
+    if owner is None:
+        return _TRACE_DIR / f"{safe_run}.json"
+    return _TRACE_DIR / _owner_slug(owner) / f"{safe_run}.json"
 
 
 def _to_jsonable(value: Any) -> Any:
@@ -37,9 +64,28 @@ def _to_jsonable(value: Any) -> Any:
     return {"repr": repr(value)}
 
 
+def _locate_trace(run_id: str) -> "Path | None":
+    """Find an existing trace file, whatever layout wrote it.
+
+    New traces live under an account subtree; traces written before the split
+    sit directly in _TRACE_DIR. Both are searched so an in-flight run is not
+    lost across the upgrade.
+    """
+    safe_run = Path(run_id).name
+    candidates = [_TRACE_DIR / f"{safe_run}.json"]
+    try:
+        candidates.extend(sorted(_TRACE_DIR.glob(f"*/{safe_run}.json")))
+    except OSError:
+        pass
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _read_trace(run_id: str) -> dict[str, Any]:
-    path = _trace_path(run_id)
-    if not path.exists():
+    path = _locate_trace(run_id)
+    if path is None:
         return {
             "run_id": run_id,
             "created_at": time.time(),
@@ -56,7 +102,12 @@ def _read_trace(run_id: str) -> dict[str, Any]:
 
 
 def _write_trace(run_id: str, payload: dict[str, Any]) -> None:
-    path = _trace_path(run_id)
+    existing = _locate_trace(run_id)
+    path = existing if existing is not None else _trace_path(
+        run_id,
+        payload.get("owner"),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(
         path,
         payload,
@@ -230,8 +281,7 @@ async def get_trace(
     account (administrators may read any). A trace with no recorded owner is
     treated as admin-only rather than public, so legacy files cannot leak.
     """
-    path = _trace_path(run_id)
-    if not path.exists():
+    if _locate_trace(run_id) is None:
         return None
     async with _LOCK:
         payload = await run_sync_io(_read_trace, run_id)
@@ -245,9 +295,9 @@ async def get_trace(
 async def delete_trace(run_id: str) -> bool:
     if not run_id:
         return False
-    path = _trace_path(run_id)
     async with _LOCK:
-        if not path.exists():
+        path = _locate_trace(run_id)
+        if path is None:
             return False
         await unlink_async(path)
     return True

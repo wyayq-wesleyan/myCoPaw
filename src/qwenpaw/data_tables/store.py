@@ -36,6 +36,23 @@ MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024 * 1024
 MAX_XLS_FILE_BYTES = 512 * 1024 * 1024
 
 
+def user_upload_dir(username: str) -> str:
+    """Return this account's import staging directory.
+
+    Staged uploads used to share one flat directory with only a random task id
+    for separation, so any account could read another's file if it learned the
+    path. Each account now gets its own subtree.
+    """
+    import hashlib
+
+    name = (username or "").strip() or "admin"
+    # Keep the directory name filesystem-safe for Chinese/CJK usernames.
+    safe = name if name.isascii() and name.isalnum() else hashlib.sha256(
+        name.encode("utf-8"),
+    ).hexdigest()[:24]
+    return os.path.join(UPLOAD_DIR, safe)
+
+
 def _get_pool() -> ThreadedConnectionPool:
     global _pool
     if _pool is not None:

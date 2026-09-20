@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..agent_context import get_agent_for_request, get_agent_project_dir
-from ..user_space import get_request_username, get_user_root, is_admin_user
+from ..user_space import get_request_username, get_user_root
 from ..utils import safe_project_dest
 from ...constant import CODING_PROJECT_SUBDIR
 from ...utils.command_runner import run_command_async, start_command_async
@@ -151,7 +151,7 @@ async def set_project(body: SetProjectRequest, request: Request) -> dict:
         if not target.is_dir():
             raise NotADirectoryError(str(target))
         username = get_request_username(request)
-        if username and not is_admin_user(username):
+        if username:
             try:
                 target.relative_to(get_user_root(username).resolve())
             except ValueError as exc:
@@ -503,7 +503,7 @@ async def import_local(body: ImportLocalRequest, request: Request) -> dict:
     from ..auth import is_auth_enabled
     if is_auth_enabled() and not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if username and not is_admin_user(username):
+    if username:
         try:
             source.relative_to(get_user_root(username).resolve())
         except ValueError as exc:
@@ -730,7 +730,7 @@ async def browse_dirs(
     from ..auth import is_auth_enabled
     if is_auth_enabled() and not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if username and not is_admin_user(username):
+    if username:
         account_root = get_user_root(username).resolve()
         requested = account_root if path in ("", "~") else Path(path).expanduser().resolve()
         try:

@@ -204,7 +204,7 @@ async def get_project_dir_for_request(
             session_override=resolved_override,
         )[0]
         username = get_request_username(request)
-        if username and not is_admin_user(username):
+        if username:
             try:
                 resolved.relative_to(get_user_root(username).resolve())
             except ValueError as exc:

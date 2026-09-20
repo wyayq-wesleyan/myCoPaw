@@ -525,6 +525,7 @@ async def post_console_upload(
     summary="Read backend daemon logs for debug page",
 )
 async def get_backend_debug_logs(
+    request: Request,
     lines: int = Query(
         200,
         ge=20,
@@ -533,6 +534,12 @@ async def get_backend_debug_logs(
     ),
 ) -> dict:
     """Return the tail of the project log file for the debug UI."""
+    # The log is shared by every account, so its contents must not be readable
+    # by a normal user (it carries other accounts' activity).
+    from ._admin_guard import require_admin_request
+
+    require_admin_request(request)
+
     log_path = LOG_FILE_PATH.resolve()
     try:
         st = log_path.stat()

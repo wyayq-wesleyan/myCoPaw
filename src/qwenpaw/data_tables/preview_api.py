@@ -3,7 +3,7 @@
 import psycopg2.extras
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from ..app.user_space import get_request_username, is_admin_user
+from ..app.user_space import get_request_username
 from .connection import get_target_connection, put_target_connection
 from .store import SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
 
@@ -20,7 +20,7 @@ async def preview_table(table_id: str, request: Request, limit: int = Query(100,
             table = cur.fetchone()
             if not table:
                 raise HTTPException(status_code=404, detail="表不存在")
-            if not is_admin_user(username) and table["owner_username"] != username:
+            if table["owner_username"] != username:
                 raise HTTPException(status_code=403, detail="无权查看此表")
     finally:
         _put_conn(conn)
