@@ -12,6 +12,7 @@ from agentscope.message import TextBlock, DataBlock, URLSource
 
 from ...runtime.tool_registry import tool_descriptor
 from .file_io import _resolve_file_path, _path_to_file_url
+from .user_files import AccountScopeError
 
 
 @tool_descriptor(
@@ -44,8 +45,17 @@ async def send_file_to_user(
     file_path = unquote(file_path)
     file_path = os.path.expanduser(unicodedata.normalize("NFC", file_path))
 
-    # Resolve relative paths to absolute paths based on workspace directory
-    file_path = _resolve_file_path(file_path)
+    # Resolve relative paths to absolute paths based on workspace directory.
+    # This also confines the path to the caller's account: this tool hands the
+    # file to the user, so an unconfined path would read any file on the host.
+    try:
+        file_path = _resolve_file_path(file_path)
+    except AccountScopeError as exc:
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.SUCCESS,
+            content=[TextBlock(text=f"Error: {exc}")],
+        )
 
     if not os.path.exists(file_path):
         return ToolChunk(

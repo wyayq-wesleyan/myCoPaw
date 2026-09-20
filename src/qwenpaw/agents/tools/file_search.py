@@ -172,15 +172,22 @@ def _resolve_search_root(
 
     Returns a ``Path`` on success or a ``ToolChunk`` error.
     """
-    search_root = (
-        Path(_resolve_file_path(path))
-        if path
-        else (
-            get_current_project_dir()
-            or get_current_workspace_dir()
-            or WORKING_DIR
+    from .user_files import AccountScopeError
+
+    try:
+        search_root = (
+            Path(_resolve_file_path(path))
+            if path
+            else (
+                get_current_project_dir()
+                or get_current_workspace_dir()
+                or WORKING_DIR
+            )
         )
-    )
+    except AccountScopeError as exc:
+        # A search outside the account root is refused rather than silently
+        # searching the wrong tree.
+        return _make_response(f"Error: {exc}")
     try:
         exists = search_root.exists()
     except OSError as e:

@@ -181,6 +181,15 @@ async def desktop_screenshot(
     if not path.lower().endswith(".png"):
         path = path.rstrip("/\\") + ".png"
 
+    from .user_files import AccountScopeError, ensure_inside_account
+
+    try:
+        # The screenshot is written to a model-supplied path; confine it so one
+        # account cannot drop files into another account's workspace.
+        path = str(ensure_inside_account(path))
+    except AccountScopeError as exc:
+        return json.dumps({"ok": False, "error": str(exc)})
+
     system = platform.system()
 
     # macOS: optional window selection via screencapture -w

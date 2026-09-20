@@ -20,7 +20,8 @@ from agentscope.tool import ToolChunk
 
 from ...runtime.tool_registry import tool_descriptor
 from ...utils.io_utils import run_sync_io
-from .file_io import _path_to_file_url, _resolve_file_path
+from .file_io import _path_to_file_url, _resolve_file_path, _scope_error_response
+from .user_files import AccountScopeError
 from ..utils.image_freezing import freeze_local_image
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,11 @@ def _validate_media_path(
         "NFC",
         os.path.expanduser(file_path),
     )
-    resolved = Path(_resolve_file_path(file_path))
+    try:
+        resolved = Path(_resolve_file_path(file_path))
+    except AccountScopeError as exc:
+        # Media outside the caller's account is refused, not silently loaded.
+        return Path(file_path), _scope_error_response(exc)
 
     if not resolved.exists() or not resolved.is_file():
         return resolved, ToolChunk(

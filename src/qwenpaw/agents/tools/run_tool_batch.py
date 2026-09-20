@@ -518,7 +518,14 @@ def _load_batch_file(file_path: str) -> list[dict[str, Any]]:
     if not path_text:
         raise ValueError("file_path is required")
 
-    path = Path(path_text).expanduser().resolve()
+    from .user_files import AccountScopeError, ensure_inside_account
+
+    try:
+        # Confine to the caller's account: the batch file is read from whatever
+        # path the model supplies, and nothing downstream restricts it here.
+        path = ensure_inside_account(path_text)
+    except AccountScopeError as exc:
+        raise ValueError(str(exc)) from exc
 
     if not path.is_file():
         raise ValueError(f"Batch file not found: {path}")

@@ -33,6 +33,55 @@ def user_facing_name(path: Path) -> str:
     return _UPLOAD_PREFIX_RE.sub("", path.name) or path.name
 
 
+def account_root(username: str | None = None) -> Path | None:
+    """Return the calling account's filesystem root.
+
+    This is the boundary every file-touching tool must stay inside. It is
+    derived from the account (not just the agent workspace) so files remain
+    reachable across the account's own agents, while another account's data
+    stays out of reach.
+    """
+    try:
+        from ...app.user_space import get_user_root
+
+        return get_user_root(username or resolve_account_username()).resolve()
+    except Exception:
+        return None
+
+
+class AccountScopeError(PermissionError):
+    """Raised when a tool is asked to touch a path outside the account root."""
+
+
+def ensure_inside_account(path: str | Path) -> Path:
+    """Return the resolved *path*, or raise :class:`AccountScopeError`.
+
+    The single gate used by the file-reading and file-writing tools. Approval
+    is hard-disabled in this deployment and the sandbox is off, so the
+    governance policy rules and sandbox that would normally confine
+    ``Read(WORKSPACE_DIR/**)`` never run — this check is what actually keeps one
+    account out of another's files.
+    """
+    resolved = Path(path).expanduser()
+    try:
+        resolved = resolved.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise AccountScopeError(f"无法解析路径：{exc}") from exc
+
+    root = account_root()
+    if root is None:
+        raise AccountScopeError(
+            "无法确定你的账号工作区，出于安全考虑已拒绝访问该路径。"
+            "请联系管理员检查账号配置。",
+        )
+    if resolved == root or resolved.is_relative_to(root):
+        return resolved
+    raise AccountScopeError(
+        f"只能访问自己账号工作区内的文件，已拒绝：{resolved}\n"
+        f"你的工作区根目录是：{root}",
+    )
+
+
 def resolve_account_username() -> str:
     """Resolve the owning account for both interactive and scheduled runs."""
     username = get_current_user_id()

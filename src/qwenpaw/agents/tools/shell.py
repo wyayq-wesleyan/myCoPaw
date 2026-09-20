@@ -35,6 +35,64 @@ from ...utils.io_utils import run_sync_io
 _SHELL_OUTPUT_MAX_BYTES = 1024 * 1024
 _SHELL_OUTPUT_DRAIN_GRACE_SECS = 10.0
 
+# Absolute paths that belong to another account's area. A command naming one of
+# them is refused.
+#
+# This is a best-effort guard, deliberately narrow: it inspects the literal
+# string, so it cannot see through quoting, variables, globs or a script that
+# walks the filesystem at runtime (e.g. ``python -c "open('/…')"``). It raises
+# the cost of an accidental cross-account read; it is NOT a containment
+# boundary. Real isolation for an arbitrary command requires the sandbox, which
+# is disabled in this deployment (``security.sandbox_enabled=False``).
+_OTHER_ACCOUNT_PATH_RE = None
+
+
+def _other_account_path_pattern():
+    """Compiled regex matching any workspace path outside the caller's root."""
+    global _OTHER_ACCOUNT_PATH_RE
+    if _OTHER_ACCOUNT_PATH_RE is None:
+        import re
+
+        # Every account's workspace lives under this parent, so naming any
+        # account's directory segment here is always outside the caller's own
+        # root unless it is the caller's own (checked separately).
+        _OTHER_ACCOUNT_PATH_RE = re.compile(
+            r"(?P<path>[\w./~-]*workspaces/[A-Za-z0-9_]+)",
+        )
+    return _OTHER_ACCOUNT_PATH_RE
+
+
+def _outside_account_command_error(command: str) -> str | None:
+    """Return a refusal message when *command* names another account's area."""
+    from .user_files import account_root
+
+    if not command:
+        return None
+    root = account_root()
+    if root is None:
+        return None
+
+    from pathlib import PurePosixPath
+
+    for match in _other_account_path_pattern().finditer(command):
+        candidate = match.group("path")
+        try:
+            resolved = PurePosixPath(candidate)
+        except (TypeError, ValueError):
+            continue
+        # Compare on the account directory name: the caller's own directory is
+        # allowed anywhere it appears.
+        parts = [p for p in resolved.parts if p not in ("/", "", ".")]
+        if not parts:
+            continue
+        if root.name not in parts and "workspaces" in parts:
+            return (
+                "只能访问自己账号工作区内的文件，已拒绝该命令："
+                f"命令中出现了其他账号的路径 {candidate}。\n"
+                f"你的工作区根目录是：{root}"
+            )
+    return None
+
 
 def _kill_process_tree_win32(pid: int) -> None:
     """Kill a process and all its descendants on Windows via taskkill.
@@ -1043,6 +1101,29 @@ async def execute_shell_command(
             get_current_project_dir()
             or get_current_workspace_dir()
             or WORKING_DIR
+        )
+
+    # Confine execution to the caller's own account. Approval is hard-disabled
+    # and the sandbox is off, so nothing downstream restricts this: without the
+    # check a normal account could run the command with cwd set to another
+    # account's workspace.
+    from .user_files import AccountScopeError, ensure_inside_account
+
+    try:
+        working_dir = ensure_inside_account(working_dir)
+    except AccountScopeError as exc:
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.SUCCESS,
+            content=[TextBlock(type="text", text=f"Error: {exc}")],
+        )
+
+    command_error = _outside_account_command_error(command)
+    if command_error:
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.SUCCESS,
+            content=[TextBlock(type="text", text=f"Error: {command_error}")],
         )
 
     # Ensure the venv Python is on PATH for subprocesses

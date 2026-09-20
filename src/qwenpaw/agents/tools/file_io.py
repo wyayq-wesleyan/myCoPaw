@@ -27,6 +27,7 @@ from ...utils.io_utils import (
     get_path_lock,
     write_text_atomic_async,
 )
+from .user_files import AccountScopeError
 
 _USER_FILE_MODE = 0o644
 
@@ -50,26 +51,49 @@ def _path_to_file_url(path: str) -> str:
     return f"file://{abs_path}"
 
 
-def _resolve_file_path(file_path: str) -> str:
-    """Resolve file path: use absolute path as-is,
-    resolve relative path from current workspace or WORKING_DIR.
+def _scope_error_response(exc: Exception) -> ToolChunk:
+    """Turn an account-scope refusal into a readable tool result.
 
-    Args:
-        file_path: The input file path (absolute or relative).
-
-    Returns:
-        The resolved absolute file path as string.
+    The model has to see why the path was refused (and what its own root is) to
+    correct itself, so the message is passed through rather than replaced by a
+    generic failure.
     """
+    return ToolChunk(
+        is_last=True,
+        state=ToolResultState.SUCCESS,
+        content=[
+            TextBlock(
+                type="text",
+                text=f"Error: {exc}",
+            ),
+        ],
+    )
+
+
+def _resolve_file_path(file_path: str) -> str:
+    """Resolve a file path and confine it to the calling account's workspace.
+
+    An absolute path is accepted only when it is inside the account root, and a
+    relative path resolves against the agent workspace. Raises
+    :class:`AccountScopeError` otherwise.
+
+    The confinement belongs here rather than in each tool because this helper
+    is the shared entry point for reading, writing, searching, sending and
+    previewing files; the governance rules and sandbox that would normally
+    enforce it are both inert in this deployment (see
+    ``user_files.ensure_inside_account``).
+    """
+    from .user_files import ensure_inside_account
+
     path = Path(file_path).expanduser()
-    if path.is_absolute():
-        return str(path)
-    else:
+    if not path.is_absolute():
         project_dir = (
             get_current_project_dir()
             or get_current_workspace_dir()
             or WORKING_DIR
         )
-        return str(project_dir / file_path)
+        path = project_dir / file_path
+    return str(ensure_inside_account(path))
 
 
 def _get_encoding_for_file(file_path: str) -> str:
@@ -164,7 +188,10 @@ async def read_file(  # pylint: disable=too-many-return-statements
                 ],
             )
 
-    file_path = _resolve_file_path(file_path)
+    try:
+        file_path = _resolve_file_path(file_path)
+    except AccountScopeError as exc:
+        return _scope_error_response(exc)
 
     try:
         content = await read_file_safe(file_path)
@@ -305,7 +332,10 @@ async def write_file(
             ],
         )
 
-    file_path = _resolve_file_path(file_path)
+    try:
+        file_path = _resolve_file_path(file_path)
+    except AccountScopeError as exc:
+        return _scope_error_response(exc)
     encoding = _get_encoding_for_file(file_path)
 
     try:
@@ -378,7 +408,10 @@ async def edit_file(
             ],
         )
 
-    resolved_path = _resolve_file_path(file_path)
+    try:
+        resolved_path = _resolve_file_path(file_path)
+    except AccountScopeError as exc:
+        return _scope_error_response(exc)
 
     encoding = _get_encoding_for_file(resolved_path)
     async with get_path_lock(resolved_path):
@@ -504,7 +537,10 @@ async def append_file(
             ],
         )
 
-    file_path = _resolve_file_path(file_path)
+    try:
+        file_path = _resolve_file_path(file_path)
+    except AccountScopeError as exc:
+        return _scope_error_response(exc)
     encoding = _get_encoding_for_file(file_path)
 
     try:
