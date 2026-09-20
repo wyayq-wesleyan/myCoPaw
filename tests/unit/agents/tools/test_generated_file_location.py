@@ -95,3 +95,47 @@ def test_generated_path_is_inside_the_account_workspace(workspace):
 
     # This is the same check preview_file applies to a non-administrator.
     assert produced.resolve().is_relative_to(workspace.resolve())
+
+
+@pytest.mark.asyncio
+async def test_resolution_holds_across_the_real_request_hook(tmp_path, monkeypatch):
+    """The contextvar must survive the real request-setup hook.
+
+    ContextVars are per-task: a hook awaited in one async context is invisible
+    to code running after an ``asyncio.run`` boundary, so this exercises the
+    hook and the tool inside one coroutine — the way a real request runs. An
+    earlier check done across that boundary wrongly suggested the fix did not
+    work.
+    """
+    monkeypatch.setenv("QWENPAW_WORKING_DIR", str(tmp_path))
+    monkeypatch.delenv("CONSOLE_MEDIA_DIR", raising=False)
+
+    from qwenpaw.hooks.request_setup.contextvars_hook import ContextVarsSetupHook
+    from qwenpaw.runtime.hooks import HookContext
+
+    agent_ws = tmp_path / "workspaces" / "u_abc"
+    agent_ws.mkdir(parents=True, exist_ok=True)
+
+    class _Request:
+        user_id = "zhang"
+        channel = "console"
+        request_context = {"account_username": "zhang"}
+
+    ctx = HookContext(
+        request=_Request(),
+        session_id="s1",
+        agent_id="default",
+        root_session_id="s1",
+        root_agent_id="default",
+        workspace_dir=agent_ws,
+        workspace=None,
+        app_services=None,
+        input_msgs=None,
+    )
+
+    await ContextVarsSetupHook().run(ctx)
+
+    resolved = docx_tool._resolve_media_dir()
+    assert resolved == agent_ws / "media"
+    # The shared global directory is what the preview endpoint rejects.
+    assert resolved != tmp_path / "media"
