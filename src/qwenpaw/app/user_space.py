@@ -196,6 +196,13 @@ def owner_for_workspace_dir(workspace_dir: "Path | str | None") -> str | None:
     a workspace path (a console channel instance) and needs to attribute a
     record to an account. Matches on the resolved path so a symlinked or
     differently-spelled workspace still resolves.
+
+    A profile's own ``workspace_dir`` is checked first, because the canonical
+    derivation is not always recoverable: the administrator's default agent
+    lives at ``workspaces/default``, which :func:`_account_agent_workspace`
+    only reproduces while that agent is recorded as the account's default in
+    ``state.json``. Falling back to the derivation keeps workspaces that were
+    renamed or migrated attributable.
     """
     if not workspace_dir:
         return None
@@ -207,16 +214,42 @@ def owner_for_workspace_dir(workspace_dir: "Path | str | None") -> str | None:
         config = load_config()
     except Exception:  # noqa: BLE001
         return None
+
+    matched: set[str] = set()
     for agent_id, profile in getattr(config.agents, "profiles", {}).items():
         owner = getattr(profile, "owner_username", None)
         if not isinstance(owner, str) or not owner.strip():
             continue
+        owner = owner.strip()
+
+        candidates: list[Path] = []
+        declared = getattr(profile, "workspace_dir", None)
+        if isinstance(declared, str) and declared.strip():
+            candidates.append(Path(declared).expanduser())
         try:
-            if _account_agent_workspace(owner, agent_id).resolve() == target:
-                return owner.strip()
-        except (OSError, RuntimeError):
-            continue
-    return None
+            candidates.append(_account_agent_workspace(owner, agent_id))
+        except Exception:  # noqa: BLE001
+            pass
+
+        for candidate in candidates:
+            try:
+                if candidate.resolve() == target:
+                    matched.add(owner)
+                    break
+            except (OSError, RuntimeError):
+                continue
+
+    if len(matched) > 1:
+        # Two accounts claiming one directory is a broken configuration; stay
+        # unattributed rather than handing the record to an arbitrary one.
+        logger.warning(
+            "Workspace %s is claimed by several accounts %s; leaving it "
+            "unattributed.",
+            target,
+            sorted(matched),
+        )
+        return None
+    return next(iter(matched)) if matched else None
 
 
 def _ensure_account_directories(username: str) -> None:

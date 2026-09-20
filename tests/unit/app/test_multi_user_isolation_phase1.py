@@ -227,3 +227,86 @@ def test_list_agents_data_exposes_nothing_without_an_account(monkeypatch):
     monkeypatch.setattr(am, "owned_agent_ids", lambda _u: None)
 
     assert am.list_agents_data()["agents"] == []
+
+
+# ---------------------------------------------------------------------------
+# Workspace-to-account attribution
+# ---------------------------------------------------------------------------
+
+
+def _profile(owner: str, workspace_dir) -> SimpleNamespace:
+    return SimpleNamespace(owner_username=owner, workspace_dir=str(workspace_dir))
+
+
+def _install_profiles(monkeypatch, profiles):
+    from qwenpaw.app import user_space
+
+    config = SimpleNamespace(agents=SimpleNamespace(profiles=profiles))
+    monkeypatch.setattr(user_space, "load_config", lambda *a, **k: config)
+    return user_space
+
+
+def test_owner_for_workspace_dir_resolves_the_admin_default_agent(
+    monkeypatch,
+    tmp_path,
+):
+    """The admin default agent must be attributable without a state.json.
+
+    Its workspace is ``workspaces/default``, which the canonical derivation
+    only reproduces while that agent is recorded as the account's default in
+    ``state.json``. Push-message attribution runs in the console channel with
+    no request identity, so an unresolved owner silently drops the message
+    from the session-less poll instead of showing it to the admin.
+    """
+    default_ws = tmp_path / "workspaces" / "default"
+    user_space = _install_profiles(
+        monkeypatch,
+        {"default": _profile("admin", default_ws)},
+    )
+    monkeypatch.setattr(user_space, "load_user_state", lambda _u: {})
+
+    assert user_space.owner_for_workspace_dir(default_ws) == "admin"
+
+
+def test_owner_for_workspace_dir_resolves_a_non_default_agent(
+    monkeypatch,
+    tmp_path,
+):
+    extra_ws = tmp_path / "workspaces" / "default" / "agents" / "extra"
+    user_space = _install_profiles(
+        monkeypatch,
+        {"extra": _profile("admin", extra_ws)},
+    )
+    monkeypatch.setattr(user_space, "load_user_state", lambda _u: {})
+
+    assert user_space.owner_for_workspace_dir(extra_ws) == "admin"
+
+
+def test_owner_for_workspace_dir_ignores_an_unrelated_directory(
+    monkeypatch,
+    tmp_path,
+):
+    user_space = _install_profiles(
+        monkeypatch,
+        {"default": _profile("admin", tmp_path / "workspaces" / "default")},
+    )
+
+    assert user_space.owner_for_workspace_dir(tmp_path / "elsewhere") is None
+    assert user_space.owner_for_workspace_dir(None) is None
+
+
+def test_owner_for_workspace_dir_refuses_an_ambiguous_directory(
+    monkeypatch,
+    tmp_path,
+):
+    """Two accounts claiming one directory must not be handed to either."""
+    shared = tmp_path / "workspaces" / "default"
+    user_space = _install_profiles(
+        monkeypatch,
+        {
+            "default": _profile("admin", shared),
+            "other": _profile("bob", shared),
+        },
+    )
+
+    assert user_space.owner_for_workspace_dir(shared) is None

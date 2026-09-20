@@ -28,6 +28,8 @@ send_file = importlib.import_module("qwenpaw.agents.tools.send_file")
 view_media = importlib.import_module("qwenpaw.agents.tools.view_media")
 shell = importlib.import_module("qwenpaw.agents.tools.shell")
 run_tool_batch = importlib.import_module("qwenpaw.agents.tools.run_tool_batch")
+ast_tool = importlib.import_module("qwenpaw.agents.tools.ast_tool")
+lsp_tool = importlib.import_module("qwenpaw.agents.tools.lsp_tool")
 desktop_screenshot = importlib.import_module(
     "qwenpaw.agents.tools.desktop_screenshot",
 )
@@ -39,12 +41,34 @@ pytestmark = pytest.mark.real_account_scope
 
 @pytest.fixture
 def two_accounts(tmp_path, monkeypatch):
-    """Two accounts with one file each, acting as alice."""
-    monkeypatch.setenv("QWENPAW_WORKING_DIR", str(tmp_path))
+    """Two accounts with one file each, acting as alice.
+
+    ``WORKING_DIR`` and the account roots behind it are frozen when
+    ``qwenpaw.constant`` is imported, so setting ``QWENPAW_WORKING_DIR`` here
+    would have no effect and these fixtures would be created in the real
+    ``~/.qwenpaw``. Point the resolved roots at the temporary directory
+    instead, so a run leaves no trace on the host.
+    """
+    from qwenpaw.app import user_space
+
     monkeypatch.delenv("CONSOLE_MEDIA_DIR", raising=False)
+    monkeypatch.setattr(
+        user_space,
+        "USER_WORKSPACE_ROOT",
+        tmp_path / "workspaces",
+    )
+    monkeypatch.setattr(user_space, "USER_STATE_ROOT", tmp_path / "users")
 
     alice_root = get_user_root("alice")
     bob_root = get_user_root("bob")
+    assert alice_root.is_relative_to(tmp_path), (
+        "account roots must stay inside the temporary directory, "
+        f"got {alice_root}"
+    )
+    assert bob_root.is_relative_to(tmp_path), (
+        "account roots must stay inside the temporary directory, "
+        f"got {bob_root}"
+    )
     alice_root.mkdir(parents=True, exist_ok=True)
     bob_root.mkdir(parents=True, exist_ok=True)
 
@@ -143,6 +167,29 @@ def test_grep_and_glob_refuse_another_account(two_accounts):
 def test_grep_still_accepts_your_own_root(two_accounts):
     alice_root, _ = two_accounts
     assert isinstance(file_search._resolve_search_root(str(alice_root)), type(alice_root))
+
+
+def test_ast_search_reports_another_account_as_a_result(two_accounts):
+    """The refusal must be a readable result, not an escaping exception.
+
+    ``ast_search`` shares ``_resolve_file_path`` with the other file tools, so
+    an out-of-account path makes that helper raise. Letting it escape would
+    surface as an ERROR tool result with a raw traceback-style message instead
+    of the account-scope explanation the model can act on.
+    """
+    alice_root, bob_root = two_accounts
+
+    result = ast_tool._resolve_search_path(str(bob_root / "secret.txt"), alice_root)
+
+    assert "只能访问自己账号工作区内的文件" in _text(result)
+
+
+def test_lsp_reports_another_account_as_a_result(two_accounts):
+    alice_root, bob_root = two_accounts
+
+    result = lsp_tool._resolve_file(str(bob_root / "secret.txt"), alice_root)
+
+    assert "只能访问自己账号工作区内的文件" in _text(result)
 
 
 # ------------------------------------------------------- send/media tools

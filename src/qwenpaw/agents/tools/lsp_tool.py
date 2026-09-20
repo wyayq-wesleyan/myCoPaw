@@ -72,7 +72,15 @@ def _resolve_file(
     """Resolve ``file_path`` and ensure it lives inside ``root``."""
     if not file_path:
         return _make_response("Error: missing `file_path`.")
-    candidate = Path(_resolve_file_path(file_path)).expanduser()
+    from .user_files import AccountScopeError
+
+    try:
+        # ``_resolve_file_path`` confines the path to the calling account and
+        # raises rather than returning, so the refusal becomes a readable tool
+        # result here, the way the other file tools report one.
+        candidate = Path(_resolve_file_path(file_path)).expanduser()
+    except AccountScopeError as exc:
+        return _make_response(f"Error: {exc}")
     try:
         resolved = candidate.resolve()
     except OSError as exc:

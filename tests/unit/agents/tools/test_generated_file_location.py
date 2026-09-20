@@ -12,7 +12,6 @@ account could open it.
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
 
 import pytest
 
@@ -107,7 +106,9 @@ async def test_resolution_holds_across_the_real_request_hook(tmp_path, monkeypat
     earlier check done across that boundary wrongly suggested the fix did not
     work.
     """
-    monkeypatch.setenv("QWENPAW_WORKING_DIR", str(tmp_path))
+    # WORKING_DIR is frozen when qwenpaw.constant is imported, so setting
+    # QWENPAW_WORKING_DIR here would not redirect anything. The workspace used
+    # below comes from the hook under test, and the agent workspace is explicit.
     monkeypatch.delenv("CONSOLE_MEDIA_DIR", raising=False)
 
     from qwenpaw.hooks.request_setup.contextvars_hook import ContextVarsSetupHook

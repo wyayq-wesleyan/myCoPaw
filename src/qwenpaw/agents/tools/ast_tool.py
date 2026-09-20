@@ -103,7 +103,15 @@ def _resolve_search_path(
     """
     if not path:
         return root
-    candidate = Path(_resolve_file_path(path)).expanduser()
+    from .user_files import AccountScopeError
+
+    try:
+        # ``_resolve_file_path`` confines the path to the calling account and
+        # raises rather than returning, so the refusal becomes a readable tool
+        # result here, the way the other file tools report one.
+        candidate = Path(_resolve_file_path(path)).expanduser()
+    except AccountScopeError as exc:
+        return _make_response(f"Error: {exc}")
     try:
         candidate_resolved = candidate.resolve()
     except OSError as exc:

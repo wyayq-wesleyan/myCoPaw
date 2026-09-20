@@ -1681,6 +1681,52 @@ glob 或运行期才构造的路径（例如 `python -c "open('/…')"`）。它
 只剩工具自校验），再按「HTTP 全局路由 / agent 作用域路由 / 工具内部」三层分别核对；
 每个修复都做**回退验证**（故意移除校验，确认测试精确失败），避免测试只是恰好通过。
 
+### 9.22 三阶段改动的复核（检查是否引入新问题）
+
+对 9.18–9.20 的三阶段改动做了一轮独立复核，方式是与改动前的提交（`04b7ec6a`）
+建立 worktree 逐条对比全量 `tests/unit` 的失败清单，而不是只看失败数量。
+
+**结论**：两轮全量运行的失败集合**并集与基线完全一致（104 vs 104，无差集）**，产品代码
+未引入功能回归。`cd console && npx tsc -b` 通过。
+
+**发现并修复的问题**：
+
+1. **`owner_for_workspace_dir` 对 admin 默认智能体返回 `None`**（阶段 1 引入的真实缺陷）。
+   该函数用 `_account_agent_workspace(owner, agent_id)` 反推路径，而 admin 的默认智能体
+   位于 `workspaces/default`，只有 `state.json` 里记录了 `default_agent_id` 才能推出来。
+   推送消息的归属依赖它（console 频道拿不到请求身份），解析失败会让消息落成无主，而
+   侧边栏/通知轮询恰好是**不带 session_id** 的常态路径，于是 admin 在默认智能体上会静默
+   收不到推送。改为**先看 profile 自己声明的 `workspace_dir`**，再回退到规范推导；两个
+   账号声明同一目录时返回 `None` 并告警，避免把记录随意归给其中一方。
+2. **隔离测试把账号写进了真实工作目录**（阶段 2 引入的测试缺陷）。
+   `test_tool_path_confinement.py` 用 `monkeypatch.setenv("QWENPAW_WORKING_DIR", ...)` 想让
+   账号根指向临时目录，但 `qwenpaw.constant` 在 import 时就固化了 `WORKING_DIR`，环境变量
+   不生效——实测每跑一轮就在 `~/.qwenpaw/workspaces/` 建出 alice/bob 两个假账号。改为直接
+   monkeypatch `USER_WORKSPACE_ROOT`/`USER_STATE_ROOT`，并加断言确保账号根落在临时目录内。
+3. **符号链接用例不幂等**：同一文件里的 `link.symlink_to(...)` 没有先清理，第二次运行即
+   `FileExistsError`（实测 pass → fail）。这正是全量套件曾多出 1 个失败的原因：它会污染
+   工作目录，使测试结果取决于是否曾运行过。清理后两轮运行均稳定通过。
+4. **`ast_search`/`lsp` 未接住 `AccountScopeError`**：两者共用 `_resolve_file_path`，越界
+   会抛异常而非返回结果，与其他文件工具风格不一致（AgentScope 会把异常转成 ERROR 结果，
+   不会崩会话，故仅列为不一致）。改为返回可读的拒绝说明。
+
+**确认不是回归的项**（复核时一度怀疑，实测排除）：
+
+- `cron` 的 slash 命令（`cron-list/create/delete`）确实不可用，但**改动前就不可用**：旧
+  getter 读 `app_inst.state`，而调用方传入的是 `AppServiceManager`，新旧两种取法都抛
+  `AttributeError`。
+- 技能里让智能体使用的 `qwenpaw cron ...` 仍然可用：它走 `cli/cron_cmd.py` 的 `/cron/jobs`，
+  经 `cli/http.py` 自动补 `/api` 前缀落到 `/api/cron/*`，该路由健在。被移除的只有
+  `/crons/*` 那批免认证的自动路由。
+- 两个 `deploy/docker-compose.code-mount.*.yml` 解析正常；此前报错只是本地缺 `.env`。
+- 全量套件里偶发的 `test_console_chat_reconnect` 失败属**既有 flaky**（单独运行也失败，
+  且在两轮基线的失败清单中）。
+
+**复核方法论补充**：对比失败清单时要用**两轮运行的并集**，因为仓库里存在既有 flaky 用例；
+且用 worktree 对比时注意 `.gitignore` 全局忽略 `AGENTS.md` 会导致未跟踪的
+`src/qwenpaw/agents/md_files/*/AGENTS.md` 缺失，必须先同步这些未跟踪文件，否则会产生
+假失败。
+
 ## 10. 当前状态摘要
 
 | 项目 | 状态 |
@@ -1736,7 +1782,7 @@ glob 或运行期才构造的路径（例如 `python -c "open('/…')"`）。它
 | 用量可见性 | 已完成，普通用户仅见自己（Web 接口与聊天工具三处出口均已收口） |
 | 工具权限快照 | 已修复，新上线工具不再被旧权限名单隐藏；启动时自动自愈存量配置 |
 | 生成文件预览 | 已修复，DOCX/图表落点改为按请求的工作区，不再因越界被拒 403 |
-| 多用户隔离审计 | 三阶段完成：越权收口 + 工具路径限制 + 共享位置/admin 语义统一；沙箱与 browser 代码执行为已知残余 |
+| 多用户隔离审计 | 三阶段完成（越权收口 + 工具路径限制 + 共享位置/admin 语义统一），并已复核无新增回归（见 9.22）；沙箱与 browser 代码执行为已知残余 |
 | 代码挂载部署体系 | 已完成，合并更新包脚本 + 宿主机日志落盘 |
 | 图表生成工具 | 已完成，generate_chart 六种图型，配合 send_file 投递 |
 | 流式回答断线恢复 | 已完成心跳、看门狗、短期磁盘重放；重启恢复受保留时间限制 |
