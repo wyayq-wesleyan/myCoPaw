@@ -15,15 +15,17 @@ from ...runtime.tool_registry import tool_descriptor
 
 
 def _resolve_media_dir() -> Path:
-    """Resolve the same media directory used by chat uploads."""
-    from ...app.channels.console.channel import DEFAULT_MEDIA_DIR
+    """Resolve the media directory the console channel serves from.
 
-    workspace_dir = os.environ.get("QWENPAW_WORKSPACE_DIR", "").strip()
-    media_dir = (
-        Path(workspace_dir) / "media"
-        if workspace_dir
-        else DEFAULT_MEDIA_DIR
-    )
+    Kept identical to ``generate_docx``: a chart written outside the account
+    workspace cannot be previewed (403). The agent workspace is per request, so
+    it comes from the request context rather than the ``QWENPAW_WORKSPACE_DIR``
+    environment variable, which no deployment sets.
+    """
+    from ...app.channels.console.channel import DEFAULT_MEDIA_DIR
+    from .user_files import media_dir_for_current_agent
+
+    media_dir = media_dir_for_current_agent() or DEFAULT_MEDIA_DIR
     media_dir.mkdir(parents=True, exist_ok=True)
     return media_dir
 

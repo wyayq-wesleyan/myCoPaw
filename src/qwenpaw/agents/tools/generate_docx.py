@@ -23,19 +23,19 @@ _DOCX_FONTS = ["Microsoft YaHei", "DejaVu Sans", "Noto Sans CJK SC", "Arial Unic
 
 
 def _resolve_media_dir() -> Path:
-    """Resolve the same media directory used by chat uploads.
+    """Resolve the media directory the console channel serves from.
 
-    Mirrors ``ConsoleChannel._media_dir`` resolution (channel.py:112-117):
-    ``{workspace_dir}/media`` when workspace_dir is set, else DEFAULT_MEDIA_DIR.
+    Must match ``ConsoleChannel._media_dir``, otherwise the produced file lands
+    outside the account workspace and its preview is refused with 403. The
+    channel resolves from the *agent's* workspace, which is only known per
+    request, so read it from the request context: the previously used
+    ``QWENPAW_WORKSPACE_DIR`` environment variable is not set by any
+    deployment, so every generated file went to the global ``WORKING_DIR/media``.
     """
     from ...app.channels.console.channel import DEFAULT_MEDIA_DIR
+    from .user_files import media_dir_for_current_agent
 
-    workspace_dir = os.environ.get("QWENPAW_WORKSPACE_DIR", "").strip()
-    media_dir = (
-        Path(workspace_dir) / "media"
-        if workspace_dir
-        else DEFAULT_MEDIA_DIR
-    )
+    media_dir = media_dir_for_current_agent() or DEFAULT_MEDIA_DIR
     media_dir.mkdir(parents=True, exist_ok=True)
     return media_dir
 
