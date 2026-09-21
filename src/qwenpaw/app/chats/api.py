@@ -7,7 +7,7 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 from agentscope.message import Msg
 from agentscope.state import AgentState
 
-from .session import SafeJSONSession
+from .repo.json_repo import JsonChatRepository
+from .session import SafeJSONSession, session_filename
 from .manager import ChatManager, MAX_BATCH_SIZE
 from .models import (
     BatchArchiveResult,
@@ -23,6 +24,7 @@ from .models import (
     ChatUpdate,
     ChatHistory,
 )
+from ...utils.io_utils import read_json, run_sync_io
 from .utils import agentscope_msg_to_message, parse_legacy_memory_state
 from ...services.project_directory import (
     resolve_effective_project_dir,
@@ -561,3 +563,220 @@ async def delete_chat(
             [(chat.session_id, chat.user_id, chat.channel)],
         )
     return {"deleted": True}
+
+
+class MessageSearchHit(BaseModel):
+    """One matching message, located for the user."""
+
+    chat_id: str = Field(description="Chat UUID to open")
+    chat_name: str = Field(default="", description="Chat display name")
+    agent_id: str = Field(description="Agent the chat belongs to")
+    session_id: str = Field(description="Session identifier")
+    role: str = Field(default="", description="user or assistant")
+    created_at: str | None = Field(default=None)
+    snippet: str = Field(default="", description="Text around the match")
+    matched_terms: int = Field(default=0, description="Distinct query terms hit")
+
+
+class MessageSearchResponse(BaseModel):
+    query: str
+    hits: list[MessageSearchHit]
+    scanned_chats: int
+    truncated: bool = Field(
+        default=False,
+        description="True when the scan stopped at the internal cap",
+    )
+
+
+# Bound on how many files a single search will read, so a large deployment
+# cannot turn one query into an unbounded disk sweep.
+_SEARCH_MAX_CHATS = 2000
+_SEARCH_MAX_HITS = 100
+# Characters of context returned around a match.
+_SEARCH_SNIPPET_PAD = 80
+
+
+def _message_text(content: Any) -> str:
+    """Flatten one message's content into searchable text."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+            continue
+        if not isinstance(block, dict):
+            # AgentScope blocks (TextBlock etc.) expose ``text``.
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+            continue
+        text = block.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _search_terms(query: str) -> list[str]:
+    """Split a query into terms; whitespace-separated, case-folded."""
+    return [term for term in query.casefold().split() if term]
+
+
+def _scan_session_file(
+    path: Path,
+    chat_by_session: dict[str, Any],
+    agent_id: str,
+    terms: list[str],
+) -> list[MessageSearchHit]:
+    """Return matches inside one session file."""
+    try:
+        payload = read_json(path)
+    except Exception:  # noqa: BLE001 - a damaged file must not fail the search
+        logger.debug("message search: unreadable session file %s", path)
+        return []
+    if not isinstance(payload, dict):
+        return []
+
+    context = (
+        ((payload.get("agent") or {}).get("state") or {}).get("context")
+        if isinstance(payload.get("agent"), dict)
+        else None
+    )
+    if not isinstance(context, list):
+        return []
+
+    hits: list[MessageSearchHit] = []
+    for message in context:
+        if not isinstance(message, dict):
+            continue
+        text = _message_text(message.get("content"))
+        if not text:
+            continue
+        folded = text.casefold()
+        matched = [term for term in terms if term in folded]
+        # Every term must be present: a multi-word query narrows the result
+        # ("光刻机 供应链" must not match a message that only says 光刻机).
+        if len(matched) != len(terms):
+            continue
+
+        # Snippet around the first match.
+        pos = folded.find(matched[0])
+        start = max(0, pos - _SEARCH_SNIPPET_PAD)
+        end = min(len(text), pos + len(matched[0]) + _SEARCH_SNIPPET_PAD)
+        snippet = text[start:end].replace("\n", " ").strip()
+        if start > 0:
+            snippet = "…" + snippet
+        if end < len(text):
+            snippet = snippet + "…"
+
+        session_id = str(
+            chat_by_session.get("session_id") or path.stem,
+        )
+        hits.append(
+            MessageSearchHit(
+                chat_id=str(chat_by_session.get("id") or ""),
+                chat_name=str(chat_by_session.get("name") or ""),
+                agent_id=agent_id,
+                session_id=session_id,
+                role=str(message.get("role") or ""),
+                created_at=(
+                    str(message.get("created_at"))
+                    if message.get("created_at")
+                    else None
+                ),
+                snippet=snippet,
+                matched_terms=len(matched),
+            ),
+        )
+    return hits
+
+
+@router.get("/search", response_model=MessageSearchResponse)
+async def search_messages(
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=200),
+    limit: int = Query(50, ge=1, le=100),
+):
+    """Search message text across the caller's own chats and agents.
+
+    Answers "I remember a phrase but not which agent or chat it was in". The
+    scan is confined to the caller's own agents, resolved from the account, so
+    it cannot reach another account's conversations.
+
+    Matching is a case-insensitive substring test over each message's text;
+    multi-word queries require every term to appear in the same message.
+    """
+    from ...config.utils import load_config
+    from ..user_space import get_request_username, user_agent_ids
+
+    username = get_request_username(request)
+    config = load_config()
+    owned_agents = user_agent_ids(config, username) if username else []
+    if username and not owned_agents:
+        return MessageSearchResponse(query=q, hits=[], scanned_chats=0)
+
+    terms = _search_terms(q)
+    if not terms:
+        return MessageSearchResponse(query=q, hits=[], scanned_chats=0)
+
+    hits: list[MessageSearchHit] = []
+    scanned = 0
+    truncated = False
+
+    for agent_id in owned_agents:
+        if len(hits) >= limit or scanned >= _SEARCH_MAX_CHATS:
+            truncated = scanned >= _SEARCH_MAX_CHATS
+            break
+        profile = config.agents.profiles.get(agent_id)
+        if profile is None:
+            continue
+        workspace_dir = Path(str(profile.workspace_dir)).expanduser()
+
+        # Chat metadata (name/id) is needed to label and open each hit.
+        chat_by_session: dict[str, dict[str, Any]] = {}
+        try:
+            repo = JsonChatRepository(workspace_dir / "chats.json")
+            chats_file = await repo.load()
+            for spec in chats_file.chats:
+                # Index by the file name the session store actually uses
+                # (``<user>_<session>.json``), not by the bare session id: the
+                # two differ, so keying on the id would leave every hit with no
+                # chat to open.
+                key = session_filename(spec.session_id, spec.user_id)
+                chat_by_session[key] = {
+                    "id": spec.id,
+                    "name": spec.name,
+                    "session_id": spec.session_id,
+                }
+        except Exception:  # noqa: BLE001
+            logger.debug("message search: no chats.json for %s", agent_id)
+
+        sessions_dir = workspace_dir / "sessions"
+        if not sessions_dir.is_dir():
+            continue
+        for path in sorted(sessions_dir.rglob("*.json")):
+            if len(hits) >= limit or scanned >= _SEARCH_MAX_CHATS:
+                truncated = truncated or scanned >= _SEARCH_MAX_CHATS
+                break
+            scanned += 1
+            meta = chat_by_session.get(path.name, {})
+            for hit in await run_sync_io(
+                _scan_session_file,
+                path,
+                meta,
+                agent_id,
+                terms,
+            ):
+                hits.append(hit)
+                if len(hits) >= limit:
+                    break
+
+    hits.sort(key=lambda h: (h.created_at or ""), reverse=True)
+    return MessageSearchResponse(
+        query=q,
+        hits=hits[:limit],
+        scanned_chats=scanned,
+        truncated=truncated,
+    )

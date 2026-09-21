@@ -7,6 +7,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Optional
 
 from .models import (
@@ -17,7 +18,9 @@ from .models import (
     SessionSource,
 )
 from .repo import BaseChatRepository
+from .session import session_relative_paths
 from ..channels.schema import DEFAULT_CHANNEL
+from ...utils.io_utils import run_sync_io
 from ...utils.logging import sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -263,9 +266,12 @@ class ChatManager:
             return updated
 
     async def delete_chats(self, chat_ids: list[str]) -> bool:
-        """Delete a chat spec.
+        """Delete chat specs and the message files they own.
 
-        Note: This only deletes the spec. Redis session state is NOT deleted.
+        Deleting only the spec used to leave ``sessions/<user>_<session>.json``
+        — the file holding the conversation's full text — on disk forever,
+        unreferenced and therefore unreachable by any cleanup path. Users who
+        deleted a chat reasonably expected its content to be gone.
 
         Args:
             chat_ids: List of chat IDs
@@ -273,21 +279,69 @@ class ChatManager:
         Returns:
             True if deleted, False if not found
         """
-        session_ids: set[str] = set()
+        session_keys: set[tuple[str, str, str]] = set()
         async with self._lock:
             for chat_id in chat_ids:
                 chat = await self._repo.get_chat(chat_id)
                 if chat is not None:
-                    session_ids.add(chat.session_id)
+                    session_keys.add(
+                        (chat.session_id, chat.user_id, chat.channel),
+                    )
             deleted = await self._repo.delete_chats(chat_ids)
 
             if deleted:
                 logger.debug(f"Deleted chats: {chat_ids}")
 
         if deleted:
-            for session_id in session_ids:
+            for session_id, user_id, channel in session_keys:
                 await self._close_browser_session(session_id)
+            await self._remove_session_files(session_keys)
         return deleted
+
+    async def _remove_session_files(
+        self,
+        session_keys: set[tuple[str, str, str]],
+    ) -> None:
+        """Delete the stored message files for these sessions.
+
+        The session store lives beside ``chats.json`` (``<workspace>/sessions``),
+        so it is derived from the repository path rather than requiring a new
+        dependency on the workspace object.
+        """
+        if not session_keys:
+            return
+        try:
+            repo_path = Path(self._repo.path)
+        except Exception:  # noqa: BLE001 - a repo without a path has no files
+            logger.debug("chat repo has no path; skipping session cleanup")
+            return
+        sessions_dir = repo_path.parent / "sessions"
+        if not sessions_dir.is_dir():
+            return
+
+        def _unlink() -> int:
+            removed = 0
+            for session_id, user_id, channel in session_keys:
+                # ``session_relative_paths`` already yields the current path plus
+                # the legacy ones (channel subdir vs. flat), so migration-era
+                # files are covered too.
+                for name in session_relative_paths(session_id, user_id, channel):
+                    path = sessions_dir / name
+                    try:
+                        if path.is_file():
+                            path.unlink()
+                            removed += 1
+                    except OSError:
+                        logger.warning(
+                            "Could not remove session file %s",
+                            path,
+                            exc_info=True,
+                        )
+            return removed
+
+        removed = await run_sync_io(_unlink)
+        if removed:
+            logger.info("Removed %d session file(s) for deleted chat(s)", removed)
 
     # ----- Archive Operations -----
 

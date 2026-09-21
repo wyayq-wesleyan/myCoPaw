@@ -175,9 +175,17 @@ def load_user_state(username: str) -> dict:
 
 
 def save_user_state(username: str, state: dict) -> None:
+    """Persist one account's metadata atomically.
+
+    Non-atomic ``write_text`` truncated the file first, so an interrupted write
+    left unreadable JSON; the loader then returns ``{}`` and the account loses
+    its recorded default agent, menu/tool selections and agent order.
+    """
+    from ..utils.io_utils import write_json_atomic
+
     path = _state_path(username)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
+    write_json_atomic(path, state, indent=2, new_file_mode=0o600)
 
 
 def _account_agent_workspace(username: str, agent_id: str) -> Path:

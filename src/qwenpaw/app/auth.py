@@ -259,11 +259,24 @@ def _save_auth_data(data: dict) -> None:
     """Save ``auth.json`` to ``SECRET_DIR`` with restrictive permissions.
 
     Sensitive fields (``jwt_secret``) are encrypted before writing.
+
+    Written atomically. The previous ``open(..., "w")`` truncated the file
+    first, so a crash, an OOM kill, or a full disk mid-write left a truncated
+    ``auth.json`` — and because the loader fails closed on a corrupt file, that
+    locked *every* account out of the deployment until someone repaired it by
+    hand. ``write_json_atomic`` writes a sibling temp file and renames it, so a
+    reader only ever sees the old or the new complete file.
     """
+    from ..utils.io_utils import write_json_atomic
+
     _prepare_secret_parent(AUTH_FILE)
     encrypted_data = encrypt_dict_fields(data, AUTH_SECRET_FIELDS)
-    with open(AUTH_FILE, "w", encoding="utf-8") as f:
-        json.dump(encrypted_data, f, indent=2, ensure_ascii=False)
+    write_json_atomic(
+        AUTH_FILE,
+        encrypted_data,
+        indent=2,
+        new_file_mode=0o600,
+    )
     _chmod_best_effort(AUTH_FILE, 0o600)
 
 
