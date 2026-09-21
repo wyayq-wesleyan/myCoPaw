@@ -12,7 +12,15 @@ from psycopg2.pool import ThreadedConnectionPool
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on simultaneously open per-account pools. With ``maxconn`` 2 this
+# keeps the worst case at 2 * _MAX_LIVE_POOLS plus the metadata pool, well under
+# PostgreSQL's default 100 connections even as accounts are added.
+_MAX_LIVE_POOLS = 16
+
 _target_pool: dict[str, ThreadedConnectionPool] = {}
+# Access order per database name, oldest first (LRU). Kept alongside the pool
+# map so idle pools can be reclaimed instead of accumulating one per account.
+_target_pool_order: list[str] = []
 
 
 def _slug_username(username: str) -> str:
@@ -80,14 +88,65 @@ def _system_db_config() -> dict:
     }
 
 
+def _reclaim_idle_pools(keep: str) -> None:
+    """Close least-recently-used pools until at most ``_MAX_LIVE_POOLS`` remain.
+
+    Every account gets its own database, so without a cap each account adds a
+    pool that is never released: 30 accounts x maxconn 5 plus the metadata pool
+    reaches ~160 connections, above PostgreSQL's default ``max_connections`` of
+    100, and the server starts refusing connections ("too many clients"). Pools
+    are cheap to recreate, so the idle ones are closed instead of kept forever.
+
+    Only pools with no checked-out connection are closed; a pool still serving a
+    request is skipped, which keeps eviction safe while queries are in flight.
+    """
+    while len(_target_pool) > _MAX_LIVE_POOLS:
+        victim = next(
+            (
+                name
+                for name in _target_pool_order
+                if name != keep and getattr(_target_pool[name], "_used", None) == {}
+            ),
+            None,
+        )
+        if victim is None:
+            return
+        pool = _target_pool.pop(victim)
+        _target_pool_order.remove(victim)
+        try:
+            pool.closeall()
+        except Exception:  # noqa: BLE001 - reclaiming must never break a query
+            logger.warning(
+                "Could not close idle data-table pool for %s", victim, exc_info=True,
+            )
+
+
+def close_all_target_pools() -> None:
+    """Close every per-account pool (shutdown / tests)."""
+    for pool in _target_pool.values():
+        try:
+            pool.closeall()
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not close a data-table pool", exc_info=True)
+    _target_pool.clear()
+    _target_pool_order.clear()
+
+
 def get_target_connection(db_name: str):
     if db_name in _target_pool:
         pool = _target_pool[db_name]
+        if db_name in _target_pool_order:
+            _target_pool_order.remove(db_name)
+        _target_pool_order.append(db_name)
     else:
         cfg = _system_db_config()
         pool = ThreadedConnectionPool(
+            # minconn kept at 1 so a pool costs one connection while idle; the
+            # ceiling is deliberately small because concurrency per account is
+            # low (imports are globally limited to a couple at a time) and the
+            # total across accounts must stay under the server's limit.
             1,
-            5,
+            2,
             host=cfg["host"],
             port=cfg["port"],
             dbname=db_name,
@@ -96,6 +155,8 @@ def get_target_connection(db_name: str):
             connect_timeout=10,
         )
         _target_pool[db_name] = pool
+        _target_pool_order.append(db_name)
+        _reclaim_idle_pools(keep=db_name)
     return pool.getconn()
 
 

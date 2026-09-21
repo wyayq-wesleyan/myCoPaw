@@ -447,6 +447,30 @@ class LspClient:  # pylint: disable=too-many-instance-attributes
 
 _POOL_LOCK = threading.Lock()
 _POOL: dict[tuple[str, str], LspClient] = {}
+# Insertion order, oldest first, for eviction. Each pooled client owns a live
+# language-server subprocess, so the pool must not grow with the number of
+# (project, language) pairs ever used: a process that stays up for weeks would
+# accumulate one subprocess and its file handles per project. ``atexit`` only
+# runs at shutdown, which is far too late.
+_POOL_ORDER: list[tuple[str, str]] = []
+_MAX_POOLED_CLIENTS = 8
+
+
+def _evict_beyond_capacity(keep: tuple[str, str]) -> None:
+    """Shut down least-recently-used clients until the pool fits its cap."""
+    while len(_POOL) > _MAX_POOLED_CLIENTS:
+        victim = next(
+            (key for key in _POOL_ORDER if key != keep and key in _POOL),
+            None,
+        )
+        if victim is None:
+            return
+        client = _POOL.pop(victim)
+        _POOL_ORDER.remove(victim)
+        try:
+            client.shutdown()
+        except Exception:  # pragma: no cover - eviction must never raise
+            LOGGER.debug("LSP eviction shutdown raised", exc_info=True)
 
 
 def get_client(
@@ -454,13 +478,22 @@ def get_client(
     language_id: str,
     argv: list[str],
 ) -> LspClient:
-    """Return (creating if necessary) a started client from the pool."""
+    """Return (creating if necessary) a started client from the pool.
+
+    Bounded: the least recently used client is shut down when the pool is full,
+    so a long-running process does not accumulate language-server subprocesses.
+    """
     key = (str(project_dir.resolve()), language_id)
     with _POOL_LOCK:
         client = _POOL.get(key)
         if client is None:
             client = LspClient(argv, project_dir, language_id)
             _POOL[key] = client
+            _POOL_ORDER.append(key)
+        elif key in _POOL_ORDER:
+            _POOL_ORDER.remove(key)
+            _POOL_ORDER.append(key)
+        _evict_beyond_capacity(keep=key)
     client.start()
     return client
 
@@ -470,6 +503,7 @@ def shutdown_all() -> None:
     with _POOL_LOCK:
         clients = list(_POOL.values())
         _POOL.clear()
+        _POOL_ORDER.clear()
     for c in clients:
         try:
             c.shutdown()

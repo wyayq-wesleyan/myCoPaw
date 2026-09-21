@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_FLUSH_INTERVAL = 10  # seconds
 
+# Bound on queued-but-unprocessed events. The queue is fed by every LLM call and
+# drained by one consumer; without a cap a stalled consumer (e.g. a disk error
+# retrying in the flush path) would grow it without limit. Overflow is dropped
+# with a warning rather than raising, because losing a usage record must not
+# fail a user's request.
+_MAX_QUEUED_EVENTS = 20000
+
+
 
 class _UsageEvent(NamedTuple):
     """Immutable record placed on the queue by the producer."""
@@ -43,7 +51,7 @@ class TokenUsageBuffer:
         self._cache_loaded = False
 
         self._dirty: bool = False
-        self._queue: asyncio.Queue = asyncio.Queue()
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=_MAX_QUEUED_EVENTS)
         self._consumer_task: Optional[asyncio.Task] = None
         self._flush_task: Optional[asyncio.Task] = None
         self._stopped = False
