@@ -123,6 +123,13 @@ class CronExecutor:
         request_context["source"] = "cron"
         request_context["cron_job_id"] = job.id or ""
         request_context["approval_level"] = ToolExecutionLevel.OFF.value
+        # State the owning account explicitly. ``req["user_id"]`` above is the
+        # channel dispatch target, not an account name; without this the run
+        # resolved a workspace named after that target (``"cron"`` or an IM
+        # sender id) and its account-scoped tools were refused.
+        _owner = _trace_owner(self._workspace)
+        if _owner:
+            request_context["account_username"] = _owner
         req["request_context"] = request_context
 
         # Determine session_id based on share_session

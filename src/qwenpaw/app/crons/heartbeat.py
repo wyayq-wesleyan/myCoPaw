@@ -238,7 +238,17 @@ async def run_heartbeat_once(
         "session_id": "main",
         "user_id": "main",
         "channel": DEFAULT_CHANNEL,
-        "request_context": {"source": "heartbeat"},
+        # ``user_id`` above is a session field, not an account name. State the
+        # owning account explicitly so account-scoped tools do not resolve a
+        # workspace called "main" and refuse every file operation.
+        "request_context": {
+            "source": "heartbeat",
+            **(
+                {"account_username": _owner}
+                if (_owner := _owner_for_agent(agent_id))
+                else {}
+            ),
+        },
     }
 
     # Get last_dispatch from agent config if agent_id provided

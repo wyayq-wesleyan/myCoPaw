@@ -400,9 +400,16 @@ async def post_console_chat(
         # The console payload has a historical user_id field that is normally
         # "default". Keep the authenticated account identity separately so
         # account-scoped tools cannot be confused by a browser-supplied id.
+        #
+        # When the identity cannot be resolved, the key is left unset rather
+        # than defaulted to "admin": the request hook then falls back to the
+        # owning account of this agent. Defaulting to the administrator would
+        # run the request in the admin workspace — a fail-open.
         from ..user_space import get_request_username
 
-        request_context["account_username"] = get_request_username(request) or "admin"
+        _account = get_request_username(request)
+        if _account:
+            request_context["account_username"] = _account
         native_payload["meta"]["request_context"] = request_context
 
         # Title generation is only needed when starting a new run.
@@ -596,7 +603,9 @@ async def get_push_messages(
     # is bounded to the caller's own account — this store is process-wide and
     # the fallback previously returned every account's message bodies.
     if session_id:
-        messages = await take(session_id)
+        # Bound to the caller as well: a session id is not a credential, so
+        # without this the poll would hand over another account's messages.
+        messages = await take(session_id, owner=username)
     else:
         messages = await get_recent(owner=username)
 
@@ -916,7 +925,12 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
     request_context["project_dir_source"] = project_source
     from ..user_space import get_request_username
 
-    request_context["account_username"] = get_request_username(request) or "admin"
+    # Left unset when the identity cannot be resolved: the request hook then
+    # falls back to this agent's owning account. Defaulting to "admin" would
+    # run the request in the administrator's workspace — a fail-open.
+    _account = get_request_username(request)
+    if _account:
+        request_context["account_username"] = _account
     native_payload["meta"]["request_context"] = request_context
 
     bg = _BackgroundTask(

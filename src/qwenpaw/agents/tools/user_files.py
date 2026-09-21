@@ -95,6 +95,16 @@ def resolve_account_username() -> str:
     is the correct answer rather than a guess; single-user deployments keep
     working unchanged.
     """
+    # The dedicated account channel first: the session's ``user_id`` is a
+    # different concept (``"default"`` for console, the dispatch target for
+    # scheduled runs) and must not be treated as an account name. See
+    # ``agent_context._current_account_username``.
+    from ...app.agent_context import get_current_account_username
+
+    account = get_current_account_username()
+    if account and account.strip():
+        return account.strip()
+
     username = get_current_user_id()
     if username and username != "default":
         return username

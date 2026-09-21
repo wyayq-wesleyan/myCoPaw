@@ -541,11 +541,15 @@ class ReMeLightMemoryManager(BaseMemoryManager):
                         payload[key] = response_metadata[key]
 
         try:
-            # Extract recipient username from agent_id (pattern: user_{username}_{workspace})
+            # Resolve the owning account through the shared helper. Parsing the
+            # agent id would be wrong here: ids are
+            # ``user_{_slug(username)}_default`` and ``_slug`` hashes non-ASCII
+            # names to ``u_<sha256[:24]>``, so the split yielded ``"u"`` and
+            # ordinary accounts never received their memory results.
             _recipient = None
-            _parts = self.agent_id.split("_")
-            if len(_parts) >= 3 and _parts[0] == "user":
-                _recipient = _parts[1]
+            from ...app.user_space import owner_for_agent
+
+            _recipient = owner_for_agent(self.agent_id)
 
             event = await append_inbox_event(
                 agent_id=self.agent_id,

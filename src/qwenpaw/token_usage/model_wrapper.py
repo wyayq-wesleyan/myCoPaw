@@ -19,7 +19,21 @@ def _resolve_usage_user_id() -> str:
     directly. Scheduled and background runs have no request context, so fall
     back to the owning account of the agent that produced the call — otherwise
     every cron job's consumption would be reported as unattributed.
+
+    The dedicated account channel is read first: the session ``user_id`` is a
+    different concept (``"default"`` for console, the dispatch target for
+    scheduled runs), and treating it as an account name booked cron consumption
+    against a nonexistent account.
     """
+    try:
+        from ..app.agent_context import get_current_account_username
+
+        account = get_current_account_username()
+        if account and account.strip():
+            return str(account)
+    except Exception:
+        pass
+
     try:
         from ..app.agent_context import get_current_user_id
 

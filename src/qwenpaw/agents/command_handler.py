@@ -1385,8 +1385,12 @@ class CommandHandler(ConversationCommandHandlerMixin):
         if not args or args == "on":
             try:
                 workspace = getattr(self._prompt_context, "workspace", None)
+                # Key by agent id, not the display name: names are not unique
+                # (the default is the same for every account), so two accounts
+                # could collide and one's trigger would run in the other's
+                # workspace.
                 result = enable_proactive_for_session(
-                    self.agent_name,
+                    self._agent_id or self.agent_name,
                     30,
                     workspace=workspace,
                 )
@@ -1407,7 +1411,7 @@ class CommandHandler(ConversationCommandHandlerMixin):
                 from .memory import disable_proactive_for_session
 
                 result = await disable_proactive_for_session(
-                    self.agent_name,
+                    self._agent_id or self.agent_name,
                 )
                 return await self._make_system_msg(
                     msgs["disabled"],
@@ -1423,8 +1427,10 @@ class CommandHandler(ConversationCommandHandlerMixin):
                     raise ValueError("Minutes must be a positive integer")
 
                 workspace = getattr(self._prompt_context, "workspace", None)
+                # Keyed by agent id for the same reason as the branch above:
+                # display names are not unique across accounts.
                 result = enable_proactive_for_session(
-                    self.agent_name,
+                    self._agent_id or self.agent_name,
                     minutes,
                     workspace=workspace,
                 )

@@ -46,6 +46,23 @@ _current_user_id: ContextVar[Optional[str]] = ContextVar(
     default=None,
 )
 
+# Account identity, deliberately separate from ``_current_user_id``.
+#
+# ``_current_user_id`` is a *session* field: for console runs it is the legacy
+# ``"default"``, and for scheduled runs it is the channel dispatch target
+# (``"cron"``, ``"main"``, an IM sender id). It is also written into sub-agent
+# and fork payloads, where it has to keep matching the stored session's user id.
+#
+# Account-scoped tools need the *owning account* instead. Reading the session
+# field for that purpose made a cron/heartbeat run resolve an account named
+# ``"main"``/``"cron"`` — a nonexistent workspace — so its file tools were
+# refused and its token usage was booked against a fake account. A dedicated
+# variable lets each concept keep its own meaning.
+_current_account_username: ContextVar[Optional[str]] = ContextVar(
+    "current_account_username",
+    default=None,
+)
+
 _current_channel: ContextVar[Optional[str]] = ContextVar(
     "current_channel",
     default=None,
@@ -309,6 +326,16 @@ def set_current_user_id(user_id: Optional[str]) -> None:
 def get_current_user_id() -> Optional[str]:
     """Get current user ID from context."""
     return _current_user_id.get()
+
+
+def set_current_account_username(username: Optional[str]) -> None:
+    """Set the owning account for account-scoped tools in this context."""
+    _current_account_username.set(username)
+
+
+def get_current_account_username() -> Optional[str]:
+    """Get the owning account, or ``None`` when it was never established."""
+    return _current_account_username.get()
 
 
 def set_current_channel(channel: Optional[str]) -> None:

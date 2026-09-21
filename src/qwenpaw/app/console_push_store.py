@@ -50,8 +50,17 @@ async def append(
             del _list[: len(_list) - _MAX_MESSAGES]
 
 
-async def take(session_id: str) -> List[Dict[str, Any]]:
-    """Return and remove all messages for the session."""
+async def take(
+    session_id: str,
+    owner: str | None = None,
+) -> List[Dict[str, Any]]:
+    """Return and remove all messages for the session.
+
+    When *owner* is given, only that account's messages are returned. A session
+    id is not a credential — it travels in URLs and logs — so without this a
+    caller that supplied another account's session id would consume (and thus
+    delete) that account's queued message text.
+    """
     if not session_id:
         return []
     async with _lock:
@@ -59,10 +68,15 @@ async def take(session_id: str) -> List[Dict[str, Any]]:
         out = []
         remaining = []
         for msg in _list:
-            if msg.get("session_id") == session_id:
-                out.append(msg)
-            else:
+            if msg.get("session_id") != session_id:
                 remaining.append(msg)
+                continue
+            if owner is not None and msg.get("owner") != owner:
+                # Someone else's message under this session id: keep it queued
+                # for its real owner rather than handing it over.
+                remaining.append(msg)
+                continue
+            out.append(msg)
         _list[:] = remaining
         return _strip_ts(out)
 

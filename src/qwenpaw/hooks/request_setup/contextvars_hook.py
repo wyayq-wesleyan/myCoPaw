@@ -39,6 +39,7 @@ class ContextVarsSetupHook(LifecycleHook):
         )
         from ...app.agent_context import (
             set_current_agent_id,
+            set_current_account_username,
             set_current_approval_route,
             set_current_channel,
             set_current_root_session_id,
@@ -68,6 +69,32 @@ class ContextVarsSetupHook(LifecycleHook):
         set_current_user_id(
             account_username if isinstance(account_username, str) and account_username else ctx.request.user_id,
         )
+
+        # Establish the owning account for account-scoped tools, separately
+        # from the session's ``user_id`` above. Preference order:
+        #   1. the identity the server injected for this request (console);
+        #   2. the owner of the agent this run belongs to — which is what makes
+        #      cron/heartbeat/ACP runs resolve to a real account instead of the
+        #      dispatch target (``"main"``/``"cron"``/an IM sender id), a value
+        #      that produced a nonexistent workspace and mis-attributed usage.
+        # Left unset when neither is available; the tools then fail closed.
+        resolved_account = (
+            account_username
+            if isinstance(account_username, str) and account_username.strip()
+            else None
+        )
+        if resolved_account is None:
+            try:
+                from ...app.user_space import owner_for_agent
+
+                resolved_account = owner_for_agent(ctx.agent_id)
+            except Exception:  # noqa: BLE001 - never block a run on attribution
+                logger.debug(
+                    "could not resolve the owning account for agent %s",
+                    ctx.agent_id,
+                    exc_info=True,
+                )
+        set_current_account_username(resolved_account)
         if isinstance(request_context, dict) and request_context.get(
             "_spawn_subagent",
         ):
