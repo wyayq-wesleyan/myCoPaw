@@ -534,3 +534,60 @@ async def test_attach_appends_replay_end_marker_after_buffer():
     # The original (non-reconnect) subscriber never sees the marker.
     rest_a = await _drain(queue_a, 3)
     assert rest_a == ["data: first\n\n", "data: second\n\n", None]
+
+
+# ---------------------------------------------------------------------------
+# Replay-directory pruning
+#
+# Replay files are removed when read or when their chat runs again, so a chat
+# that is never revisited kept its file forever and the directory grew with the
+# number of chats ever used. A startup sweep bounds it.
+# ---------------------------------------------------------------------------
+
+
+def test_prune_replay_directory_removes_only_expired_files(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from qwenpaw.app import task_tracker
+
+    monkeypatch.setattr(task_tracker, "_REPLAY_DIR", tmp_path)
+    stale = tmp_path / "stale.json"
+    fresh = tmp_path / "fresh.json"
+    stale.write_text("{}", encoding="utf-8")
+    fresh.write_text("{}", encoding="utf-8")
+    old = time.time() - (task_tracker._COMPLETED_RUN_TTL_SECONDS * 10)
+    os.utime(stale, (old, old))
+
+    removed = task_tracker.prune_replay_directory()
+
+    assert removed == 1
+    assert not stale.exists(), "an expired replay must be removed"
+    assert fresh.exists(), "a replay inside the TTL must be kept"
+
+
+def test_prune_replay_directory_tolerates_a_missing_directory(
+    tmp_path,
+    monkeypatch,
+):
+    from qwenpaw.app import task_tracker
+
+    monkeypatch.setattr(task_tracker, "_REPLAY_DIR", tmp_path / "nope")
+
+    assert task_tracker.prune_replay_directory() == 0
+
+
+def test_prune_replay_directory_ignores_non_json_entries(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from qwenpaw.app import task_tracker
+
+    monkeypatch.setattr(task_tracker, "_REPLAY_DIR", tmp_path)
+    keep = tmp_path / "notes.txt"
+    keep.write_text("keep", encoding="utf-8")
+    old = time.time() - (task_tracker._COMPLETED_RUN_TTL_SECONDS * 10)
+    os.utime(keep, (old, old))
+
+    assert task_tracker.prune_replay_directory() == 0
+    assert keep.exists()

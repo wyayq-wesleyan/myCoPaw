@@ -176,6 +176,16 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
         # data-analysis endpoint will report the underlying connection error.
         logger.warning("Data tables schema initialization skipped", exc_info=True)
 
+    # Chat replay buffers are normally removed on read or when the same chat
+    # runs again; a chat that is never revisited would keep its file forever,
+    # so sweep the directory once per startup to bound it. Best-effort.
+    try:
+        from .task_tracker import prune_replay_directory
+
+        await asyncio.to_thread(prune_replay_directory)
+    except Exception:
+        logger.warning("Chat replay pruning skipped", exc_info=True)
+
     try:
         from ..utils.telemetry import (
             collect_and_upload_telemetry,

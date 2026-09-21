@@ -125,6 +125,45 @@ def _delete_replay(run_key: str) -> None:
     _replay_path(run_key).unlink(missing_ok=True)
 
 
+def prune_replay_directory(max_age_seconds: float | None = None) -> int:
+    """Delete replay files older than the TTL, whatever their run key.
+
+    Expiry is otherwise only applied when a file is *read* (``_read_replay``) or
+    overwritten by a new run for the same chat. A chat that is never revisited
+    therefore keeps its replay forever, so the directory grows with the number
+    of chats ever used rather than with active ones. This sweep bounds it.
+
+    Returns the number of files removed. Best-effort: a failure here must never
+    affect a request.
+    """
+    ttl = (
+        _COMPLETED_RUN_TTL_SECONDS
+        if max_age_seconds is None
+        else float(max_age_seconds)
+    )
+    removed = 0
+    try:
+        if not _REPLAY_DIR.is_dir():
+            return 0
+        cutoff = time.time() - ttl
+        for entry in _REPLAY_DIR.iterdir():
+            if not entry.is_file() or entry.suffix != ".json":
+                continue
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    continue
+                entry.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                continue
+    except Exception:  # pylint: disable=broad-except
+        logger.warning("failed to prune chat replays", exc_info=True)
+        return removed
+    if removed:
+        logger.info("pruned %d expired chat replay file(s)", removed)
+    return removed
+
+
 class TaskTracker:
     """Per-agent tracker: run_key -> RunState.
 
