@@ -12,6 +12,9 @@ from qwenpaw.exceptions import (
     AppBaseException,
 )
 
+from ...config.utils import load_config
+from ..user_space import get_request_username, require_owned_agent_id
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/messages", tags=["messages"])
@@ -113,6 +116,13 @@ async def send_message(
     """
     # Get agent ID (default to "default" if not provided)
     agent_id = x_agent_id or "default"
+
+    # Confine the target to the caller's own agents. Without this, any
+    # authenticated account could name another account's agent in the header
+    # and deliver messages into that account's sessions, because
+    # ``get_agent`` resolves an id without any ownership check.
+    username = get_request_username(http_request)
+    agent_id = require_owned_agent_id(load_config(), username, agent_id)
 
     # Get multi-agent manager from app state (via request)
     multi_agent_manager = _get_multi_agent_manager(http_request)

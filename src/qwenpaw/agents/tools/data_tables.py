@@ -76,12 +76,14 @@ def _ensure_limit(sql: str, max_rows: int = 100) -> str:
 
 
 def _resolve_username() -> str:
-    from ...app.agent_context import get_current_user_id
+    """Resolve the calling account via the shared account rule.
 
-    username = get_current_user_id()
-    if username and username != "default":
-        return username
-    return "admin"
+    The shared resolver refuses when authentication is on but the identity
+    cannot be determined, rather than assuming the caller is ``admin``.
+    """
+    from .user_files import resolve_account_username
+
+    return resolve_account_username()
 
 
 @tool_descriptor(

@@ -11,11 +11,13 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from ...providers.oauth import (
+
     OAuthSessionStore,
     OpenRouterOAuthFlow,
 )
 from ...providers.oauth.base import OAuthFlow
 from ...providers.provider_manager import ProviderManager
+from ._admin_guard import require_admin_request
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +102,20 @@ class OAuthStatusResponse(BaseModel):
     "/{provider_id}/oauth/start",
     response_model=OAuthStartResponse,
     summary="Start OAuth flow for a provider",
+    dependencies=[Depends(require_admin_request)],
 )
 async def start_oauth(
     provider_id: str,
     request: Request,
 ) -> OAuthStartResponse:
-    """Start OAuth flow. Returns authorize_url for browser popup."""
+    """Start OAuth flow. Returns authorize_url for browser popup.
+
+    Administrator-only: the exchanged credential is written to the *global*
+    provider configuration (see ``oauth_callback``), so a non-admin starting a
+    flow is escalating to a deployment-wide setting. Guarding ``start`` also
+    protects the callback below, because a callback can only complete a session
+    that ``start`` created.
+    """
     flow = _get_flow(provider_id)
     callback_url = _build_callback_url(request, provider_id)
     result = flow.start(callback_url)
@@ -135,7 +145,15 @@ async def oauth_callback(
     state: str = "",
     manager: ProviderManager = Depends(_get_provider_manager),
 ) -> HTMLResponse:
-    """OAuth callback. Exchanges code, saves key, closes popup."""
+    """OAuth callback. Exchanges code, saves key, closes popup.
+
+    Deliberately **not** guarded with ``require_admin_request``: this is a
+    browser redirect target reached from the provider's page, so it carries no
+    ``Authorization`` header. The privilege boundary is enforced on
+    ``start_oauth`` instead — a session can only exist because an administrator
+    started it, and the ``state`` value is unguessable. Anyone else reaching
+    here fails the session lookup below.
+    """
     session = _session_store.get(state) if state else None
     if not session:
         # Fallback: providers like OpenRouter don't relay state
@@ -204,12 +222,13 @@ async def oauth_callback(
     "/{provider_id}/oauth/status",
     response_model=OAuthStatusResponse,
     summary="Poll OAuth flow status",
+    dependencies=[Depends(require_admin_request)],
 )
 async def oauth_status(
     provider_id: str,
     state: str,
 ) -> OAuthStatusResponse:
-    """Poll current OAuth flow status."""
+    """Poll current OAuth flow status. Administrator-only, like ``start``."""
     session = _session_store.get(state)
     if not session:
         return OAuthStatusResponse(

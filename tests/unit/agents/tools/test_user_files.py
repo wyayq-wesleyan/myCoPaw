@@ -144,3 +144,124 @@ def test_directory_is_not_accepted_as_a_file(workspace):
 
     assert resolved is None
     assert error
+
+
+# ---------------------------------------------------------------------------
+# Account resolution must fail closed
+#
+# The tools used to fall back to ``"admin"`` whenever the account could not be
+# determined. With authentication enabled that is fail-open: any request whose
+# identity failed to resolve -- a missing request hook, an unexpected context
+# value -- silently became the administrator and reached the admin workspace.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_identity(monkeypatch):
+    """Clear the context values the resolver reads."""
+    from qwenpaw.app.agent_context import set_current_user_id
+    from qwenpaw.app.agent_context import set_current_agent_id
+
+    set_current_user_id("")
+    set_current_agent_id("")
+    monkeypatch.setattr(
+        user_files,
+        "get_current_user_id",
+        lambda: "",
+    )
+    monkeypatch.setattr(
+        user_files,
+        "get_current_agent_id",
+        lambda: "",
+    )
+
+
+def test_unresolved_account_is_refused_when_auth_is_enabled(
+    monkeypatch,
+    no_identity,
+):
+    monkeypatch.setenv("QWENPAW_AUTH_ENABLED", "true")
+
+    with pytest.raises(user_files.AccountScopeError):
+        user_files.resolve_account_username()
+
+
+def test_unresolved_account_falls_back_to_admin_when_auth_is_off(
+    monkeypatch,
+    no_identity,
+):
+    """A single-account deployment has only ``admin``; that is not a guess."""
+    monkeypatch.setenv("QWENPAW_AUTH_ENABLED", "false")
+
+    assert user_files.resolve_account_username() == "admin"
+
+
+def test_a_known_account_still_resolves(monkeypatch):
+    monkeypatch.setenv("QWENPAW_AUTH_ENABLED", "true")
+    monkeypatch.setattr(user_files, "get_current_user_id", lambda: "bob")
+
+    assert user_files.resolve_account_username() == "bob"
+
+
+def test_the_legacy_default_value_is_not_an_account(monkeypatch):
+    """``default`` is a UI placeholder, not an account, so it must not pass."""
+    monkeypatch.setenv("QWENPAW_AUTH_ENABLED", "true")
+    monkeypatch.setattr(user_files, "get_current_user_id", lambda: "default")
+    monkeypatch.setattr(user_files, "get_current_agent_id", lambda: "")
+
+    with pytest.raises(user_files.AccountScopeError):
+        user_files.resolve_account_username()
+
+
+def test_the_default_agent_placeholder_does_not_resolve_to_its_owner(
+    monkeypatch,
+):
+    """The literal ``default`` agent id must not be treated as a real agent.
+
+    The request hook writes ``ctx.agent_id or "default"``, and the deployment
+    contains an agent literally named ``default`` owned by the administrator.
+    Resolving that placeholder would turn "identity unknown" into "act as
+    admin" -- a fail-open that survived an earlier fix which only checked the
+    fallback path. Verified end to end, this was a real hole.
+    """
+    from types import SimpleNamespace
+
+    import qwenpaw.config as config_module
+
+    monkeypatch.setenv("QWENPAW_AUTH_ENABLED", "true")
+    monkeypatch.setattr(user_files, "get_current_user_id", lambda: "")
+    monkeypatch.setattr(user_files, "get_current_agent_id", lambda: "default")
+
+    fake = SimpleNamespace(
+        agents=SimpleNamespace(
+            profiles={
+                "default": SimpleNamespace(owner_username="admin"),
+            },
+        ),
+    )
+    monkeypatch.setattr(config_module, "load_config", lambda: fake)
+
+    with pytest.raises(user_files.AccountScopeError):
+        user_files.resolve_account_username()
+
+
+def test_a_real_agent_id_still_resolves_its_owner(monkeypatch):
+    """The placeholder guard must not break genuine agent-based resolution."""
+    from types import SimpleNamespace
+
+    import qwenpaw.config as config_module
+
+    monkeypatch.setenv("QWENPAW_AUTH_ENABLED", "true")
+    monkeypatch.setattr(user_files, "get_current_user_id", lambda: "")
+    monkeypatch.setattr(user_files, "get_current_agent_id", lambda: "bob-bot")
+
+    fake = SimpleNamespace(
+        agents=SimpleNamespace(
+            profiles={
+                "bob-bot": SimpleNamespace(owner_username="bob"),
+            },
+        ),
+    )
+    monkeypatch.setattr(config_module, "load_config", lambda: fake)
+
+    assert user_files.resolve_account_username() == "bob"

@@ -11,6 +11,14 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ...config.utils import load_config
+from ..auth import is_auth_enabled
+from ..user_space import (
+    get_request_username,
+    is_agent_owned,
+    require_owned_agent_id,
+)
+
 router = APIRouter(prefix="/tool-calls", tags=["tool-calls"])
 
 
@@ -71,16 +79,42 @@ def _safe_log_token(value: str) -> str:
     return value.replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _require_owned_agent(request: Request, agent_id: str | None) -> None:
+    """Reject the request unless the caller owns the agent that ran the tool.
+
+    Tool-call entries are keyed by ``session_id`` alone, and a session id is
+    a credential: it appears in URLs and logs. Ownership is decided by the
+    ``agent_id`` recorded on the entry, using the shared resolver so this
+    endpoint behaves like the other account-scoped ones. Without it, any
+    authenticated account could read, cancel or extend another account's tool
+    calls by naming their session.
+
+    An unauthenticated deployment (auth disabled) has no accounts to separate,
+    so the check is skipped there — the same rule the file-preview endpoint
+    uses.
+    """
+    username = get_request_username(request)
+    if is_auth_enabled() and not username:
+        raise HTTPException(401, "Not authenticated")
+    if not username:
+        return
+    # Raises 404 for an agent the account does not own.
+    require_owned_agent_id(load_config(), username, agent_id)
+
+
 def _get_entry(
     coordinator: Any,
     tool_call_id: str,
     session_id: str = "",
+    request: Request | None = None,
 ) -> Any:
-    """Look up by tool_call_id and enforce session scoping.
+    """Look up by tool_call_id and enforce session and account scoping.
 
     When *session_id* is provided it must match ``entry.ctx.session_id``;
     otherwise the call is treated as not found (404). This prevents
     cross-session cancel/offload/stream using only a leaked tool_call_id.
+    When *request* is provided the caller must also own the entry's agent,
+    which prevents cross-account access using only a leaked session id.
     """
     entry = coordinator.get(tool_call_id)
     if entry is None:
@@ -95,6 +129,8 @@ def _get_entry(
             _safe_log_token(tool_call_id),
         )
         raise HTTPException(404, "Tool call not found")
+    if request is not None:
+        _require_owned_agent(request, getattr(entry.ctx, "agent_id", None))
     return entry
 
 
@@ -169,6 +205,21 @@ async def list_calls(
 ) -> ListResponse:
     coordinator = _get_coordinator(request)
     entries = coordinator.list_entries(session_id=session_id)
+    # Listing has no single entry to check, so filter to the caller's agents.
+    # A session id is not a credential, so without this another account could
+    # enumerate the tool calls (names, timing) of a session it does not own.
+    username = get_request_username(request)
+    if is_auth_enabled() and not username:
+        raise HTTPException(401, "Not authenticated")
+    if username:
+        config = load_config()
+        entries = [
+            e
+            for e in entries
+            if is_agent_owned(
+                config, username, getattr(e.ctx, "agent_id", None),
+            )
+        ]
     items = [_entry_to_info(e, coordinator) for e in entries]
     return ListResponse(items=items, total=len(items))
 
@@ -180,7 +231,7 @@ async def get_call(
     request: Request,
 ) -> ToolCallInfo:
     coordinator = _get_coordinator(request)
-    entry = _get_entry(coordinator, tool_call_id, session_id)
+    entry = _get_entry(coordinator, tool_call_id, session_id, request)
     return _entry_to_info(entry, coordinator)
 
 
@@ -191,7 +242,7 @@ async def offload_call(
     request: Request,
 ) -> dict[str, Any]:
     coordinator = _get_coordinator(request)
-    _get_entry(coordinator, tool_call_id, session_id)
+    _get_entry(coordinator, tool_call_id, session_id, request)
     ok = await coordinator.request_offload(tool_call_id)
     if not ok:
         raise HTTPException(
@@ -210,7 +261,7 @@ async def cancel_call(
     body: CancelRequest | None = None,
 ) -> dict[str, Any]:
     coordinator = _get_coordinator(request)
-    _get_entry(coordinator, tool_call_id, session_id)
+    _get_entry(coordinator, tool_call_id, session_id, request)
     force = body.force if body else False
     ok = await coordinator.cancel(tool_call_id, force=force)
     if not ok:
@@ -229,7 +280,7 @@ async def extend_deadline(
     body: ExtendRequest,
 ) -> dict[str, Any]:
     coordinator = _get_coordinator(request)
-    entry = _get_entry(coordinator, tool_call_id, session_id)
+    entry = _get_entry(coordinator, tool_call_id, session_id, request)
 
     if body.target == "kill":
         ok = await coordinator.extend_kill_deadline(
@@ -264,7 +315,7 @@ async def get_output(
     request: Request,
 ) -> dict[str, Any]:
     coordinator = _get_coordinator(request)
-    entry = _get_entry(coordinator, tool_call_id, session_id)
+    entry = _get_entry(coordinator, tool_call_id, session_id, request)
     content_blocks = []
     if entry.final_response and entry.final_response.content:
         for block in entry.final_response.content:
@@ -284,7 +335,7 @@ async def stream_output(
     request: Request,
 ) -> StreamingResponse:
     coordinator = _get_coordinator(request)
-    entry = _get_entry(coordinator, tool_call_id, session_id)
+    entry = _get_entry(coordinator, tool_call_id, session_id, request)
 
     async def _generate():
         async for chunk in entry.stream.subscribe():

@@ -30,6 +30,60 @@ def app(manager_mock) -> FastAPI:
     return application
 
 
+@pytest.fixture(autouse=True)
+def ownership(monkeypatch):
+    """Stub the ownership resolver; the send path only needs it to run.
+
+    The endpoint confines the target to the caller's agents. Behaviour tests
+    below are about delivery, so this returns the requested id and records the
+    calls; the rejection case is covered by
+    ``test_send_message_refuses_another_accounts_agent``.
+    """
+    from qwenpaw.app.routers import messages as messages_module
+
+    calls: list[tuple[object, object]] = []
+
+    def _resolve(_config, username, requested):
+        calls.append((username, requested))
+        return requested or "default"
+
+    monkeypatch.setattr(messages_module, "require_owned_agent_id", _resolve)
+    # The endpoint resolves ownership against the global config; the stub above
+    # ignores it, so keep the test off the real config file.
+    monkeypatch.setattr(messages_module, "load_config", lambda: object())
+    return calls
+
+
+def test_send_message_refuses_another_accounts_agent(client, manager_mock):
+    """A caller must not be able to deliver into another account's agent.
+
+    Previously the only input was the ``X-Agent-Id`` header, and ``get_agent``
+    resolves an id without an ownership check, so any authenticated account
+    could post into another account's sessions.
+    """
+    from fastapi import HTTPException
+
+    from qwenpaw.app.routers import messages as messages_module
+
+    def _deny(_config, _username, _requested):
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    original = messages_module.require_owned_agent_id
+    messages_module.require_owned_agent_id = _deny
+    try:
+        response = client.post(
+            "/api/messages/send",
+            json=_DEFAULT_PAYLOAD,
+            headers={"X-Agent-Id": "someone-elses-bot"},
+        )
+    finally:
+        messages_module.require_owned_agent_id = original
+
+    assert response.status_code == 404
+    # The refusal must happen before any delivery is attempted.
+    manager_mock.get_agent.assert_not_awaited()
+
+
 @pytest.fixture
 def client(app: FastAPI) -> TestClient:
     return TestClient(app)

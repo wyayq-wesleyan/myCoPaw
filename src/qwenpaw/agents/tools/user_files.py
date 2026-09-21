@@ -83,20 +83,58 @@ def ensure_inside_account(path: str | Path) -> Path:
 
 
 def resolve_account_username() -> str:
-    """Resolve the owning account for both interactive and scheduled runs."""
+    """Resolve the owning account for both interactive and scheduled runs.
+
+    Raises :class:`AccountScopeError` when authentication is enabled but the
+    account cannot be determined. Falling back to ``"admin"`` there would be
+    fail-open: any request whose identity failed to resolve — a missing request
+    hook, an unexpected context value, a bug in the chain — would silently be
+    treated as the administrator and granted access to the admin workspace.
+
+    With authentication disabled there is exactly one account, so ``"admin"``
+    is the correct answer rather than a guess; single-user deployments keep
+    working unchanged.
+    """
     username = get_current_user_id()
     if username and username != "default":
         return username
-    try:
-        from ...config import load_config
 
-        profile = load_config().agents.profiles.get(get_current_agent_id())
-        owner = getattr(profile, "owner_username", None) if profile else None
-        if isinstance(owner, str) and owner.strip():
-            return owner.strip()
-    except Exception:
-        pass
+    # ``"default"`` is a placeholder, not an agent id: the request hook writes
+    # ``ctx.agent_id or "default"`` and ``get_current_agent_id`` falls back to
+    # the active agent. The deployment happens to contain an agent literally
+    # named ``default`` whose owner is the administrator, so resolving that
+    # placeholder would turn "identity unknown" into "act as admin" -- exactly
+    # the failure this function must not have. Only a real agent id is used.
+    agent_id = get_current_agent_id()
+    if agent_id and agent_id != "default":
+        try:
+            from ...config import load_config
+
+            profile = load_config().agents.profiles.get(agent_id)
+            owner = getattr(profile, "owner_username", None)
+            if isinstance(owner, str) and owner.strip():
+                return owner.strip()
+        except Exception:  # noqa: BLE001
+            pass
+
+    if _auth_is_enabled():
+        raise AccountScopeError(
+            "无法确定当前账号，出于安全考虑已拒绝访问。请重新登录后重试；"
+            "若问题持续，请联系管理员检查账号配置。",
+        )
     return "admin"
+
+
+def _auth_is_enabled() -> bool:
+    """Whether this deployment separates accounts (auth feature flag)."""
+    try:
+        from ...app.auth import is_auth_enabled
+
+        return bool(is_auth_enabled())
+    except Exception:  # noqa: BLE001
+        # If the flag cannot be read, assume accounts are separated: a refusal
+        # recoverable, granting admin is not.
+        return True
 
 
 def media_dir_for_current_agent() -> Path | None:

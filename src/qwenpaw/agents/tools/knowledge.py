@@ -6,14 +6,12 @@ import asyncio
 import mimetypes
 import os
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import ToolChunk
 
-from ...app.agent_context import get_current_agent_id, get_current_user_id
 from ...runtime.tool_registry import tool_descriptor
 from .user_files import resolve_user_file, user_facing_name
 
@@ -41,20 +39,15 @@ def _headers(username: str) -> dict[str, str]:
 
 
 def _resolve_account_username() -> str:
-    """Resolve the owning account for both interactive and scheduled runs."""
-    username = get_current_user_id()
-    if username and username != "default":
-        return username
-    try:
-        from ...config import load_config
+    """Resolve the owning account for both interactive and scheduled runs.
 
-        profile = load_config().agents.profiles.get(get_current_agent_id())
-        owner = getattr(profile, "owner_username", None) if profile else None
-        if isinstance(owner, str) and owner.strip():
-            return owner.strip()
-    except Exception:
-        pass
-    return "admin"
+    Delegates to the shared resolver so the account rule — including
+    refusing rather than defaulting to ``admin`` when the identity cannot be
+    determined under authentication — lives in exactly one place.
+    """
+    from .user_files import resolve_account_username
+
+    return resolve_account_username()
 
 
 def _format_search_result(payload: dict[str, Any]) -> str:

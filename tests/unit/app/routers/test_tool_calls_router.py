@@ -84,3 +84,122 @@ def test_get_call_allows_matching_session(
     body = resp.json()
     assert body["tool_call_id"] == "tc-1"
     assert body["session_id"] == "session-a"
+
+
+# ---------------------------------------------------------------------------
+# Account scoping
+#
+# A session id is not a credential — it appears in URLs and logs — so once auth
+# is on, the caller must own the agent that ran the tool. Before this, knowing a
+# session id was enough to read, cancel or extend another account's tool calls.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def as_user(monkeypatch):
+    """Turn auth on and fix the request identity to *name*."""
+
+    def _make(name: str | None) -> None:
+        from qwenpaw.app.routers import tool_calls as tc_module
+
+        monkeypatch.setattr(tc_module, "is_auth_enabled", lambda: True)
+        monkeypatch.setattr(
+            tc_module,
+            "get_request_username",
+            lambda _request: name,
+        )
+        monkeypatch.setattr(tc_module, "load_config", lambda: SimpleNamespace())
+
+    return _make
+
+
+def test_tool_calls_refuse_an_anonymous_caller(client, coordinator, as_user):
+    """With auth on, no identity means no access (fail closed)."""
+    as_user(None)
+
+    resp = client.get("/api/tool-calls/session-a")
+
+    assert resp.status_code == 401
+
+
+def test_get_call_refuses_another_accounts_agent(
+    client,
+    coordinator,
+    as_user,
+    monkeypatch,
+):
+    from fastapi import HTTPException
+
+    from qwenpaw.app.routers import tool_calls as tc_module
+
+    as_user("eve")
+    coordinator.get.return_value = _running_entry(session_id="session-a")
+
+    def _deny(_config, _username, _agent_id):
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    monkeypatch.setattr(tc_module, "require_owned_agent_id", _deny)
+
+    resp = client.get("/api/tool-calls/session-a/tc-1")
+
+    assert resp.status_code == 404
+
+
+def test_cancel_refuses_another_accounts_agent(
+    client,
+    coordinator,
+    as_user,
+    monkeypatch,
+):
+    from fastapi import HTTPException
+
+    from qwenpaw.app.routers import tool_calls as tc_module
+
+    as_user("eve")
+    coordinator.get.return_value = _running_entry(session_id="session-a")
+
+    def _deny(_config, _username, _agent_id):
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    monkeypatch.setattr(tc_module, "require_owned_agent_id", _deny)
+
+    resp = client.post("/api/tool-calls/session-a/tc-1/cancel")
+
+    assert resp.status_code == 404
+    coordinator.cancel.assert_not_called()
+
+
+def test_list_calls_hides_other_accounts_entries(
+    client,
+    coordinator,
+    as_user,
+    monkeypatch,
+):
+    from qwenpaw.app.routers import tool_calls as tc_module
+
+    as_user("eve")
+    coordinator.list_entries.return_value = [_running_entry()]
+    monkeypatch.setattr(tc_module, "is_agent_owned", lambda _c, _u, _a: False)
+
+    resp = client.get("/api/tool-calls/session-a")
+
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+
+
+def test_list_calls_keeps_owned_entries(
+    client,
+    coordinator,
+    as_user,
+    monkeypatch,
+):
+    from qwenpaw.app.routers import tool_calls as tc_module
+
+    as_user("bob")
+    coordinator.list_entries.return_value = [_running_entry()]
+    monkeypatch.setattr(tc_module, "is_agent_owned", lambda _c, _u, _a: True)
+
+    resp = client.get("/api/tool-calls/session-a")
+
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 1
