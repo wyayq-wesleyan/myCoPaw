@@ -170,3 +170,81 @@ def test_knowledge_contributor_is_absent_without_a_service(monkeypatch):
     monkeypatch.delenv("QWENPAW_KNOWLEDGE_URL", raising=False)
 
     assert KnowledgeRetrievalContributor().contribute_sync(SimpleNamespace(extras={})) is None
+
+
+# ---------------------------------------------------------------------------
+# Account data boundary
+#
+# The deployment is multi-user, but the prompt never said so: a model reasoned
+# from what the filesystem appeared to contain and would try paths it saw in
+# logs or examples, producing confusing "permission" failures. The prompt now
+# names the account's own workspace as the boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_account_boundary_names_the_current_workspace():
+    from qwenpaw.runtime.prompt_contributors import AccountBoundaryContributor
+
+    ctx = SimpleNamespace(
+        workspace_dir="/srv/working/workspaces/u_bob",
+        extras={"language": "en"},
+    )
+
+    fragment = AccountBoundaryContributor().contribute_sync(ctx)
+
+    assert fragment is not None
+    assert "/srv/working/workspaces/u_bob" in fragment
+    assert "multi-user" in fragment
+
+
+def test_account_boundary_is_localized():
+    from qwenpaw.runtime.prompt_contributors import AccountBoundaryContributor
+
+    ctx = SimpleNamespace(
+        workspace_dir="/srv/working/workspaces/u_bob",
+        extras={"language": "zh"},
+    )
+
+    fragment = AccountBoundaryContributor().contribute_sync(ctx)
+
+    assert fragment is not None
+    assert "账号数据边界" in fragment
+
+
+def test_account_boundary_is_absent_without_a_workspace():
+    from qwenpaw.runtime.prompt_contributors import AccountBoundaryContributor
+
+    ctx = SimpleNamespace(workspace_dir=None, extras={"language": "zh"})
+
+    assert AccountBoundaryContributor().contribute_sync(ctx) is None
+
+
+def test_each_account_sees_only_its_own_path():
+    """The boundary must not be a fixed path shared by every account."""
+    import re
+
+    pm = build_default_prompt_manager()
+    seen = {}
+    for agent_id, workspace in (
+        ("user_admin_default", "/srv/working/workspaces/default"),
+        ("user_bob_default", "/srv/working/workspaces/u_bob"),
+    ):
+        ctx = SimpleNamespace(
+            workspace_dir=workspace,
+            agent_id=agent_id,
+            extras={"language": "zh"},
+            request=None,
+        )
+        match = re.search(r"工作区内的文件：`([^`]+)`", pm.build_sync(ctx))
+        assert match, f"boundary missing from the prompt for {agent_id}"
+        seen[agent_id] = match.group(1)
+
+    assert seen["user_admin_default"] == "/srv/working/workspaces/default"
+    assert seen["user_bob_default"] == "/srv/working/workspaces/u_bob"
+
+
+def test_account_boundary_is_high_priority():
+    """It must be assembled before the bulk of the prompt, not appended last."""
+    from qwenpaw.runtime.prompt_contributors import AccountBoundaryContributor
+
+    assert AccountBoundaryContributor.priority < 80

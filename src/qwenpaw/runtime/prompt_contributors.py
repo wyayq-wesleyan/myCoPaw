@@ -144,6 +144,63 @@ class AgentIdentityContributor(SyncPromptContributor):
         )
 
 
+class AccountBoundaryContributor(SyncPromptContributor):
+    """State that this account's workspace is the boundary, and name it.
+
+    This deployment is multi-user: every account gets its own workspace root,
+    and the file/shell tools refuse paths outside it. Without being told, a
+    model reasons from what the filesystem appears to contain, so it will
+    happily try a path it saw in a log or an earlier example and then report a
+    confusing "permission" error instead of staying in its own space. Naming
+    the root up front turns a class of failed tool calls into correct ones.
+
+    Path containment still carries a code-level check; this is guidance, not a
+    security control, so it is not a substitute for that enforcement.
+    """
+
+    name = "account_boundary"
+    priority = 6
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        workspace_dir = getattr(ctx, "workspace_dir", None)
+        if not workspace_dir:
+            return None
+        language = (getattr(ctx, "extras", {}) or {}).get("language", "zh")
+        root = str(workspace_dir)
+        if language == "zh":
+            return (
+                "# 账号数据边界\n\n"
+                f"本系统是多用户系统，你只能访问**当前账号**工作区内的文件：`{root}`。\n\n"
+                "1. 所有文件读写、搜索、命令执行都必须使用该目录下的路径"
+                "（可使用相对路径，会相对该目录解析）。\n"
+                "2. 不要访问、列出、读取或修改该目录之外的任何路径，包括其他账号的"
+                "工作区、系统配置、密钥与备份目录；即使你在日志、报错、示例或历史"
+                "对话中见过这些路径，也不要尝试。\n"
+                "3. 若确实需要使用上述目录之外的文件，向用户说明原因，由用户自行"
+                "处理或改用其他方式，不要绕过限制。\n"
+                "4. 其他账号的数据对你不可见是**预期行为**：如果用户要求查看别人"
+                "的文件或数据，请说明系统按账号隔离、你无法访问，而不要反复尝试"
+                "或猜测路径。"
+            )
+        return (
+            "# Account Data Boundary\n\n"
+            f"This is a multi-user system. You may only access files inside the "
+            f"**current account's** workspace: `{root}`\n\n"
+            "1. Use paths under that directory for every file read/write, search "
+            "and command (relative paths resolve against it).\n"
+            "2. Do not access, list, read or modify anything outside it — other "
+            "accounts' workspaces, system configuration, secret and backup "
+            "directories — even if you have seen such a path in a log, an error "
+            "message, an example, or earlier conversation.\n"
+            "3. If a file outside that boundary is genuinely needed, explain why "
+            "and let the user handle it, or find another approach. Do not work "
+            "around the restriction.\n"
+            "4. Other accounts' data being invisible to you is **expected**: if "
+            "asked to look at another account's files, say the system isolates "
+            "accounts and you cannot, instead of retrying or guessing paths."
+        )
+
+
 class AgentsMdContributor(SyncPromptContributor):
     """Load ``AGENTS.md`` with heartbeat / memory section processing."""
 
@@ -570,6 +627,7 @@ class DriverPolicyHintContributor(SyncPromptContributor):
 
 _ALL_CONTRIBUTORS = (
     AgentIdentityContributor,
+    AccountBoundaryContributor,
     WorkspacePromptFilesContributor,
     MultimodalHintContributor,
     ConversationScopeContributor,
@@ -593,6 +651,7 @@ def build_default_prompt_manager() -> PromptManager:
 
 __all__ = [
     "AgentIdentityContributor",
+    "AccountBoundaryContributor",
     "AgentsMdContributor",
     "SoulMdContributor",
     "ProfileMdContributor",

@@ -1,4 +1,11 @@
-"""Data import API — file upload and job management."""
+"""Data import API — file upload and job management.
+
+These endpoints are plain ``def`` rather than ``async def`` on purpose: they
+call ``psycopg2``, which is synchronous, so FastAPI runs them in its worker
+threadpool rather than on the event loop, where a slow query would stall every
+other request.
+"""
+
 
 import os
 import json
@@ -10,6 +17,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import PlainTextResponse
 
 from ..app.user_space import get_request_username
+from ..utils.io_utils import run_sync_io
 from .importer import start_import_task
 from .store import (
     ALLOWED_EXTENSIONS,
@@ -44,11 +52,8 @@ async def _save_upload_file(file: UploadFile, destination: Path) -> int:
     return size
 
 
-@router.post("/data-tables/{table_id}/import")
-async def import_data(table_id: str, files: list[UploadFile] = File(...), request: Request = None):
-    username = get_request_username(request) or "admin"
-    if not files:
-        raise HTTPException(status_code=400, detail="请至少上传一个文件")
+def _assert_table_writable(table_id: str, username: str) -> None:
+    """Blocking ownership check. Call it off the event loop."""
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -60,6 +65,17 @@ async def import_data(table_id: str, files: list[UploadFile] = File(...), reques
                 raise HTTPException(status_code=403, detail="无权操作此表")
     finally:
         _put_conn(conn)
+
+
+@router.post("/data-tables/{table_id}/import")
+async def import_data(table_id: str, files: list[UploadFile] = File(...), request: Request = None):
+    username = get_request_username(request) or "admin"
+    if not files:
+        raise HTTPException(status_code=400, detail="请至少上传一个文件")
+    # This handler must stay ``async`` because reading the uploads is awaited,
+    # so the synchronous ownership query is dispatched explicitly instead of
+    # blocking the event loop for every other account.
+    await run_sync_io(_assert_table_writable, table_id, username)
     job_ids = []
     errors = []
     for file in files:
@@ -85,7 +101,7 @@ async def import_data(table_id: str, files: list[UploadFile] = File(...), reques
 
 
 @router.get("/data-import-jobs")
-async def list_import_jobs(
+def list_import_jobs(
     request: Request,
     table_id: str | None = Query(None),
     status: str | None = Query(None),
@@ -162,7 +178,7 @@ async def list_import_jobs(
 
 
 @router.get("/data-import-jobs/{job_id}")
-async def get_import_job(job_id: str, request: Request):
+def get_import_job(job_id: str, request: Request):
     username = get_request_username(request) or "admin"
     conn = _get_conn()
     try:
@@ -206,7 +222,7 @@ async def get_import_job(job_id: str, request: Request):
 
 
 @router.get("/data-import-jobs/{job_id}/log")
-async def get_import_job_log(job_id: str, request: Request):
+def get_import_job_log(job_id: str, request: Request):
     username = get_request_username(request) or "admin"
     conn = _get_conn()
     try:

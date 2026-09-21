@@ -1,4 +1,11 @@
-"""Data table management API."""
+"""Data table management API.
+
+These endpoints are plain ``def`` rather than ``async def`` on purpose: they
+call ``psycopg2``, which is synchronous, so FastAPI runs them in its worker
+threadpool instead of on the event loop. Making one ``async`` without also
+dispatching the query would let a single slow statement (a scan over a large
+table) stall every other request, including other accounts' chat turns.
+"""
 
 import json
 import re
@@ -122,7 +129,7 @@ def find_owned_table(username: str, table_ref: str) -> dict | None:
 
 
 @router.get("", response_model=dict)
-async def list_tables(
+def list_tables(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -190,7 +197,7 @@ async def list_tables(
 
 
 @router.post("", status_code=201)
-async def create_table(payload: CreateTableRequest, request: Request):
+def create_table(payload: CreateTableRequest, request: Request):
     """Create a column-mapping definition. Real DB table is created lazily on first import."""
     username = get_request_username(request) or "admin"
     if not payload.display_name.strip():
@@ -212,7 +219,7 @@ async def create_table(payload: CreateTableRequest, request: Request):
 
 
 @router.get("/{table_id}")
-async def get_table(table_id: str, request: Request):
+def get_table(table_id: str, request: Request):
     username = get_request_username(request) or "admin"
     conn = _get_conn()
     try:
@@ -250,7 +257,7 @@ async def get_table(table_id: str, request: Request):
 
 
 @router.delete("/{table_id}")
-async def delete_table(table_id: str, request: Request):
+def delete_table(table_id: str, request: Request):
     username = get_request_username(request) or "admin"
     conn = _get_conn()
     try:
@@ -274,7 +281,7 @@ async def delete_table(table_id: str, request: Request):
 
 
 @router.post("/batch-delete")
-async def batch_delete_tables(payload: dict, request: Request):
+def batch_delete_tables(payload: dict, request: Request):
     ids = payload.get("ids", [])
     if not ids:
         raise HTTPException(status_code=400, detail="请选择要删除的数据表")

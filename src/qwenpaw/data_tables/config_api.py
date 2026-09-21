@@ -1,4 +1,11 @@
-"""Data source configuration API for admin settings."""
+"""Data source configuration API for admin settings.
+
+These endpoints are plain ``def`` rather than ``async def`` on purpose: they
+call ``psycopg2``, which is synchronous, so FastAPI runs them in its worker
+threadpool rather than on the event loop, where a slow query would stall every
+other request.
+"""
+
 
 import psycopg2.extras
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -38,7 +45,7 @@ def _mask_password(pw: str) -> str:
 
 
 @router.get("", response_model=DataSourceResponse)
-async def get_data_source(request: Request):
+def get_data_source(request: Request):
     username = get_request_username(request)
     require_admin_access(username)
     conn = _get_conn()
@@ -60,7 +67,7 @@ async def get_data_source(request: Request):
 
 
 @router.put("")
-async def update_data_source(payload: DataSourceConfig, request: Request):
+def update_data_source(payload: DataSourceConfig, request: Request):
     username = get_request_username(request)
     require_admin_access(username)
     conn = _get_conn()
@@ -87,7 +94,7 @@ async def update_data_source(payload: DataSourceConfig, request: Request):
 
 
 @router.post("/test")
-async def test_data_source(request: Request):
+def test_data_source(request: Request):
     username = get_request_username(request)
     require_admin_access(username)
     conn = _get_conn()
