@@ -1727,6 +1727,45 @@ glob 或运行期才构造的路径（例如 `python -c "open('/…')"`）。它
 `src/qwenpaw/agents/md_files/*/AGENTS.md` 缺失，必须先同步这些未跟踪文件，否则会产生
 假失败。
 
+### 9.23 图数据库 / 云存储的连接与操作能力核查
+
+**结论**：镜像**具备连接和操作外部图数据库与云存储的能力**，后续单独部署 MinIO /
+Neo4j 等集群时可直接使用；但产品当前**没有**这两类功能的一等公民入口（见下）。
+
+**镜像内客户端能力（已实测，非仅 import）**：`scripts/verify_data_service_clients.py`
+用本地 mock 跑真实请求，12/12 通过：
+
+| 能力 | 实测结果 |
+| --- | --- |
+| S3 兼容对象存储（明文 HTTP） | boto3 上传/下载字节一致、列举、删除、生成 SigV4 预签名 URL；MinIO SDK 往返；pandas 经 boto3 读写 parquet |
+| S3 兼容对象存储（HTTPS） | TLSv1.3 握手成功；boto3 over HTTPS 往返字节一致（含中文） |
+| Neo4j | 驱动发出真实 Bolt 握手（magic `6060b017`）；Cypher 查询构造；`bolt+s` / `neo4j+s` / `neo4j+ssc` 等 TLS 方案均可用 |
+| 公共依赖 | 系统 CA 信任库 150 个证书；neo4j 6.3.1、minio 7.2.20、boto3 1.43.98、s3fs 0.4.2、pyarrow 25.0.1 |
+
+**产品当前不具备的**（本轮只核查、未改造）：
+
+1. **没有图数据库工具**。37 个内置工具里无任何图数据库入口，也未连接任何图数据库。
+2. **知识服务的图谱不是图数据库**：`entities` / `relations` 等表存在关系型 PG 里，靠
+   `space_id` 隔离；LightRAG 用的是默认文件存储，未启用其 Neo4j 图后端。知识服务 24 个
+   端点里没有图谱查询接口，UI 只能看到"实体数/关系数"统计。相关工作见 9.19 的检索说明。
+3. **云存储完全未接入**：知识服务文件全部落本地文件系统，配置里没有 S3/OSS/COS 的
+   endpoint/bucket/凭据项。
+4. **未安装的客户端库**：`nebula3`、`gremlin_python`、`rdflib`、`oss2`（阿里云）、
+   `azure-storage-blob`、`google-cloud-storage`、`qiniu`、`esdk-obs`（华为）、
+   `cos-python-sdk-v5`（腾讯）。其中 S3 兼容协议已由 boto3/MinIO SDK 覆盖，可对接
+   MinIO / Ceph 及各家 S3 兼容网关。
+
+**后续扩展的三条路径**（按投入排序）：走 MCP（产品已支持 stdio / streamable_http / sse
+三种传输，生态有现成 server，改动最小）→ 做原生工具（纳入现有账号隔离，需开发）→
+启用 LightRAG 的 Neo4j 图存储后端（杠杆最大，需先理清与现有 PG 图谱的关系）。
+
+**若将来要接入，必须纳入多用户隔离**：这类是账号级资源，凭据不能全局共享一份（参考
+9.18–9.20 的越权教训）。
+
+**注意**：`s3fs==0.4.2` 偏旧（fsspec 2026.9.0 会就此告警），且离线环境无 `aiobotocore`
+时 `s3fs` 路径不可用（实测报 `PermissionError: Forbidden`）。要用 s3fs 直读需先修版本
+约束；当前已验证可用的替代路径是 boto3 + pandas/pyarrow。
+
 ## 10. 当前状态摘要
 
 | 项目 | 状态 |
@@ -1745,6 +1784,7 @@ glob 或运行期才构造的路径（例如 `python -c "open('/…')"`）。它
 | 容器数据持久化 | 已完成，必须正确挂载 |
 | 第三方 API/iframe | 已撤回 |
 | 知识服务部署 | 已完成，4 个组件（api / worker / postgres / lightrag），PG 可独立维护 |
+| 图数据库 / 云存储连接能力 | 镜像具备（boto3/MinIO SDK/Neo4j 均已实测连通）；产品尚未提供对应工具入口，见 9.23 |
 | 知识服务纯检索接口 | 已完成 `/v1/search` |
 | 按需获取文档详情 | 已完成 `get_document_detail` |
 | 知识空间流式查询 | 已完成前端流式显示 |
