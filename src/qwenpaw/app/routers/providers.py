@@ -1148,7 +1148,14 @@ async def get_default_models(
 
     This endpoint is used by the knowledge service to automatically configure
     models based on the administrator's provider settings.
+
+    Administrator-only: the response carries provider credentials
+    (``chat_api_key`` / ``embedding_api_key`` / ``reranker_api_key``) in
+    plaintext, so it is not safe to expose to ordinary accounts. The check is
+    skipped when authentication is disabled, where there is only one account.
     """
+    _require_admin_model_access(request)
+
     chat_config = {"base_url": "", "api_key": "", "model": ""}
     embedding_config = {"base_url": "", "api_key": "", "model": "", "dimensions": None}
     reranker_config = {"base_url": "", "api_key": "", "model": "", "enabled": False}

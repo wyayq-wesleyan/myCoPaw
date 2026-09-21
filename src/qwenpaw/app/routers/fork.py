@@ -51,6 +51,31 @@ def _enforce_localhost(request: Request) -> None:
         )
 
 
+def _enforce_owned_agent(request: Request, agent_id: str) -> None:
+    """Reject the request unless the caller owns *agent_id*.
+
+    The localhost check is not an authorization boundary: behind a same-host
+    reverse proxy (or when loopback is allow-listed) every request looks local,
+    so any authenticated account could fork another account's agent — reading
+    its session state and writing a fork session into its ``sessions/`` dir.
+    Ownership of the target agent is the real boundary.
+
+    The internal caller (``spawn_subagent(fork=True)``) sends the calling
+    account's identity, so this does not block the intended path.
+    """
+    from ...config.utils import load_config
+    from ..auth import is_auth_enabled
+    from ..user_space import get_request_username, require_owned_agent_id
+
+    username = get_request_username(request)
+    if is_auth_enabled() and not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not username:
+        # Single-account deployment (auth disabled): nothing to separate.
+        return
+    require_owned_agent_id(load_config(), username, agent_id)
+
+
 def _get_project_dir(agent_id: str) -> Optional[Path]:
     """Resolve the project directory for fork operations.
 
@@ -290,6 +315,7 @@ async def fork_agent(
     5. If worktree created, copy ``.worktreeinclude`` files.
     """
     _enforce_localhost(request)
+    _enforce_owned_agent(request, req.agent_id)
 
     project_dir = _get_project_dir(req.agent_id)
     sessions_dir = _get_sessions_dir(req.agent_id)

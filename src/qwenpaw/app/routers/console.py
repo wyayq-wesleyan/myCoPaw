@@ -95,9 +95,16 @@ def _validate_chat_attachment_size(content_parts: list[Any], media_dir: Path) ->
 
 @dataclass
 class _BackgroundTask:
-    """In-memory state for a background chat task."""
+    """In-memory state for a background chat task.
+
+    ``owner`` records the account that submitted it. The task id is a random
+    ``task-<hex>`` value, but it appears in responses and logs, so it must not
+    be the only thing standing between an account and another account's task
+    output.
+    """
 
     status: str = "submitted"
+    owner: Optional[str] = None
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     result: Optional[Dict[str, Any]] = None
@@ -642,12 +649,16 @@ async def get_inbox_events(
     unread_only: bool = Query(False),
 ):
     from ..inbox_store import query_events
-    from ..user_space import is_admin_user
+    from ..user_space import get_request_username, is_admin_user
 
     selected_sources = set(source_types or [])
     if source_type:
         selected_sources.add(source_type)
-    username = getattr(request.state, "user", None)
+    # Use the shared resolver (it falls back to the bearer token) instead of
+    # reading request.state directly: the auth middleware skips allow-listed
+    # hosts without setting it, and a None identity used to disable filtering
+    # entirely, exposing every account's events/messages.
+    username = get_request_username(request)
     events, total, unread_count = await query_events(
         limit=limit,
         offset=offset,
@@ -671,9 +682,13 @@ async def post_mark_inbox_read(
     request: Request,
 ):
     from ..inbox_store import mark_all_read, mark_read
-    from ..user_space import is_admin_user
+    from ..user_space import get_request_username, is_admin_user
 
-    username = getattr(request.state, "user", None)
+    # Use the shared resolver (it falls back to the bearer token) instead of
+    # reading request.state directly: the auth middleware skips allow-listed
+    # hosts without setting it, and a None identity used to disable filtering
+    # entirely, exposing every account's events/messages.
+    username = get_request_username(request)
     admin = is_admin_user(username)
     if payload.all:
         updated = await mark_all_read(
@@ -693,9 +708,13 @@ async def post_mark_inbox_read(
 async def delete_inbox_event(event_id: str, request: Request):
     from ..inbox_store import delete_event
     from ..inbox_trace_store import delete_trace
-    from ..user_space import is_admin_user
+    from ..user_space import get_request_username, is_admin_user
 
-    username = getattr(request.state, "user", None)
+    # Use the shared resolver (it falls back to the bearer token) instead of
+    # reading request.state directly: the auth middleware skips allow-listed
+    # hosts without setting it, and a None identity used to disable filtering
+    # entirely, exposing every account's events/messages.
+    username = get_request_username(request)
     deleted, run_id, run_id_still_referenced = await delete_event(
         event_id,
         recipient_username=username,
@@ -903,6 +922,7 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
     bg = _BackgroundTask(
         status="running",
         started_at=time.time(),
+        owner=get_request_username(request),
     )
 
     async def _run() -> None:
@@ -1018,11 +1038,33 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
     status_code=200,
     summary="Check background chat task status",
 )
-async def get_console_chat_task(task_id: str) -> dict:
-    """Return the current status of a background chat task."""
+async def get_console_chat_task(task_id: str, request: Request = None) -> dict:
+    """Return the current status of a background chat task.
+
+    The result can contain model output and the session id, so the task is only
+    returned to the account that submitted it. A mismatch answers 404 (the same
+    response as an unknown id) so it does not confirm that the task exists.
+
+    ``request`` is optional so direct callers (unit tests exercising task
+    lifecycle) need not supply one; without it the ownership check is skipped,
+    which mirrors how the rest of the codebase treats an absent request.
+    """
+    from ..user_space import get_request_username, is_admin_user
+
+    username = get_request_username(request)
     async with _bg_lock:
         bg = _bg_tasks.get(task_id)
     if bg is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task not found: {task_id}",
+        )
+    if (
+        request is not None
+        and bg.owner is not None
+        and not is_admin_user(username)
+        and bg.owner != username
+    ):
         raise HTTPException(
             status_code=404,
             detail=f"Task not found: {task_id}",

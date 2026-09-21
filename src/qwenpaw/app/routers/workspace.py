@@ -1280,8 +1280,17 @@ async def put_audio_mode(
         ...,
         description='Audio mode, e.g. {"audio_mode": "auto"}',
     ),
+    request: Request = None,
 ) -> dict:
     """Update audio mode setting."""
+    from ..auth import is_auth_enabled, require_admin_access
+    from ..user_space import get_request_username
+
+    # Deployment-wide setting (shared by every account), so it is an
+    # administrator action rather than a per-user preference.
+    if is_auth_enabled():
+        require_admin_access(get_request_username(request))
+
     raw = body.get("audio_mode")
     audio_mode = (str(raw) if raw is not None else "").strip().lower()
     valid = {"auto", "native"}
@@ -1335,8 +1344,17 @@ async def put_transcription_provider_type(
             '{"transcription_provider_type": "whisper_api"}'
         ),
     ),
+    request: Request = None,
 ) -> dict:
     """Set the transcription provider type."""
+    from ..auth import is_auth_enabled, require_admin_access
+    from ..user_space import get_request_username
+
+    # Deployment-wide setting (shared by every account), so it is an
+    # administrator action rather than a per-user preference.
+    if is_auth_enabled():
+        require_admin_access(get_request_username(request))
+
     raw = body.get("transcription_provider_type")
     provider_type = (str(raw) if raw is not None else "").strip().lower()
     valid = {"disabled", "whisper_api", "local_whisper"}
@@ -1408,8 +1426,17 @@ async def put_transcription_provider(
             'or {"provider_id": ""} to unset'
         ),
     ),
+    request: Request = None,
 ) -> dict:
     """Set the transcription provider."""
+    from ..auth import is_auth_enabled, require_admin_access
+    from ..user_space import get_request_username
+
+    # Deployment-wide setting (shared by every account), so it is an
+    # administrator action rather than a per-user preference.
+    if is_auth_enabled():
+        require_admin_access(get_request_username(request))
+
     provider_id = (body.get("provider_id") or "").strip()
     config = load_config()
     config.agents.transcription_provider_id = provider_id

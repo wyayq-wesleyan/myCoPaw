@@ -16,7 +16,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, File, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from qwenpaw.exceptions import (
@@ -35,6 +43,7 @@ from ...agents.skill_system import (
     SkillService,
     run_pool_auto_update_sync,
 )
+from ._admin_guard import require_admin_request
 from ...agents.skill_system.registry import (
     BUILTIN_SKILL_LANGUAGES,
     get_pool_builtin_sync_status,
@@ -979,8 +988,17 @@ async def search_hub(
     return []
 
 
-@router.get("/workspaces")
+@router.get(
+    "/workspaces",
+    dependencies=[Depends(require_admin_request)],
+)
 async def list_workspace_skill_sources() -> list[WorkspaceSkillSummary]:
+    """List every agent workspace and its skills.
+
+    Administrator-only: the response spans all accounts (agent ids, names and
+    their skill sets) and exists to drive the skill-pool UI, whose write
+    endpoints are admin-only too.
+    """
     summaries: list[WorkspaceSkillSummary] = []
     workspaces = list_workspaces()
     for workspace in workspaces:
@@ -1287,7 +1305,10 @@ async def upload_skill_zip(
     return result
 
 
-@router.post("/pool/create")
+@router.post(
+    "/pool/create",
+    dependencies=[Depends(require_admin_request)],
+)
 async def create_pool_skill(body: CreateSkillRequest) -> dict[str, Any]:
     try:
         created = SkillPoolService().create_skill(
@@ -1312,7 +1333,10 @@ async def create_pool_skill(body: CreateSkillRequest) -> dict[str, Any]:
     return {"created": True, "name": created}
 
 
-@router.put("/pool/save")
+@router.put(
+    "/pool/save",
+    dependencies=[Depends(require_admin_request)],
+)
 async def save_pool_skill(body: SavePoolSkillRequest) -> dict[str, Any]:
     """Save one pool skill.
 
@@ -1340,7 +1364,10 @@ async def save_pool_skill(body: SavePoolSkillRequest) -> dict[str, Any]:
     return result
 
 
-@router.post("/pool/upload-zip")
+@router.post(
+    "/pool/upload-zip",
+    dependencies=[Depends(require_admin_request)],
+)
 async def upload_skill_pool_zip(
     file: UploadFile = File(...),
     target_name: str = "",
@@ -1378,7 +1405,10 @@ async def upload_skill_pool_zip(
     return result
 
 
-@router.post("/pool/import")
+@router.post(
+    "/pool/import",
+    dependencies=[Depends(require_admin_request)],
+)
 async def import_skill_pool_from_hub(
     body: HubInstallRequest,
 ) -> dict[str, Any]:
@@ -1406,7 +1436,10 @@ async def import_skill_pool_from_hub(
     }
 
 
-@router.post("/pool/upload")
+@router.post(
+    "/pool/upload",
+    dependencies=[Depends(require_admin_request)],
+)
 async def upload_workspace_skill_to_pool(
     body: UploadToPoolRequest,
 ) -> dict[str, Any]:
@@ -1547,7 +1580,10 @@ def _download_one_or_raise(
     }
 
 
-@router.post("/pool/download")
+@router.post(
+    "/pool/download",
+    dependencies=[Depends(require_admin_request)],
+)
 async def download_pool_skill_to_workspaces(
     body: DownloadFromPoolRequest,
 ) -> dict[str, Any]:
@@ -1592,7 +1628,10 @@ async def download_pool_skill_to_workspaces(
     return {"downloaded": downloaded}
 
 
-@router.post("/pool/import-builtin")
+@router.post(
+    "/pool/import-builtin",
+    dependencies=[Depends(require_admin_request)],
+)
 async def import_pool_builtins(
     body: ImportBuiltinRequest,
 ) -> dict[str, Any]:
@@ -1611,7 +1650,10 @@ async def import_pool_builtins(
     return result
 
 
-@router.post("/pool/{skill_name}/update-builtin")
+@router.post(
+    "/pool/{skill_name}/update-builtin",
+    dependencies=[Depends(require_admin_request)],
+)
 async def update_pool_builtin(
     skill_name: str,
     body: UpdateBuiltinRequest | None = Body(default=None),
@@ -1639,7 +1681,10 @@ async def get_pool_skill(skill_name: str) -> PoolSkillDetail:
     return detail
 
 
-@router.delete("/pool/{skill_name}")
+@router.delete(
+    "/pool/{skill_name}",
+    dependencies=[Depends(require_admin_request)],
+)
 async def delete_pool_skill(skill_name: str) -> dict[str, Any]:
     deleted = SkillPoolService().delete_skill(skill_name)
     if not deleted:
@@ -1659,7 +1704,10 @@ async def get_pool_skill_config(skill_name: str) -> dict[str, Any]:
     return {"config": entry.get("config", {})}
 
 
-@router.put("/pool/{skill_name}/config")
+@router.put(
+    "/pool/{skill_name}/config",
+    dependencies=[Depends(require_admin_request)],
+)
 async def update_pool_skill_config(
     skill_name: str,
     body: SkillConfigRequest,
@@ -1679,7 +1727,10 @@ async def update_pool_skill_config(
     return {"updated": True}
 
 
-@router.delete("/pool/{skill_name}/config")
+@router.delete(
+    "/pool/{skill_name}/config",
+    dependencies=[Depends(require_admin_request)],
+)
 async def delete_pool_skill_config(skill_name: str) -> dict[str, Any]:
     manifest_path = get_pool_skill_manifest_path()
 
@@ -1710,7 +1761,10 @@ def _validate_tags(tags: list[str]) -> list[str]:
     return cleaned
 
 
-@router.put("/pool/{skill_name}/tags")
+@router.put(
+    "/pool/{skill_name}/tags",
+    dependencies=[Depends(require_admin_request)],
+)
 async def update_pool_skill_tags(
     skill_name: str,
     tags: list[str],
@@ -1725,7 +1779,10 @@ async def update_pool_skill_tags(
     return {"updated": True, "tags": tags}
 
 
-@router.put("/pool/{skill_name}/auto-update")
+@router.put(
+    "/pool/{skill_name}/auto-update",
+    dependencies=[Depends(require_admin_request)],
+)
 async def update_pool_skill_auto_update(
     skill_name: str,
     body: AutoUpdateRequest,
@@ -1777,7 +1834,10 @@ async def batch_delete_skills(
     return {"results": results}
 
 
-@router.post("/pool/batch-delete")
+@router.post(
+    "/pool/batch-delete",
+    dependencies=[Depends(require_admin_request)],
+)
 async def batch_delete_pool_skills(
     skills: list[str],
 ) -> dict[str, Any]:

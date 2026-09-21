@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_AGENT_API_BASE_URL = "http://127.0.0.1:8088"
 DEFAULT_AGENT_API_TIMEOUT = 30.0
+
+# Lifetime of the identity token minted for an internal API call. Long enough
+# to cover a request, short enough that it is not a durable credential.
+_INTERNAL_TOKEN_TTL_SECONDS = 300
 MAX_SPAWN_BATCH_SIZE = 10
 MAX_SPAWN_BATCH_CONCURRENCY = 3
 
@@ -72,16 +76,62 @@ def normalize_id(id_to_normalize: Optional[str]) -> Optional[str]:
     return id_to_normalize.strip().strip("\"'").strip()
 
 
+def _internal_auth_headers() -> Dict[str, str]:
+    """Bearer header carrying the calling account, for internal API calls.
+
+    These tools call the local HTTP API. When authentication is enforced —
+    notably the production configuration, where the entrypoint clears
+    ``allow_no_auth_hosts`` so loopback is no longer exempt -- a request
+    without credentials is rejected with 401 and the tool fails with
+    "no permission".
+    That is what made agent orchestration unusable on the server.
+
+    Minting a short-lived token for the *already authenticated* caller is the
+    smallest correct fix: the server then sees the real account and applies its
+    normal ownership rules, instead of either refusing the call or, when
+    loopback happens to be allow-listed, treating it as the unrestricted
+    single-user identity.
+
+    Returns an empty dict when no account can be resolved (single-user mode),
+    so behaviour there is unchanged.
+    """
+    username = _resolve_calling_username()
+    if not username:
+        return {}
+    try:
+        from ...app.auth import create_token
+
+        # Short expiry: this exists only to carry identity for the immediate
+        # call and must not become a durable credential.
+        token = create_token(
+            username, expiry_seconds=_INTERNAL_TOKEN_TTL_SECONDS,
+        )
+        return {"Authorization": f"Bearer {token}"}
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Could not mint an internal auth token for %s; the internal call "
+            "may be rejected when authentication is enforced.",
+            username,
+            exc_info=True,
+        )
+        return {}
+
+
 def create_agent_api_client(
     base_url: Optional[str],
     default_timeout: float = DEFAULT_AGENT_API_TIMEOUT,
 ) -> httpx.Client:
-    """Create an HTTP client targeting the local agent API."""
+    """Create an HTTP client targeting the local agent API.
+
+    Carries the calling account's identity so the local API can authorize the
+    request when authentication is enforced (see ``_internal_auth_headers``).
+    """
     normalized = _normalize_api_base_url(base_url)
     return httpx.Client(
         base_url=normalized,
         timeout=default_timeout,
         trust_env=trust_env_for_url(normalized),
+        headers=_internal_auth_headers(),
     )
 
 
@@ -332,13 +382,16 @@ def _request_headers(
 ) -> Dict[str, str]:
     """Build HTTP headers for agent chat requests.
 
+    Includes the calling account's identity so the local API can authorize the
+    request when authentication is enforced (see ``_internal_auth_headers``).
+
     Args:
         to_agent: Target agent ID
 
     Returns:
         Dictionary of HTTP headers
     """
-    headers = {}
+    headers = _internal_auth_headers()
     if to_agent:
         headers["X-Agent-Id"] = to_agent
     return headers
@@ -416,6 +469,7 @@ async def collect_final_agent_chat_response_async(
         base_url=normalized,
         timeout=httpx.Timeout(timeout),
         trust_env=trust_env_for_url(normalized),
+        headers=_internal_auth_headers(),
     ) as client:
         async with client.stream(
             "POST",
@@ -1453,6 +1507,7 @@ async def _call_fork_api(
         async with httpx.AsyncClient(
             timeout=30.0,
             trust_env=trust_env_for_url(url),
+            headers=_internal_auth_headers(),
         ) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
