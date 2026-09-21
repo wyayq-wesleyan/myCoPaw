@@ -69,6 +69,7 @@ def _format_search_result(payload: dict[str, Any]) -> str:
 
     SOURCE_LABEL = {
         "fulltext": "全文检索",
+        "filename": "文件名匹配",
         "literal": "关键词匹配",
         "semantic": "语义相似",
         "entity": "实体匹配",
@@ -116,12 +117,13 @@ async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
 
     检索来源说明：
     - 全文检索(fulltext)：直接匹配原文，可信度最高
+    - 文件名匹配(filename)：查询词出现在文件名里（版本号、编号、年份等只写在文件名的信息）
     - 关键词匹配(literal)：CJK 二元组部分匹配，可信度高
     - 语义相似(semantic)：embedding 向量相似，可能不完全精确
     - 实体匹配(entity)：人名/机构名等实体匹配
     - 知识图谱(lightrag)：图谱关系推断，需核实原文
 
-    回答时优先使用"全文检索"和"关键词匹配"来源的内容，对"知识图谱"
+    回答时优先使用"全文检索"、"文件名匹配"和"关键词匹配"来源的内容，对"知识图谱"
     来源的推断性内容需谨慎使用，尽量引用原文佐证。
     """
     url = _service_url()

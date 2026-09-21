@@ -1177,6 +1177,7 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 snippets: list[str] = []
                 SOURCE_LABEL = {
                     "fulltext": "全文检索",
+                    "filename": "文件名匹配",
                     "literal": "关键词匹配",
                     "semantic": "语义相似",
                     "entity": "实体匹配",

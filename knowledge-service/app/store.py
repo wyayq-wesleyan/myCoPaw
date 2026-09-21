@@ -856,6 +856,64 @@ class Store:
                 merged[item["id"]] = item
         return list(merged.values())[:limit]
 
+    def search_by_filename(self, space_id: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Retrieve documents whose *filename* matches the query terms.
+
+        Filenames routinely carry information the body does not: version tags
+        (``_上会版``), student or ticket ids, revision years. None of the content
+        indexes can see any of it — ``search_vector`` is built from ``content``
+        alone (see the ``chunks`` DDL), the bigram literal path matches
+        ``content``, the embeddings embed ``content``, and entities are
+        extracted from ``content``. A query naming such a token therefore
+        returned nothing even when a document was named exactly that: measured
+        on real data, a term present only in a filename scored 0.0 recall while
+        the same term inside the body scored 1.0.
+
+        Scoring mirrors the literal path (fraction of query terms present).
+        Each matched document contributes its **opening chunk** (lowest
+        ``sequence``), so the model sees what the document is rather than an
+        arbitrary slice.
+        """
+        terms = self._cjk_bigrams(query)
+        if not terms:
+            return []
+        lowered = [f"%{term.lower()}%" for term in terms]
+        whens = " + ".join(
+            "(CASE WHEN lower(doc.filename) LIKE %s THEN 1 ELSE 0 END)" for _ in terms
+        )
+        with self._connect() as db:
+            rows = db.execute(
+                f"""
+                SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
+                       (s.hits)::float / %s AS score
+                FROM (
+                    SELECT doc.id AS document_id,
+                           ({whens}) AS hits
+                    FROM documents doc
+                    WHERE doc.space_id = %s
+                ) s
+                JOIN documents d ON d.id = s.document_id
+                JOIN chunks c ON c.document_id = s.document_id
+                             AND c.sequence = (
+                                 SELECT min(c2.sequence) FROM chunks c2
+                                 WHERE c2.space_id = %s
+                                   AND c2.document_id = s.document_id
+                             )
+                WHERE s.hits > 0
+                ORDER BY score DESC, d.filename
+                LIMIT %s
+                """,
+                # 占位符顺序：SELECT 除数 → 子查询 N 个 LIKE → 外层 space_id
+                #            → 子查询 space_id → LIMIT
+                [float(len(terms)), *lowered, space_id, space_id, limit],
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["source"] = "filename"
+            result.append(item)
+        return result
+
     def search_by_embedding(
         self,
         space_id: str,

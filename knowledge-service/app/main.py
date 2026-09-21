@@ -430,7 +430,7 @@ async def get_job_log(job_id: str, scope: tuple[str, bool] = Depends(request_sco
 
 
 async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
-    """融合检索：PostgreSQL 全文/字面/向量 + 实体上下文 + LightRAG 图检索。
+    """融合检索：PostgreSQL 文件名/全文/字面/向量 + 实体上下文 + LightRAG 图检索。
 
     每条 evidence 附带 match_reasons（多路命中来源列表）、confidence（归一化置信度）、
     source（主来源 = 最高权重路径）。
@@ -438,6 +438,7 @@ async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[di
     """
     local_evidence = await asyncio.to_thread(store.entity_context, space_id, query, top_k)
     direct = await asyncio.to_thread(store.search, space_id, query, top_k)
+    by_filename = await asyncio.to_thread(store.search_by_filename, space_id, query, top_k)
     vector = await asyncio.to_thread(ModelClient(settings).embed, [query])
     semantic = (
         await asyncio.to_thread(
@@ -447,9 +448,12 @@ async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[di
         else []
     )
 
-    # 聚合多路命中：按 chunk id 收集所有命中来源
+    # 聚合多路命中：按 chunk id 收集所有命中来源。
+    # 文件名命中排在合并序列最前：merged 是插入序且后面直接被 top_k 截断，放在末尾会
+    # 被内容命中挤掉，而「查询词只出现在文件名里」正是这一路要救的场景。文件名命中
+    # 只在查询词确实出现在文件名时就产生，精度高于内容/语义的模糊匹配，优先合理。
     merged: dict[str, dict[str, Any]] = {}
-    for item in [*local_evidence, *direct, *semantic]:
+    for item in [*by_filename, *local_evidence, *direct, *semantic]:
         key = item.get("id") or f"{item.get('document_id')}:{item.get('page')}:{item.get('location')}"
         source = item.pop("source", "unknown")
         if key in merged:
@@ -465,7 +469,13 @@ async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[di
             merged[key] = item
 
     # 归一化置信度：多路命中 = 高置信；单路按来源权重分档
-    SOURCE_WEIGHT = {"fulltext": 1.0, "literal": 0.9, "semantic": 0.8, "entity": 0.7}
+    SOURCE_WEIGHT = {
+        "fulltext": 1.0,
+        "filename": 0.95,
+        "literal": 0.9,
+        "semantic": 0.8,
+        "entity": 0.7,
+    }
     for item in merged.values():
         reasons = item.get("match_reasons", [])
         if len(reasons) >= 2:
