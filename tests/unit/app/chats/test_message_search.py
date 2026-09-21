@@ -110,6 +110,11 @@ def search_env(tmp_path, monkeypatch):
     import qwenpaw.config.utils as config_utils
     import qwenpaw.app.user_space as user_space
 
+    # Account roots are resolved from module-level constants frozen at import
+    # time, so point them at the temporary directory: otherwise a test that
+    # resolves a workspace by account would touch the real ``~/.qwenpaw``.
+    monkeypatch.setattr(user_space, "USER_WORKSPACE_ROOT", tmp_path / "workspaces")
+    monkeypatch.setattr(user_space, "USER_STATE_ROOT", tmp_path / "users")
     monkeypatch.setattr(config_utils, "load_config", lambda *a, **k: config)
     monkeypatch.setattr(user_space, "load_config", lambda *a, **k: config)
     return config

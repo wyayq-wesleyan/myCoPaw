@@ -707,14 +707,25 @@ async def search_messages(
 
     Matching is a case-insensitive substring test over each message's text;
     multi-word queries require every term to appear in the same message.
+
+    Ownership is filtered inline rather than through ``user_agent_ids``: that
+    helper runs ``_migrate_user_workspace_paths``, which *moves* workspace
+    directories into the account layout. A search must not write to the
+    filesystem, so this stays a pure read.
     """
     from ...config.utils import load_config
-    from ..user_space import get_request_username, user_agent_ids
+    from ..user_space import get_request_username
 
     username = get_request_username(request)
     config = load_config()
-    owned_agents = user_agent_ids(config, username) if username else []
-    if username and not owned_agents:
+    if not username:
+        return MessageSearchResponse(query=q, hits=[], scanned_chats=0)
+    owned_agents = [
+        agent_id
+        for agent_id, profile in config.agents.profiles.items()
+        if getattr(profile, "owner_username", None) == username
+    ]
+    if not owned_agents:
         return MessageSearchResponse(query=q, hits=[], scanned_chats=0)
 
     terms = _search_terms(q)
