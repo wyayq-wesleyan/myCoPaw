@@ -702,7 +702,6 @@ async def _execute_in_sandbox(
     env: dict[str, str],
 ) -> ExecutionResult:
     """Execute a shell command inside the sandbox and return raw result.
-
     On first invocation the sandbox setup (user creation, profile, ACLs,
     firewall rules) can take 5-100+ seconds. During setup we temporarily
     extend existing coordinator deadlines; after setup we restore them by
@@ -728,6 +727,22 @@ async def _execute_in_sandbox(
             "PATH",
         )
         sandbox_env[path_key] = env[path_key]
+    # Skill config rides in ``env`` (merged by the caller); the sandbox builds
+    # its own map, so carry those keys over too unless policy already set them.
+    try:
+        from ..skill_system.registry import current_skill_env_overrides
+
+        for key in current_skill_env_overrides():
+            if key in sandbox_env or key not in env:
+                continue
+            sandbox_env[key] = env[key]
+    except Exception:  # noqa: BLE001 - sandbox must not fail on this
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "skill env overrides unavailable for sandbox",
+            exc_info=True,
+        )
 
     ctx = get_call_context()
     # Under ToolCallContext the coordinator owns kill via cancellable_wait /
@@ -1128,6 +1143,20 @@ async def execute_shell_command(
 
     # Ensure the venv Python is on PATH for subprocesses
     env = os.environ.copy()
+    # Skill-provided config is carried per-turn in a ContextVar instead of the
+    # process environment (which every account shares), so merge it here — the
+    # one place it is meant to become visible.
+    try:
+        from ..skill_system.registry import current_skill_env_overrides
+
+        env.update(current_skill_env_overrides())
+    except Exception:  # noqa: BLE001 - never block a command on this
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "skill env overrides unavailable",
+            exc_info=True,
+        )
     python_bin_dir = str(Path(sys.executable).parent)
     existing_path = env.get("PATH", "")
     if existing_path:

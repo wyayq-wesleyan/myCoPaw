@@ -11,6 +11,7 @@ import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +55,32 @@ _BUILTIN_SKILL_DIR_RE = re.compile(
     r"^(?P<name>.+)-(?P<language>en|zh)$",
 )
 
-_ACTIVE_SKILL_ENV_ENTRIES: dict[str, dict[str, Any]] = {}
-_ENV_LOCK = threading.Lock()
+# Skill-provided configuration (often credentials) is carried as a ContextVar
+# rather than written into ``os.environ``.
+#
+# ``os.environ`` is process-global: injecting account A's skill config there made
+# it readable by every other account in the same process for the duration of A's
+# turn — including through their shell tools, which copy the environment. A
+# ContextVar is per-task, so the values follow the turn that owns them and reach
+# a subprocess only where that subprocess is spawned.
+_SKILL_ENV_OVERRIDES: ContextVar[dict[str, str]] = ContextVar(
+    "skill_env_overrides",
+    default={},
+)
+
+
+def current_skill_env_overrides() -> dict[str, str]:
+    """Return the skill-derived env vars for the current task.
+
+    Callers that spawn a subprocess merge this over ``os.environ``; nothing
+    global is mutated.
+    """
+    return dict(_SKILL_ENV_OVERRIDES.get() or {})
+
+
+def _set_skill_env_overrides(values: dict[str, str]) -> None:
+    _SKILL_ENV_OVERRIDES.set(dict(values))
+
 
 _builtin_cache: dict[str, Any] = {}
 _BUILTIN_CACHE_LOCK = threading.Lock()
@@ -403,90 +428,63 @@ def _build_skill_config_env_overrides(
     return overrides
 
 
-def _acquire_skill_env_key(key: str, value: str) -> bool:
-    with _ENV_LOCK:
-        active = _ACTIVE_SKILL_ENV_ENTRIES.get(key)
-        if active is not None:
-            if active["value"] != value:
-                return False
-            active["count"] += 1
-            if os.environ.get(key) is None:
-                os.environ[key] = value
-            return True
-
-        if os.environ.get(key) is not None:
-            return False
-
-        _ACTIVE_SKILL_ENV_ENTRIES[key] = {
-            "baseline": None,
-            "value": value,
-            "count": 1,
-        }
-        os.environ[key] = value
-        return True
-
-
-def _release_skill_env_key(key: str) -> None:
-    with _ENV_LOCK:
-        active = _ACTIVE_SKILL_ENV_ENTRIES.get(key)
-        if active is None:
-            return
-
-        active["count"] -= 1
-        if active["count"] > 0:
-            if os.environ.get(key) is None:
-                os.environ[key] = active["value"]
-            return
-
-        _ACTIVE_SKILL_ENV_ENTRIES.pop(key, None)
-        os.environ.pop(key, None)
-
-
 @contextmanager
 def apply_skill_config_env_overrides(
     workspace_dir: Path,
     channel_name: str,
 ) -> Iterator[None]:
-    """Inject effective skill config into env for one agent turn.
+    """Expose effective skill config to this turn's subprocesses.
 
-    Config keys matching ``metadata.requires.env`` entries are injected
-    as environment variables.  The full config is always available as
+    Config keys matching ``metadata.requires.env`` entries are published as
+    environment variables, and the full config is always available as
     ``QWENPAW_SKILL_CONFIG_<SKILL_NAME>`` (JSON string).
+
+    The values are stored in a ContextVar, not ``os.environ``. Writing them to
+    the process environment leaked one account's skill credentials (these often
+    hold API keys) to every other account in the same process for the duration
+    of the turn. Subprocess-spawning tools merge them via
+    :func:`current_skill_env_overrides`, so the values still reach the shell a
+    skill needs without becoming process-global.
+
+    A key already supplied by the real environment is left alone: the operator's
+    value wins, and no baseline needs restoring on exit.
     """
     manifest = read_skill_manifest(workspace_dir)
     entries = manifest.get("skills", {})
-    active_keys: list[str] = []
+    collected: dict[str, str] = {}
 
-    try:
-        for skill_name in resolve_effective_skills(
-            workspace_dir,
-            channel_name,
-        ):
-            entry = entries.get(skill_name) or {}
-            config = entry.get("config") or {}
-            if not isinstance(config, dict) or not config:
+    for skill_name in resolve_effective_skills(workspace_dir, channel_name):
+        entry = entries.get(skill_name) or {}
+        config = entry.get("config") or {}
+        if not isinstance(config, dict) or not config:
+            continue
+
+        requirements = entry.get("requirements") or {}
+        require_envs = requirements.get("require_envs") or []
+        overrides = _build_skill_config_env_overrides(
+            skill_name,
+            config,
+            list(require_envs),
+        )
+        for env_key, env_value in overrides.items():
+            if os.environ.get(env_key) is not None:
+                # Process environment wins; nothing to publish or restore.
                 continue
+            existing = collected.get(env_key)
+            if existing is not None and existing != env_value:
+                logger.warning(
+                    "Conflicting values for env override '%s' across skills; "
+                    "keeping the first",
+                    env_key,
+                )
+                continue
+            collected[env_key] = env_value
 
-            requirements = entry.get("requirements") or {}
-            require_envs = requirements.get("require_envs") or []
-            overrides = _build_skill_config_env_overrides(
-                skill_name,
-                config,
-                list(require_envs),
-            )
-            for env_key, env_value in overrides.items():
-                if not _acquire_skill_env_key(env_key, env_value):
-                    logger.warning(
-                        "Skipped env override '%s' for skill '%s'",
-                        env_key,
-                        skill_name,
-                    )
-                    continue
-                active_keys.append(env_key)
+    token = _SKILL_ENV_OVERRIDES.set(collected)
+    try:
         yield
     finally:
-        for env_key in reversed(active_keys):
-            _release_skill_env_key(env_key)
+        _SKILL_ENV_OVERRIDES.reset(token)
 
 
 # ---------------------------------------------------------------------------

@@ -212,3 +212,63 @@ def test_reme_recipient_uses_the_owner_not_the_agent_id(tmp_path, monkeypatch):
     monkeypatch.setattr(user_space, "owner_for_agent", lambda _id: "张伟")
 
     assert user_space.owner_for_agent("user_u_abc_default") == "张伟"
+
+
+# --------------------------------------------------------------------------
+# Skill env vars must not become process-global
+# --------------------------------------------------------------------------
+
+
+def test_skill_env_overrides_do_not_touch_the_process_environment(tmp_path):
+    """``os.environ`` is shared by every account; skill config is not.
+
+    Injecting a skill's config (often an API key) into the process environment
+    made it readable by any other account in the same process for the duration
+    of the turn, including through their shell tools.
+    """
+    import os
+    from contextlib import contextmanager
+
+    from qwenpaw.agents.skill_system import registry as reg
+
+    assert "MULTIUSER_PROBE_KEY" not in os.environ
+    reg._set_skill_env_overrides({"MULTIUSER_PROBE_KEY": "s3cret"})
+    try:
+        assert reg.current_skill_env_overrides() == {
+            "MULTIUSER_PROBE_KEY": "s3cret",
+        }
+        assert "MULTIUSER_PROBE_KEY" not in os.environ, (
+            "skill config must not be written to the process environment"
+        )
+    finally:
+        reg._set_skill_env_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_skill_env_overrides_are_per_task():
+    """One turn's skill config must not be visible to a sibling turn."""
+    import asyncio
+
+    from qwenpaw.agents.skill_system import registry as reg
+
+    seen: dict[str, dict] = {}
+
+    async def writer():
+        reg._set_skill_env_overrides({"B": "2"})
+        seen["writer"] = reg.current_skill_env_overrides()
+
+    async def sibling():
+        # A ContextVar set inside one task does not leak into another task.
+        seen["sibling"] = reg.current_skill_env_overrides()
+
+    try:
+        reg._set_skill_env_overrides({})
+        await asyncio.create_task(writer())
+        await asyncio.create_task(sibling())
+    finally:
+        reg._set_skill_env_overrides({})
+
+    assert seen["writer"] == {"B": "2"}
+    assert "B" not in seen["sibling"], (
+        "a sibling task must not observe another turn's skill config"
+    )

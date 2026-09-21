@@ -584,16 +584,26 @@ def _degradation_banner(request: ExecRequest, automatic_fallback: bool) -> str:
     )
 
 
-def _session_namespace(session_id: str) -> dict[str, Any]:
-    """Return one session's persistent execution namespace."""
-    namespace = _SESSION_NAMESPACES.get(session_id)
+def _session_namespace(
+    session_id: str,
+    workspace_id: str = "",
+) -> dict[str, Any]:
+    """Return one session's persistent execution namespace.
+
+    Keyed by workspace *and* session, matching ``_degradation_banner``. A bare
+    session id is not unique across accounts — any session without an id falls
+    back to the literal ``"default"`` — so keying on it alone let two accounts
+    share one namespace and read each other's leftover Python variables.
+    """
+    key = f"{workspace_id}:{session_id}"
+    namespace = _SESSION_NAMESPACES.get(key)
     if namespace is None:
         namespace = {
             "__builtins__": _builtins.__dict__,
             "Browser": Browser,
             "list_cdp_targets": list_cdp_targets,
         }
-        _SESSION_NAMESPACES[session_id] = namespace
+        _SESSION_NAMESPACES[key] = namespace
     return namespace
 
 
@@ -618,7 +628,10 @@ async def execute_request(
     request: ExecRequest,
 ) -> ExecResult:
     """Execute one request in the session namespace and return wire data."""
-    namespace = _session_namespace(request.owner_session_id)
+    namespace = _session_namespace(
+        request.owner_session_id,
+        request.owner_workspace_id,
+    )
     try:
         exec_code, eval_code = _prepare(request.code)
     except BrowserError as exc:
