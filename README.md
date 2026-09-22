@@ -1966,6 +1966,47 @@ Neo4j 等集群时可直接使用；但产品当前**没有**这两类功能的�
 **部署后行为**：重启主应用后新产生的对话即可正确归属。**此前丢失的用量无法找回**
 （事件当场丢弃，磁盘上从未存在），统计口径自本次上线日起算。
 
+### 9.27 聊天卡死并刷屏：心跳包装器吞掉了模型层的超时异常
+
+**现象**：本地接自建模型（gemma-4-26B，长提示词约 1 万词元、36 个工具）实测时，发一条
+消息后页面永远停在那里不回复；进程 CPU 稳定占用约 30–48%，`docker logs` 不报错。
+直接抓流式响应发现：**90 秒内产出 223,439 个几乎空的 `in_progress` 事件，共 53.9 MB**
+（约每秒 2500 个），而真正的错误始终没冒出来。
+
+**根因**（`runtime/heartbeat.py` 的 `_iter_with_heartbeat`）：它用
+`asyncio.wait_for(shield(pending), timeout=interval)` 给内层的 `__anext__()` 计时，并用
+`except asyncio.TimeoutError` 判断「空闲超时，该发心跳了」。但 **Python 3.11 起
+`asyncio.TimeoutError` 就是内置的 `TimeoutError`**，而本项目自己的
+`StreamIdleTimeoutError` / `StreamCleanupPendingError`（`providers/retry_chat_model.py`）
+都继承 `TimeoutError`。于是模型层抛出的「流 30 秒没内容」被**误判成心跳**：
+
+1. 真正的异常被吞掉，只发了一个心跳；
+2. 那个已经失败的任务没被清空（`pending` 仍指向它）；
+3. 下一轮循环又 `await` 同一个已失败的任务，**立即**再次抛出并被再次吞掉。
+
+结果是无限紧循环：不推进、不报错、疯狂刷事件。因为本地模型的
+首内容时间（约 22 秒）超过了默认 30 秒的边界情况很常见，这个缺陷很容易被触发。
+
+**修复**：改用 `asyncio.wait({pending}, timeout=interval)`。它把「超时」表达为
+`done` 为空集合，而不是靠异常，因此内层迭代器自己的异常能正常向上抛；同时在复用
+`pending` 前先清空，保证已完成的任务不会被 await 第二次。
+
+**验证**：
+
+- `tests/unit/runtime/test_heartbeat_timeout_propagation.py`（新增 5 例）：模型层超时必须
+  抛出（且不得回退成刷屏）、普通 `TimeoutError` 必须抛出、慢迭代器仍正常发心跳并随后
+  出值、快迭代器不发多余心跳、消费者提前退出时内层任务被取消。回退验证：还原旧写法后
+  前 2 例精确失败。
+- 真实链路：修复前 90 秒 53.9 MB / 223,439 事件；修复后同一条消息 **14 个事件 / 2.9 KB**，
+  回复正常返回。
+- 回归：`tests/unit/runtime`、`tests/unit/app` 与干净 HEAD 逐项对比失败清单完全一致
+  （既有失败为历史问题，与本次无关）。
+
+**连带发现（部署相关）**：本地模型若首内容时间超过默认 30 秒，会看到
+「LLM stream ... produced no content for 30s」的失败消息——这是**修复后新增的可见报错**，
+不是新故障。生产 Compose 已把它设为 120 秒（`QWENPAW_LLM_STREAM_FIRST_CONTENT_TIMEOUT`）
+和 180 秒（`QWENPAW_LLM_STREAM_IDLE_TIMEOUT`），自建模型慢时应按实际首内容时间放宽。
+
 ## 12. 知识服务部署
 
 ### 12.1 容器信息
