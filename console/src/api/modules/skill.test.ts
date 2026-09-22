@@ -303,3 +303,51 @@ describe("skillApi.batchDeleteSkills", () => {
     expect(result).toEqual({ results: { "skill-a": { success: true } } });
   });
 });
+
+// ---------------------------------------------------------------------------
+// streamOptimizeSkill — the streaming call must carry credentials
+//
+// This endpoint uses fetch() directly (SSE cannot go through the shared JSON
+// helper), and fetch does not attach credentials on its own. With the
+// production auth configuration — where loopback is removed from
+// allow_no_auth_hosts — a request without Authorization gets 401, which is how
+// the "AI 优化" button failed.
+// ---------------------------------------------------------------------------
+describe("skillApi.streamOptimizeSkill", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("sends the auth header on the streaming request", async () => {
+    const { buildAuthHeaders } = await import("../authHeaders");
+    vi.mocked(buildAuthHeaders).mockReturnValue({
+      Authorization: "Bearer test-token",
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => ({ done: true }),
+          releaseLock: () => {},
+        }),
+      },
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    try {
+      await skillApi.streamOptimizeSkill(
+        "# skill",
+        () => {},
+        new AbortController().signal,
+        "zh",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Authorization).toBe("Bearer test-token");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+  });
+});

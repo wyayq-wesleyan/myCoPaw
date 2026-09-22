@@ -582,7 +582,12 @@ export const skillApi = {
 
     const response = await fetch(`${apiUrl}/skills/ai/optimize/stream`, {
       method: "POST",
+      // This is a streaming (SSE) endpoint, so it uses fetch directly instead of
+      // the shared request() helper — and fetch does not add credentials on its
+      // own. Without buildAuthHeaders() the request carried no Authorization and
+      // the auth middleware answered 401 ("AI 优化" failed).
       headers: {
+        ...buildAuthHeaders(),
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ content, language }),
