@@ -67,8 +67,12 @@ def test_default_models_requires_an_administrator():
         ("PUT", "/skills/pool/save"),
         ("POST", "/skills/pool/upload-zip"),
         ("POST", "/skills/pool/import"),
-        ("POST", "/skills/pool/upload"),
-        ("POST", "/skills/pool/download"),
+        # NOTE: /skills/pool/upload and /skills/pool/download are deliberately
+        # NOT here. They move a skill between the pool and the caller's *own*
+        # agent, which is an ordinary Skills-page action; an earlier round
+        # guarded them too and broke normal use for non-admin accounts. Their
+        # boundary is ownership of the target agent, asserted in
+        # test_skill_transfer_access.py.
         ("POST", "/skills/pool/import-builtin"),
         ("POST", "/skills/pool/{skill_name}/update-builtin"),
         ("DELETE", "/skills/pool/{skill_name}"),

@@ -443,6 +443,37 @@ def _workspace_dir_for_agent(agent_id: str) -> Path:
     )
 
 
+def _require_agent_accessible(request: Request, agent_id: str) -> None:
+    """Reject the request unless the caller may touch *agent_id*.
+
+    Used by the workspace<->pool transfer endpoints. Those endpoints take the
+    target workspace from the request body, so without a check any account could
+    read skills out of, or write skills into, another account's workspace.
+    Administrators keep the deployment-wide reach they had; a normal account is
+    confined to the agents it owns.
+
+    This is deliberately *not* ``require_admin_request``: uploading one's own
+    skill into the shared pool and pulling a pooled skill into one's own
+    workspace are ordinary features of the Skills page, so refusing them
+    outright would break normal use.
+    """
+    from ...config.utils import load_config
+    from ..user_space import get_request_username, is_admin_user, is_agent_owned
+
+    username = get_request_username(request)
+    if not username:
+        # Authentication disabled: a single account, nothing to separate.
+        return
+    if is_admin_user(username):
+        return
+    config = load_config()
+    if not is_agent_owned(config, username, agent_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only transfer skills for your own agents",
+        )
+
+
 def _snapshot_workspace_skill(
     workspace_dir: Path,
     skill_name: str,
@@ -508,7 +539,7 @@ def _install_registered_skill(
     skip_workspace: Path | None = None,
 ) -> list[str]:
     """Install a shared skill into every current agent of an account."""
-    from ..config.utils import load_config
+    from ...config.utils import load_config
 
     installed: list[str] = []
     for agent_id, profile in load_config().agents.profiles.items():
@@ -1237,7 +1268,7 @@ async def decide_skill_share(
                 target_username=username,
             )
         elif body.approve and resource.get("kind") == "tool":
-            from ..config.utils import load_config
+            from ...config.utils import load_config
 
             for agent_id, profile in load_config().agents.profiles.items():
                 if getattr(profile, "owner_username", None) == username:
@@ -1436,13 +1467,12 @@ async def import_skill_pool_from_hub(
     }
 
 
-@router.post(
-    "/pool/upload",
-    dependencies=[Depends(require_admin_request)],
-)
+@router.post("/pool/upload")
 async def upload_workspace_skill_to_pool(
     body: UploadToPoolRequest,
+    request: Request,
 ) -> dict[str, Any]:
+    _require_agent_accessible(request, body.workspace_id)
     workspace_dir = _workspace_dir_for_agent(body.workspace_id)
     try:
         result = SkillPoolService().upload_from_workspace(
@@ -1580,17 +1610,28 @@ def _download_one_or_raise(
     }
 
 
-@router.post(
-    "/pool/download",
-    dependencies=[Depends(require_admin_request)],
-)
+@router.post("/pool/download")
 async def download_pool_skill_to_workspaces(
     body: DownloadFromPoolRequest,
+    request: Request,
 ) -> dict[str, Any]:
     """Download one pool skill into one or more workspaces.
 
     All-or-nothing: if any target conflicts, reject everything.
     """
+    from ..user_space import get_request_username, is_admin_user
+
+    # ``all_workspaces`` expands to every account's workspace, so it stays an
+    # administrator action. A normal account may only name its own agents.
+    username = get_request_username(request)
+    if username and not is_admin_user(username) and body.all_workspaces:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an administrator can target every workspace",
+        )
+    for target in body.targets:
+        _require_agent_accessible(request, target.workspace_id)
+
     targets, hub_service = _resolve_and_preflight(body)
     if body.preview_only:
         return {"downloaded": []}
