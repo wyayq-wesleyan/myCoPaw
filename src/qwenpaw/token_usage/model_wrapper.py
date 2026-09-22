@@ -181,8 +181,23 @@ class TokenRecordingModelWrapper(ChatModelBase):
         stream: AsyncGenerator[ChatResponse, None],
     ) -> AsyncGenerator[ChatResponse, None]:
         last_usage: ChatUsage | None = None
-        async for chunk in stream:
-            if getattr(chunk, "usage", None) is not None:
-                last_usage = chunk.usage
-            yield chunk
-        self._record_usage(last_usage)
+        recorded = False
+
+        def _record_once() -> None:
+            nonlocal recorded
+            if recorded:
+                return
+            recorded = True
+            self._record_usage(last_usage)
+
+        try:
+            async for chunk in stream:
+                if getattr(chunk, "usage", None) is not None:
+                    last_usage = chunk.usage
+                yield chunk
+        finally:
+            # ``RetryChatModel`` stops as soon as it sees the final chunk and
+            # closes this generator, so a statement after the loop would never
+            # run for a normally-finished stream and the usage would be lost.
+            # Record on any exit instead, exactly once.
+            _record_once()
