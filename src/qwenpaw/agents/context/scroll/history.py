@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agentscope.message import Msg
+
 from ..types import LogEntry
 
 logger = logging.getLogger(__name__)
@@ -445,6 +447,50 @@ class HistoryStore:
             )
             return int(cur.fetchone()["n"])
 
+    def load_session_messages(
+        self,
+        session_id: str,
+        agent_id: str | None = None,
+    ) -> list[Msg]:
+        """Rebuild this session's full transcript, oldest first.
+
+        The live context window only holds what Scroll has not evicted, so it
+        is *not* the conversation: reading it as the transcript silently
+        dropped every evicted turn (the anchor list shrank while chatting, and
+        "jump to top" landed in the middle of the session). These rows are the
+        durable record the model itself recalls from, so they are the correct
+        source for a transcript view.
+
+        ``blocks`` holds each block's ``model_dump``; AgentScope coerces those
+        dicts back into typed blocks by their ``type`` discriminator, so tool
+        calls and media survive rather than degrading to plain text. A row that
+        cannot be rebuilt is skipped instead of failing the whole read — a
+        partially readable transcript beats none.
+        """
+        if not session_id:
+            return []
+        where = ["session_id = ?"]
+        params: list[Any] = [session_id]
+        if agent_id:
+            # Early migration versions wrote agent_id=NULL. Session plus seq
+            # range already pins those rows here, so keep them.
+            where.append("(agent_id = ? OR agent_id IS NULL)")
+            params.append(agent_id)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, kind, role, name, content, blocks, metadata "
+                "FROM conversation_history "
+                "WHERE " + " AND ".join(where) + " ORDER BY seq",
+                tuple(params),
+            ).fetchall()
+
+        messages: list[Msg] = []
+        for row in rows:
+            msg = _row_to_msg(row)
+            if msg is not None:
+                messages.append(msg)
+        return messages
+
     def claim_session(self, session_id: str, agent_id: str | None) -> int:
         """Assign legacy unowned rows in a canonical session to an agent."""
         if not session_id or not agent_id:
@@ -758,3 +804,103 @@ def _to_json(value) -> str | None:
     if isinstance(value, str):
         return value
     return json.dumps(value, default=str)
+
+
+def _loads(value: Any) -> Any:
+    """Decode a JSON column, returning ``None`` when it is absent or broken."""
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+_BLOCK_TYPES: dict[str, Any] | None = None
+
+
+def _coerce_block(item: Any) -> Any:
+    """Turn one stored block dict into its typed AgentScope block.
+
+    ``Msg.content`` is a union whose **first** member is ``TextBlock``, and
+    pydantic does not fall through to the other members once a member's literal
+    ``type`` fails — so handing ``Msg`` raw dicts rejects every non-text block.
+    Resolving the concrete class by ``type`` first keeps tool calls, tool
+    results, thinking and media intact instead of degrading a turn to text.
+    """
+    global _BLOCK_TYPES
+    if not isinstance(item, dict):
+        return item
+    if _BLOCK_TYPES is None:
+        from agentscope.message import (
+            DataBlock,
+            HintBlock,
+            TextBlock,
+            ThinkingBlock,
+            ToolCallBlock,
+            ToolResultBlock,
+        )
+
+        _BLOCK_TYPES = {
+            "text": TextBlock,
+            "thinking": ThinkingBlock,
+            "hint": HintBlock,
+            "tool_call": ToolCallBlock,
+            "tool_result": ToolResultBlock,
+            "data": DataBlock,
+        }
+    block_cls = _BLOCK_TYPES.get(str(item.get("type") or ""))
+    if block_cls is None:
+        logger.debug("scroll: unknown block type %r dropped", item.get("type"))
+        return None
+    try:
+        return block_cls.model_validate(item)
+    except Exception:  # noqa: BLE001 - skip a block rather than the whole row
+        logger.debug(
+            "scroll: could not rebuild %s block", item.get("type"),
+            exc_info=True,
+        )
+        return None
+
+
+def _row_to_msg(row: sqlite3.Row) -> Msg | None:
+    """Rebuild one durable row into a ``Msg`` for the transcript view.
+
+    ``blocks`` is the faithful copy of the turn's content (each block's
+    ``model_dump``), so it wins over the flattened ``content`` text, which has
+    already lost tool calls and media. A row with no usable content — or one
+    that fails to parse at all — is dropped rather than raising, so a single
+    bad row cannot blank an entire conversation.
+    """
+    from agentscope.message import Msg
+
+    role = (row["role"] or "assistant").strip() or "assistant"
+    raw_blocks = _loads(row["blocks"])
+    content: list[Any] = []
+    if isinstance(raw_blocks, list):
+        content = [
+            block
+            for block in (_coerce_block(item) for item in raw_blocks)
+            if block is not None
+        ]
+    if not content:
+        fallback = _coerce_block({"type": "text", "text": row["content"] or ""})
+        if fallback is None:
+            return None
+        content = [fallback]
+    metadata = _loads(row["metadata"]) or {}
+    try:
+        return Msg(
+            name=row["name"] or role,
+            role=role,
+            content=content,
+            metadata=metadata if isinstance(metadata, dict) else {},
+        )
+    except Exception:  # noqa: BLE001 - one bad row must not break the read
+        logger.debug(
+            "scroll: could not rebuild history row seq=%s", row["seq"],
+            exc_info=True,
+        )
+        return None

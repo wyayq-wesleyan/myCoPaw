@@ -418,6 +418,43 @@ async def clear_chat_project_dir(
 # ----- Existing CRUD endpoints -----
 
 
+def _load_durable_transcript(
+    workspace: Any,
+    chat_spec: Any,
+) -> list[Msg] | None:
+    """Return the session's full durable transcript, or ``None`` if unavailable.
+
+    Only the Scroll context strategy keeps one; for any other strategy (or a
+    workspace whose history is missing/unreadable) the caller falls back to the
+    live window. Blocking on SQLite, so callers dispatch it to a thread.
+    """
+    try:
+        from ...agents.context.scroll.history import HistoryStore
+        from ...config.config import load_agent_config
+
+        lcc = load_agent_config(workspace.agent_id).running.light_context_config
+        if getattr(lcc, "strategy", "native") != "scroll":
+            return None
+        db_path = Path(workspace.workspace_dir) / lcc.scroll_config.db_filename
+        if not db_path.is_file():
+            return None
+        store = HistoryStore(db_path)
+        try:
+            return store.load_session_messages(
+                chat_spec.session_id,
+                getattr(workspace, "agent_id", None),
+            )
+        finally:
+            store.close()
+    except Exception:  # noqa: BLE001 - never fail a read over the transcript
+        logger.debug(
+            "Could not read the durable transcript for chat %s",
+            getattr(chat_spec, "id", "?"),
+            exc_info=True,
+        )
+        return None
+
+
 @router.get("/{chat_id}", response_model=ChatHistory)
 async def get_chat(
     chat_id: str,
@@ -476,6 +513,23 @@ async def get_chat(
     status = await workspace.task_tracker.get_status(chat_id)
     if not state:
         return ChatHistory(messages=[], status=status)
+
+    # Prefer the durable transcript over the live context window. Scroll evicts
+    # older turns from the window as it fills, so returning the window made the
+    # console drop every evicted turn: the right-hand anchor list shrank during
+    # a long conversation and "jump to top" landed mid-session even though the
+    # stored name, data and messages were all intact. The window remains the
+    # fallback for non-Scroll strategies and unreadable history.
+    durable = await run_sync_io(
+        _load_durable_transcript,
+        workspace,
+        chat_spec,
+    )
+    if durable:
+        return ChatHistory(
+            messages=agentscope_msg_to_message(durable),
+            status=status,
+        )
 
     agent_raw = state.get("agent", {})
     memories: list[Msg] = []
