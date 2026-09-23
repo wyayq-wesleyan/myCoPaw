@@ -176,3 +176,54 @@ def test_durable_read_precedes_the_missing_state_early_return() -> None:
 
     source = inspect.getsource(chats_api.get_chat)
     assert source.index("_load_durable_transcript") < source.index("if not state:")
+
+
+def test_oversized_tool_results_are_capped() -> None:
+    """A tool result must not dominate the transcript response.
+
+    Returning the whole durable transcript made the payload unbounded: tool
+    outputs are routinely tens of KB, so 500 such turns produced a 19MB
+    response that the console had to download and parse (measured). The
+    transcript only needs enough to recognise the call.
+    """
+    from qwenpaw.agents.context.scroll.history import (
+        _TRANSCRIPT_TOOL_RESULT_MAX_CHARS,
+        _TRANSCRIPT_TRUNCATED_MARK,
+        _row_to_msg,
+    )
+
+    huge = "X" * 200_000
+    blocks = (
+        '[{"type": "tool_call", "id": "c1", "name": "read_file",'
+        ' "input": "{}"},'
+        ' {"type": "tool_result", "id": "c1", "name": "read_file",'
+        f' "output": [{{"type": "text", "text": "{huge}"}}],'
+        ' "state": "success"}]'
+    )
+    msg = _row_to_msg(_row(role="assistant", blocks=blocks, content=""))
+
+    assert msg is not None
+    # ``get_text_content()`` deliberately ignores tool results, so assert on the
+    # block's own output.
+    results = [b for b in msg.content if getattr(b, "type", None) == "tool_result"]
+    assert results, "the tool result block was dropped"
+    rendered = results[0].output[0].text
+    assert len(rendered) < 20_000, f"tool output was not capped ({len(rendered)})"
+    assert _TRANSCRIPT_TRUNCATED_MARK.strip() in rendered
+    # The call itself must survive so the card still has something to show.
+    assert any(getattr(b, "type", None) == "tool_call" for b in msg.content)
+
+
+def test_normal_sized_tool_results_are_untouched() -> None:
+    """Small results must not be altered, or cards would lose their content."""
+    from qwenpaw.agents.context.scroll.history import _row_to_msg
+
+    blocks = (
+        '[{"type": "tool_result", "id": "c1", "name": "read_file",'
+        ' "output": [{"type": "text", "text": "short output"}],'
+        ' "state": "success"}]'
+    )
+    msg = _row_to_msg(_row(role="assistant", blocks=blocks, content=""))
+    assert msg is not None
+    results = [b for b in msg.content if getattr(b, "type", None) == "tool_result"]
+    assert results[0].output[0].text == "short output"

@@ -820,6 +820,49 @@ def _loads(value: Any) -> Any:
 
 _BLOCK_TYPES: dict[str, Any] | None = None
 
+# Transcript payload budget for one tool result.
+#
+# Returning the whole durable transcript (instead of only the live window) is
+# required for navigation, but tool outputs are unbounded: it is normal for one
+# result to hold tens of KB, so 500 such turns produced a 19MB response and a
+# 1000-turn session tens of MB — which the console then had to download and
+# parse. The transcript view only needs enough to recognise the call; the full
+# text stays in ``history.db`` and is recoverable through the recall tools.
+_TRANSCRIPT_TOOL_RESULT_MAX_CHARS = 4000
+_TRANSCRIPT_TRUNCATED_MARK = "\n\n…[内容过长已截断，完整内容可用 recall 工具获取]"
+
+
+def _truncate_tool_result(block: Any) -> Any:
+    """Cap one tool result's rendered output for the transcript view.
+
+    ``output`` is either a string or a list of blocks; both shapes are bounded
+    so no single result can dominate the response.
+    """
+    limit = _TRANSCRIPT_TOOL_RESULT_MAX_CHARS
+    output = getattr(block, "output", None)
+    if isinstance(output, str):
+        if len(output) > limit:
+            block.output = output[:limit] + _TRANSCRIPT_TRUNCATED_MARK
+        return block
+    if isinstance(output, list):
+        for item in output:
+            text = (
+                item.get("text")
+                if isinstance(item, dict)
+                else getattr(item, "text", None)
+            )
+            if not isinstance(text, str) or len(text) <= limit:
+                continue
+            truncated = text[:limit] + _TRANSCRIPT_TRUNCATED_MARK
+            if isinstance(item, dict):
+                item["text"] = truncated
+            else:
+                try:
+                    item.text = truncated
+                except Exception:  # noqa: BLE001 - frozen block, leave as is
+                    pass
+    return block
+
 
 def _coerce_block(item: Any) -> Any:
     """Turn one stored block dict into its typed AgentScope block.
@@ -829,6 +872,8 @@ def _coerce_block(item: Any) -> Any:
     ``type`` fails — so handing ``Msg`` raw dicts rejects every non-text block.
     Resolving the concrete class by ``type`` first keeps tool calls, tool
     results, thinking and media intact instead of degrading a turn to text.
+
+    Tool results are additionally capped: see ``_TRANSCRIPT_TOOL_RESULT_MAX_CHARS``.
     """
     global _BLOCK_TYPES
     if not isinstance(item, dict):
@@ -851,18 +896,22 @@ def _coerce_block(item: Any) -> Any:
             "tool_result": ToolResultBlock,
             "data": DataBlock,
         }
-    block_cls = _BLOCK_TYPES.get(str(item.get("type") or ""))
+    block_type = str(item.get("type") or "")
+    block_cls = _BLOCK_TYPES.get(block_type)
     if block_cls is None:
-        logger.debug("scroll: unknown block type %r dropped", item.get("type"))
+        logger.debug("scroll: unknown block type %r dropped", block_type)
         return None
     try:
-        return block_cls.model_validate(item)
+        block = block_cls.model_validate(item)
     except Exception:  # noqa: BLE001 - skip a block rather than the whole row
         logger.debug(
-            "scroll: could not rebuild %s block", item.get("type"),
+            "scroll: could not rebuild %s block", block_type,
             exc_info=True,
         )
         return None
+    if block_type == "tool_result":
+        block = _truncate_tool_result(block)
+    return block
 
 
 def _row_to_msg(row: sqlite3.Row) -> Msg | None:
