@@ -1588,7 +1588,23 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
     const index = this.sessionList.findIndex((s) => s.id === metadata.id);
 
     if (index > -1) {
-      this.sessionList[index] = { ...this.sessionList[index], ...metadata };
+      const current = this.sessionList[index] as ExtendedSession;
+      // The SDK renames a session to the raw first message whenever its own
+      // message array is still empty (useChatController -> updateSessionName,
+      // "更新会话名称（仅在第一次消息时）"). Opening an existing chat and
+      // sending before its history has hydrated hits that branch, which
+      // discarded the name the user set in session management.
+      //
+      // A session that already exists on the backend owns its name: the only
+      // legitimate rename is the explicit one, which calls chatApi.updateChat
+      // and then re-reads the list from the server. So drop an incoming name
+      // for any resolved session. Unresolved local sessions keep it, because
+      // that is the placeholder a brand-new chat legitimately needs.
+      const resolved = Boolean(current.realId) || !isLocalTimestamp(current.id);
+      if (resolved && metadata.name !== undefined) {
+        delete (metadata as Record<string, unknown>).name;
+      }
+      this.sessionList[index] = { ...current, ...metadata };
     } else {
       // Session not found by id — createSession now always unshifts the
       // session before returning, so this branch should not occur in normal

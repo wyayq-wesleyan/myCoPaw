@@ -186,10 +186,21 @@ class ChatManager:
         self,
         chat_id: str,
         patch: ChatUpdate,
+        *,
+        lock_name: bool = False,
     ) -> Optional[ChatSpec]:
-        """Merge a partial update into the latest persisted chat spec."""
+        """Merge a partial update into the latest persisted chat spec.
+
+        ``lock_name`` marks this as a user-driven rename, which locks the name
+        against automated naming. Only the user-facing API passes it; the
+        background title generator must not, or it would lock its own output.
+        """
         async with self._lock:
-            return await self._patch_locked(chat_id, patch)
+            return await self._patch_locked(
+                chat_id,
+                patch,
+                lock_name=lock_name,
+            )
 
     async def patch_chat_if_name_matches(
         self,
@@ -212,6 +223,10 @@ class ChatManager:
             existing = await self._repo.get_chat(chat_id)
             if existing is None or existing.name != expected_name:
                 return None
+            # A user-chosen name is final. Automated naming must not touch it
+            # even if the placeholder it was generated for is still current.
+            if existing.name_locked:
+                return None
             return await self._patch_locked(chat_id, patch, existing=existing)
 
     async def _patch_locked(
@@ -220,6 +235,7 @@ class ChatManager:
         patch: ChatUpdate,
         *,
         existing: Optional[ChatSpec] = None,
+        lock_name: bool = False,
     ) -> Optional[ChatSpec]:
         """Internal patch helper. Caller must hold ``self._lock``."""
         if existing is None:
@@ -232,6 +248,10 @@ class ChatManager:
             exclude_unset=True,
         )
         merged = existing.model_copy(update=updates)
+        if lock_name and "name" in updates:
+            # The user named this chat: freeze the name against every
+            # automated writer from now on.
+            merged.name_locked = True
         merged.updated_at = datetime.now(timezone.utc)
         await self._repo.upsert_chat(merged)
         return merged

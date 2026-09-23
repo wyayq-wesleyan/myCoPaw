@@ -60,6 +60,15 @@ class ChatSpec(BaseModel):
         default=False,
         description="Whether the chat is pinned to the top",
     )
+    name_locked: bool = Field(
+        default=False,
+        description=(
+            "Set once the user names this chat themselves. Automated naming "
+            "(LLM title generation, and the console's truncated-first-message "
+            "placeholder) must never change a locked name; only a later "
+            "explicit rename by the user may."
+        ),
+    )
     archived_at: Optional[datetime] = Field(
         default=None,
         description="When the chat was archived; None means active",

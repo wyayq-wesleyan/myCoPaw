@@ -520,7 +520,10 @@ async def update_chat(
     Raises:
         HTTPException: If chat not found (404)
     """
-    updated = await mgr.patch_chat(chat_id, spec)
+    # lock_name: this is the user renaming the chat themselves, so the name
+    # becomes final. Everything the user can see (chat drawer, session
+    # management) renames through this endpoint, and none of it is automatic.
+    updated = await mgr.patch_chat(chat_id, spec, lock_name=True)
     if updated is None:
         raise HTTPException(
             status_code=404,
