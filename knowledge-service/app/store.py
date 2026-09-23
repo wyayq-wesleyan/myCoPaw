@@ -14,6 +14,33 @@ from psycopg.types.json import Jsonb
 
 logger = logging.getLogger("knowledge-store")
 
+# Statements are logged through their own logger so the SQL stream can be turned
+# on or off independently of the service's own logs.
+sql_logger = logging.getLogger("knowledge-sql")
+
+
+class LoggingConnection(psycopg.Connection):
+    """A connection that logs the statements executed through it.
+
+    ``psycopg`` 3 logs connection attempts and transactions but **not** the SQL
+    it runs, at any level, so the statement text has to come from here. Overriding
+    ``execute`` catches both explicit calls on the connection and statements
+    issued through ``connection.cursor()`` (a cursor's ``execute`` delegates to
+    the connection), which is a single choke point for every query in this module.
+
+    Parameters are logged only at DEBUG: at INFO they would bury the statement
+    under large ``IN``/batch parameter lists.
+    """
+
+    def execute(self, query, params=None, **kwargs):
+        if sql_logger.isEnabledFor(logging.INFO):
+            compact = " ".join(str(query).split())
+            if sql_logger.isEnabledFor(logging.DEBUG):
+                sql_logger.info("SQL: %s | params=%s", compact, params)
+            else:
+                sql_logger.info("SQL: %s", compact)
+        return super().execute(query, params, **kwargs)
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -45,6 +72,10 @@ class Store:
                 min_size=self.POOL_MIN_SIZE,
                 max_size=self.POOL_MAX_SIZE,
                 open=True,
+                # Both pooled and direct connections must log their statements;
+                # passing the class here covers the pool, and ``_connect`` below
+                # covers the no-pool fallback.
+                connection_class=LoggingConnection,
                 kwargs={"row_factory": dict_row},
                 name="knowledge-store-pool",
             )
@@ -80,7 +111,9 @@ class Store:
         """Return a connection context manager; pooled when available."""
         if self._pool is not None:
             return self._pool.connection()
-        return psycopg.connect(self.database_url, row_factory=dict_row)
+        return LoggingConnection.connect(
+            self.database_url, row_factory=dict_row,
+        )
 
     def _init_db(self) -> None:
         statements = [

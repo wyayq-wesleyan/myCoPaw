@@ -2186,6 +2186,53 @@ except OSError:
   回退验证：改回裸 `os.remove` 后目录确实残留、2 例精确失败。
 - 回归：`tests/unit/app` 失败清单与改动前一致，无新增失败。
 
+### 9.32 知识服务日志缺失：api/worker/lightrag 未挂载日志，SQL 也无法打印
+
+**现象**：知识服务出问题时看不到日志——三个容器（`knowledge-api`、
+`knowledge-worker`、`lightrag`）都没有日志挂载，只能靠 `docker logs`。而容器一旦重建
+（每次更新代码就是重建），旧日志随之消失；json-file 驱动还会滚动覆盖。等于事后无据可查。
+
+**修复 A：三个服务都写宿主机日志文件**
+
+- 新增 `knowledge-service/app/logging_setup.py`，api 与 worker 共用：**同时**输出到
+  stdout（`docker logs` 仍然可用）和 `<KNOWLEDGE_LOG_DIR>/<service>.log`
+  （`knowledge-api.log` / `knowledge-worker.log`），轮转 20MB × 5（与主应用
+  supervisor 一致，避免宿主机日志无限增长）。
+- 挂载：三个服务各自 `- ${KNOWLEDGE_HOST_LOG_DIR:-./data/logs}:/var/log/knowledge`。
+  **刻意独立于 `./data`**——`data` 目录在重部署时会被替换，日志不能和它放一起。
+- **LightRAG 无需改代码**：它自己的 `setup_logger` 就支持 `LOG_DIR` 环境变量并写入
+  `lightrag.log`（实测确认，含 `RotatingFileHandler`），只要注入 `LOG_DIR` 并挂载即可。
+- 目录不可写时**降级为仅控制台**并告警，不会导致服务起不来。
+- uvicorn 的日志器 `propagate=False` 且自装 handler，因此在 lifespan 里把文件 handler
+  附加到 `uvicorn`/`uvicorn.error`/`uvicorn.access`，请求日志同样落盘。
+
+**修复 B：打印实际执行的 SQL**
+
+`psycopg` 3 **在任何级别都不打印执行的 SQL**（只打印连接尝试和事务），所以"看看到底
+跑了什么语句"原本不可能。新增 `store.LoggingConnection(psycopg.Connection)`，覆写
+`execute` 把语句经 `knowledge-sql` 日志器输出；池化与直连两条路径都走它
+（`connection_class=` + `LoggingConnection.connect()`），因此无论哪条路径的查询都会打印。
+
+- 开关 `KNOWLEDGE_SQL_LOG`（默认 `true`），可独立于服务自身日志级别控制；
+- INFO 只打语句本身，**参数仅在 DEBUG 级别附带**——否则大 `IN`/批量参数会淹没语句。
+
+**验证**：
+
+- 真实镜像内跑 api：宿主机 `/tmp/klog/knowledge-api.log` 生成，且能看到
+  `CREATE TABLE IF NOT EXISTS ...`、`ALTER TABLE ... ADD COLUMN`、
+  `SELECT count(*) AS n FROM documents` 等语句。
+- worker 生成独立的 `knowledge-worker.log`；`KNOWLEDGE_SQL_LOG=false` 时日志里
+  `SQL:` 行数为 0，服务日志仍正常。
+- LightRAG：实测 `setup_logger` 在 `LOG_DIR` 生成 `lightrag.log` 并写入内容。
+- `docker compose config` 确认三处挂载与四个变量均已解析。
+- 新增 14 例单测（`tests/unit/knowledge_service/test_logging_setup.py`）：文件生成、
+  双服务分文件、轮转上限、不可写降级、uvicorn handler 附加且幂等、SQL 开关、以及
+  锁定「两条连接路径都走日志类」「compose 必须有三处挂载」的静态守卫。
+  回退验证：移除连接类与挂载后 3 例精确失败。
+
+**部署提示**：`./data/logs` 会在首次启动时自动创建。轮转上限决定占用上限：
+`knowledge-api.log` + `knowledge-worker.log` + `lightrag.log` 各 20MB × 5 ≈ 300MB。
+
 ## 12. 知识服务部署
 
 ### 12.1 容器信息

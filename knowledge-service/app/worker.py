@@ -8,10 +8,12 @@ import traceback
 import uuid
 
 from .config import Settings
+from .logging_setup import configure_logging
 from .processing import process_document
 from .store import Store
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s knowledge-worker %(message)s")
+# Console + rotating file under KNOWLEDGE_LOG_DIR (bind-mounted to the host).
+configure_logging("knowledge-worker")
 logger = logging.getLogger("knowledge-worker")
 
 

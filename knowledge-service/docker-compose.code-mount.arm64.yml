@@ -18,6 +18,9 @@ services:
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      # Log files land here; the host directory below is mounted over it.
+      KNOWLEDGE_LOG_DIR: /var/log/knowledge
+      KNOWLEDGE_SQL_LOG: "${KNOWLEDGE_SQL_LOG:-true}"
     ports:
       - "127.0.0.1:${KNOWLEDGE_PORT:-18100}:18100"
     extra_hosts:
@@ -26,6 +29,8 @@ services:
       - ./app:/opt/huizhi-knowledge/app:ro
       - ./scripts:/opt/huizhi-knowledge/scripts:ro
       - ./data:/data
+      # Persist logs on the host, like the main application's QWENPAW_LOG_DIR.
+      - ${KNOWLEDGE_HOST_LOG_DIR:-./data/logs}:/var/log/knowledge
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "18100"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18100/health', timeout=3)"]
@@ -50,12 +55,15 @@ services:
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      KNOWLEDGE_LOG_DIR: /var/log/knowledge
+      KNOWLEDGE_SQL_LOG: "${KNOWLEDGE_SQL_LOG:-true}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./app:/opt/huizhi-knowledge/app:ro
       - ./scripts:/opt/huizhi-knowledge/scripts:ro
       - ./data:/data
+      - ${KNOWLEDGE_HOST_LOG_DIR:-./data/logs}:/var/log/knowledge
     command: ["python", "-m", "app.worker"]
 
   lightrag:
@@ -84,6 +92,9 @@ services:
       WORKING_DIR: /data/lightrag
       TIKTOKEN_CACHE_DIR: /data/lightrag/tiktoken_cache
       LIGHTRAG_API_KEY: "${LIGHTRAG_API_KEY:-}"
+      # LightRAG's own setup_logger writes lightrag.log into LOG_DIR.
+      LOG_DIR: /var/log/knowledge
+      LOG_LEVEL: "${KNOWLEDGE_LOG_LEVEL:-INFO}"
     command: ["python", "-m", "lightrag.api.lightrag_server", "--host", "0.0.0.0", "--port", "9621"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -92,6 +103,7 @@ services:
     volumes:
       - ./data/lightrag:/data/lightrag
       - ./data/lightrag-input:/data/lightrag-input
+      - ${KNOWLEDGE_HOST_LOG_DIR:-./data/logs}:/var/log/knowledge
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9621/health', timeout=3)"]
       interval: 15s

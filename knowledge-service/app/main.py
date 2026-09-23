@@ -19,16 +19,15 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .lightrag_bridge import LightRAGBridge
+from .logging_setup import attach_to_uvicorn, configure_logging
 from .parsers import extract_text_from_file
 from .providers import ModelClient
 from .store import Store
 
 settings = Settings.from_env()
 settings.ensure_dirs()
-logging.basicConfig(
-    level=getattr(logging, os.environ.get("KNOWLEDGE_LOG_LEVEL", "INFO").upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s knowledge-api %(message)s",
-)
+# Console + rotating file under KNOWLEDGE_LOG_DIR (bind-mounted to the host).
+_log_file_handler = configure_logging("knowledge-api")
 logger = logging.getLogger("knowledge-api")
 store = Store(settings.database_url)
 lightrag = LightRAGBridge(settings)
@@ -123,6 +122,10 @@ class DocumentDetailRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.ensure_dirs()
+    # uvicorn installs its own non-propagating handlers during startup, which
+    # happens before this lifespan runs, so attach the file handler now to get
+    # the request logs onto the host as well.
+    attach_to_uvicorn(_log_file_handler)
     yield
 
 
