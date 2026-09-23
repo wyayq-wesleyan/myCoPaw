@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import psycopg2
@@ -86,6 +87,40 @@ def user_upload_dir(username: str) -> str:
         name.encode("utf-8"),
     ).hexdigest()[:24]
     return os.path.join(UPLOAD_DIR, safe)
+
+
+def cleanup_staged_file(file_path: str | os.PathLike) -> None:
+    """Remove a staged import file and its now-empty per-job directory.
+
+    Every upload is staged as ``<UPLOAD_DIR>/<account>/<task_id>/<filename>``, so
+    the job owns that directory outright. Only the file used to be deleted,
+    which left one empty directory behind per import and made the staging tree
+    grow with every upload. The directory is removed with ``rmdir`` and only
+    after the file is gone, so a directory that still holds something — a
+    retry's copy, for instance — is left alone.
+    """
+    path = Path(file_path)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning(
+            "Could not remove staged import file %s", path, exc_info=True,
+        )
+        return
+
+    try:
+        root = Path(UPLOAD_DIR).resolve()
+        task_dir = path.parent.resolve()
+    except OSError:
+        return
+    # Expect exactly <root>/<account>/<task_id>. The two-level check means this
+    # can never walk up into an account directory or the uploads root itself.
+    if task_dir.parent.parent != root:
+        return
+    try:
+        task_dir.rmdir()  # succeeds only while the directory is empty
+    except OSError:
+        pass
 
 
 def _get_pool() -> ThreadedConnectionPool:

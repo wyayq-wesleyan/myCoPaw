@@ -30,6 +30,7 @@ from .store import (
     SYSTEM_TABLE_REGISTRY,
     _get_conn,
     _put_conn,
+    cleanup_staged_file,
 )
 
 logger = logging.getLogger(__name__)
@@ -529,12 +530,12 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                 conn.commit()
         finally:
             put_sys_conn(conn)
-        try:
-            os.remove(file_path)
-        except OSError:
-            pass
+        cleanup_staged_file(file_path)
     except Exception as e:
         log_excerpt = traceback.format_exc()
+        # Default to "still owed a retry" so an error while recording the failure
+        # never causes the staged file to be deleted before it is last needed.
+        retry = True
         conn = get_sys_conn()
         try:
             with conn.cursor() as cur:
@@ -554,6 +555,11 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                 conn.commit()
         finally:
             put_sys_conn(conn)
+        if not retry:
+            # Retries are exhausted and nothing will ever read this file again —
+            # the recovery scan only requeues ``pending`` jobs. Without this the
+            # staged upload (up to 10GB) stayed on disk for good.
+            cleanup_staged_file(file_path)
 
 
 async def _run_import_job_bounded(
