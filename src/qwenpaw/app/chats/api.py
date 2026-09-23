@@ -511,8 +511,6 @@ async def get_chat(
                 exc_info=True,
             )
     status = await workspace.task_tracker.get_status(chat_id)
-    if not state:
-        return ChatHistory(messages=[], status=status)
 
     # Prefer the durable transcript over the live context window. Scroll evicts
     # older turns from the window as it fills, so returning the window made the
@@ -520,6 +518,11 @@ async def get_chat(
     # a long conversation and "jump to top" landed mid-session even though the
     # stored name, data and messages were all intact. The window remains the
     # fallback for non-Scroll strategies and unreadable history.
+    #
+    # This runs BEFORE the missing-state early return on purpose: a session
+    # whose state file was rotated away or lost across a restart still has its
+    # durable transcript, and returning "no messages" for it would hide a
+    # conversation that is fully intact on disk.
     durable = await run_sync_io(
         _load_durable_transcript,
         workspace,
@@ -530,6 +533,9 @@ async def get_chat(
             messages=agentscope_msg_to_message(durable),
             status=status,
         )
+
+    if not state:
+        return ChatHistory(messages=[], status=status)
 
     agent_raw = state.get("agent", {})
     memories: list[Msg] = []
