@@ -131,7 +131,15 @@ export const dataAnalysisApi = {
     apiPost<{ ok: boolean; deleted: number }>("/data-tables/batch-delete", { ids }),
 
   previewTable: (id: string, limit: number = 100) =>
-    apiGet<{ columns: string[]; rows: Record<string, unknown>[]; total: number }>(`/data-tables/${id}/preview`, { limit }),
+    apiGet<{
+      columns: string[];
+      rows: Record<string, unknown>[];
+      total: number;
+      // Aligned to `columns` by name on the backend. The real table's `id`
+      // primary key has no registry entry, so pairing these two lists by index
+      // mislabelled every header.
+      column_meta?: Array<{ name: string; comment: string; type: string; is_primary_key: boolean }>;
+    }>(`/data-tables/${id}/preview`, { limit }),
 
   importFiles: (tableId: string, files: File[]) =>
     apiUpload(`/data-tables/${tableId}/import`, files),

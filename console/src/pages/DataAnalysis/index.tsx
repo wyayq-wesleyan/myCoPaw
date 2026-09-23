@@ -104,7 +104,16 @@ export default function DataAnalysisPage() {
   const [jobsFilterStatus, setJobsFilterStatus] = useState<string | undefined>(undefined);
 
   // Preview (inline in upload area)
-  const [previewData, setPreviewData] = useState<{ columns: string[]; rows: Record<string, unknown>[]; total: number; initialized?: boolean; column_comments?: string[] } | null>(null);
+  const [previewData, setPreviewData] = useState<{
+    columns: string[];
+    rows: Record<string, unknown>[];
+    total: number;
+    initialized?: boolean;
+    // Metadata aligned to `columns` by the backend (name-matched). Preferred over
+    // pairing with `previewColumns` by index, which ignored the id primary key
+    // and shifted every header label by one.
+    column_meta?: Array<{ name: string; comment: string; type: string; is_primary_key: boolean }>;
+  } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewColumns, setPreviewColumns] = useState<Array<{ comment: string; column_name: string | null; type: string | null }>>([]);
 
@@ -260,6 +269,20 @@ export default function DataAnalysisPage() {
     } finally {
       setCreating(false);
     }
+  };
+
+  // Header for one preview column. Prefers the backend's name-matched metadata;
+  // if it is absent, look the description up by column NAME and only fall back
+  // to positional pairing last (that pairing is what mislabelled every column).
+  const previewTitle = (name: string, idx: number): string => {
+    const fromMeta = previewData?.column_meta?.find((m) => m.name === name);
+    if (fromMeta) {
+      if (fromMeta.is_primary_key && !fromMeta.comment) return `主键 (${name})`;
+      return fromMeta.comment ? `${fromMeta.comment} (${name})` : name;
+    }
+    const byName = previewColumns.find((c) => c.column_name === name);
+    const comment = byName?.comment ?? previewColumns[idx]?.comment;
+    return comment ? `${comment} (${name})` : name;
   };
 
   const handleImport = async (file: File) => {
@@ -713,8 +736,7 @@ export default function DataAnalysisPage() {
                     </div>
                     <Table
                       columns={previewData.columns.map((c, idx) => {
-                        const comment = previewColumns[idx]?.comment;
-                        const title = comment ? `${comment} (${c})` : c;
+                        const title = previewTitle(c, idx);
                         return {
                           title,
                           dataIndex: c,
@@ -727,9 +749,7 @@ export default function DataAnalysisPage() {
                       dataSource={previewData.rows.map((r, i) => ({ ...r, _key: i }))}
                       rowKey="_key"
                       scroll={{ x: previewData.columns.reduce((sum, c, idx) => {
-                        const comment = previewColumns[idx]?.comment;
-                        const title = comment ? `${comment} (${c})` : c;
-                        return sum + Math.max(120, title.length * 10 + 40);
+                        return sum + Math.max(120, previewTitle(c, idx).length * 10 + 40);
                       }, 0), y: 300 }}
                       pagination={false}
                       size="small"

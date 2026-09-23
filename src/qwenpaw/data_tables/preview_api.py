@@ -38,8 +38,32 @@ def _preview_table_sync(table_id: str, username: str, limit: int) -> dict:
             cur.execute(f'SELECT * FROM "{table["table_name"]}" LIMIT %s', (limit,))
             col_names = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
+        # Match descriptions to physical columns **by name**, never by position.
+        # The real table carries the ``id`` primary key first, which the registry
+        # does not describe, so zipping the two lists by index shifted every
+        # label by one: the ``id`` column showed the first user description, each
+        # later label borrowed its neighbour's, and the last column lost its
+        # label entirely. The registry only records a name after the first
+        # import, so an unknown name has no description rather than borrowing one.
+        described = {
+            str(col.get("column_name")): col
+            for col in (table["columns"] or [])
+            if col.get("column_name")
+        }
+        column_meta = []
+        for name in col_names:
+            meta = described.get(name) or {}
+            column_meta.append(
+                {
+                    "name": name,
+                    "comment": meta.get("comment") or "",
+                    "type": meta.get("type") or "",
+                    "is_primary_key": name == "id",
+                },
+            )
         return {
             "columns": col_names,
+            "column_meta": column_meta,
             "rows": [dict(zip(col_names, row)) for row in rows],
             "total": table["row_count"] or 0,
             "initialized": True,
