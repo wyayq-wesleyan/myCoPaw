@@ -2007,6 +2007,69 @@ Neo4j 等集群时可直接使用；但产品当前**没有**这两类功能的�
 不是新故障。生产 Compose 已把它设为 120 秒（`QWENPAW_LLM_STREAM_FIRST_CONTENT_TIMEOUT`）
 和 180 秒（`QWENPAW_LLM_STREAM_IDLE_TIMEOUT`），自建模型慢时应按实际首内容时间放宽。
 
+### 9.28 数据分析导入：9 个文件产生 81 个任务，且两个任务永远卡住
+
+用户上传 9 个文件，任务列表却出现 81 个任务（正好 9×9），其中两个一直不结束。
+这一条实际由**四个独立缺陷**叠加而成，都已修复并逐一回退验证。
+
+**缺陷 1（主因，81 个任务的来源）：`beforeUpload` 按文件回调，却每次提交整批**
+
+`console/src/pages/DataAnalysis/index.tsx` 的 `beforeUpload={(file, fileList) => ...}`
+在多选时调用 `handleImportMultiple(fileList)`。Ant Design（rc-upload）对**每个文件各调用
+一次** `beforeUpload`，且每次都把**完整的** `fileList` 传进来
+（`rc-upload/es/AjaxUploader.js` 的 `uploadFiles` 对每个文件调用 `processFile(file, originFiles)`）。
+因此选择 N 个文件会提交整批 N 次 → **N×N 个任务**：9 个文件 = 81 个任务。
+
+**这不是新问题，知识空间早就踩过并已修复**（`Knowledge/index.tsx` 里留有注释
+「a 30-file selection can submit the same batch 30 times」，用 `uploadBatchGuard` 拦住）。
+数据分析页面漏了同样的守卫。修复方式与知识空间一致：批次守卫 ref，只有选择的第一次
+回调生效。守卫在任何 `await` 之前**同步**置位，因此同一 tick 内的兄弟回调都能看到它。
+
+**缺陷 2：恢复扫描崩溃 → 卡住的任务永远不重试**
+
+生产日志显示 `importer.py:525` 报 `NameError: name 'Path' is not defined`，
+每 60 秒一次。`importer.py` 用了 `Path(...)` 却从未 `import`——自 `f1231048`
+（「每用户独立库与大文件分块导入」）起就缺失，因为只在该扫描**确实查到行**时才触发，
+平时不显形。而这个扫描是**唯一**的重试入口：失败任务以 `pending` + 未来
+`next_retry_at` 落库，只能由它重新调度。它一崩，失败任务就永久停在那里——这正是
+「剩余两个任务一直执行不完」的原因。修复：补 `from pathlib import Path`，并给每行
+加独立容错（单行文件缺失/异常不再中断整轮扫描）。
+
+**缺陷 3：并发首次导入抢建表**
+
+导入任务通过 `asyncio.to_thread` 并发执行。表初次导入时每个任务都读到
+`initialized=false`，于是都执行 `CREATE TABLE`，除一个外全部失败于
+`duplicate key value violates unique constraint "pg_type_typname_nsp_index"`
+（表行类型重名）。修复：按表加 `threading.Lock`（跨线程必须用线程锁，asyncio 锁
+跨不了 to_thread），并在**锁内重新读取** registry 状态——锁外的旧值在别的任务先赢
+之后就已过期。赢家建表并写回 schema，其余走「复用已持久化 schema」分支。
+
+**缺陷 4：元数据连接池瞬时耗尽直接 500**
+
+`ThreadedConnectionPool.getconn` 在槽位占满时立刻抛 `PoolError`，而
+`_get_conn` 未做等待，导致并发稍高就返回 500「connection pool exhausted」。
+修复：改为有界等待（最长 10 秒，指数退避）。这是**尽力而为的抑制**，不是根治——
+元数据池上限仍是 10，真正的解法是提高上限或做请求侧排队。
+
+**验证**（真实浏览器 + 真实 API，非仅单测）：
+
+- 修复前：浏览器选 9 个文件 → **81 个 POST**；修复后 → **9 个 POST / 9 个任务**，
+  全部完成、9 行入库。
+- 把两个卡住的任务 `next_retry_at` 清空，等 60 秒恢复扫描：两者都变 `completed`
+  （`attempts=2`），恢复扫描报错计数为 0。
+- 15 文件并发压测：修复前 11 成功 / 4 个 500；修复后 **15/15 成功**，
+  15 个任务全部完成、15 行入库。
+- `tests/unit/data_tables/test_concurrent_initialization.py`（新增 7 例）覆盖并发建表
+  只发生一次、未初始化/空 schema 必须要求建表、恢复扫描可容错。回退验证：移除
+  `Path` 导入后恢复相关 2 例精确复现 `NameError`；移除建表锁后并发用例失败。
+- 回归：`tests/unit/data_tables`、`tests/unit/app` 失败清单与改动前一致，无新增失败。
+  另对 `src/qwenpaw` 全量跑 pyflakes，未定义名仅此一处，已清零。
+
+**附带修复**：`data_tables/store.py` 的导入暂存目录原本硬编码
+`/app/working/data_uploads`，无视 `QWENPAW_WORKING_DIR`，是全部存储位置中唯一不跟随
+工作目录覆盖的路径（迁到别处就直接写失败）。已改为 `WORKING_DIR / "data_uploads"`，
+与 `inbox_trace_store` 等保持一致。
+
 ## 12. 知识服务部署
 
 ### 12.1 容器信息

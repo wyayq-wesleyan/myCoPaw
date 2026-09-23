@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
   Badge,
@@ -83,6 +83,9 @@ export default function DataAnalysisPage() {
   // Import
   const [importTableId, setImportTableId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  // Ant Design fires beforeUpload once per selected file with the full list;
+  // without this guard a selection is submitted once per file.
+  const importBatchGuard = useRef(false);
 
   // Jobs
   const [jobs, setJobs] = useState<DataImportJob[]>([]);
@@ -596,8 +599,22 @@ export default function DataAnalysisPage() {
                 multiple
                 showUploadList={false}
                 beforeUpload={(file, fileList) => {
-                  if (fileList.length <= 1) return handleImport(file);
-                  return handleImportMultiple(fileList);
+                  // Ant Design invokes beforeUpload once per selected file and
+                  // passes the *whole* list to every call, so uploading the
+                  // list each time submits an N-file selection N times (9
+                  // files produced 81 import jobs). Only the first callback of
+                  // a selection may run; the guard is set synchronously, before
+                  // any await, so the sibling calls in the same tick see it.
+                  if (importBatchGuard.current) return false;
+                  importBatchGuard.current = true;
+                  const batch = fileList.slice();
+                  const run = batch.length <= 1
+                    ? handleImport(file)
+                    : handleImportMultiple(batch);
+                  void Promise.resolve(run).finally(() => {
+                    importBatchGuard.current = false;
+                  });
+                  return false;
                 }}
                 disabled={importing}
               >

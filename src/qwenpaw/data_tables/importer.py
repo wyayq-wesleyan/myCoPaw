@@ -6,9 +6,11 @@ import logging
 import os
 import re
 import traceback
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from itertools import chain
+from pathlib import Path
 from typing import Any, Iterator
 
 import pandas as pd
@@ -44,6 +46,29 @@ _IMPORT_MAX_CONCURRENCY = max(
 )
 _import_semaphore: asyncio.Semaphore | None = None
 _scheduled_jobs: set[str] = set()
+
+# Serializes the first-import "decide the schema and CREATE TABLE" step per
+# table. Import jobs run in worker threads (``asyncio.to_thread``), so a
+# ``threading.Lock`` is required — an asyncio lock would not span them.
+#
+# Without it, dropping several files onto a brand-new table makes every job read
+# ``initialized=false`` and then all of them run ``CREATE TABLE`` concurrently.
+# The losers fail with a duplicate-object error on the table's row type
+# (``pg_type_typname_nsp_index``) even though the import itself is valid. Whoever
+# wins the lock initializes the table; the rest fall through to the branch that
+# reloads the persisted schema.
+_init_locks: dict[str, threading.Lock] = {}
+_init_locks_guard = threading.Lock()
+
+
+def _init_lock_for(table_id: str) -> threading.Lock:
+    """Return the creation lock for one table, creating it on first use."""
+    with _init_locks_guard:
+        lock = _init_locks.get(table_id)
+        if lock is None:
+            lock = threading.Lock()
+            _init_locks[table_id] = lock
+        return lock
 
 
 def _get_import_semaphore() -> asyncio.Semaphore:
@@ -262,6 +287,32 @@ def _create_real_table(hg_conn, table_name: str, col_names: list[str], df: pd.Da
     return dict(zip(col_names, types))
 
 
+def _load_persisted_schema(table_id: str) -> tuple[list[str], dict[str, str]] | None:
+    """Return the stored column names/types for a table, or ``None``.
+
+    ``None`` means the registry still reports this table as uninitialized, so
+    the caller must create the real table instead of reusing a schema.
+    """
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"SELECT initialized, columns FROM {SYSTEM_TABLE_REGISTRY} WHERE id=%s",
+                (table_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        _put_conn(conn)
+    if not row or not row["initialized"]:
+        return None
+    persisted = row["columns"] or []
+    col_names = [c["column_name"] for c in persisted]
+    types = {c["column_name"]: c["type"] for c in persisted}
+    if not col_names:
+        return None
+    return col_names, types
+
+
 def _batch_insert(hg_conn, table_name: str, col_names: list[str], df: pd.DataFrame, types: list[str], batch_size: int = 1000) -> tuple[int, list[dict]]:
     placeholders = ", ".join(["%s"] * len(col_names))
     # 必须对列名逐一双引号，否则 PG 会把 订单ID 这样的混合大小写列名
@@ -338,7 +389,6 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
             user_comments = [c.get("comment", "") for c in (table["columns"] or [])]
             db_name = table["db_name"]
             table_name = table["table_name"]
-            already_initialized = table["initialized"]
     finally:
         put_sys_conn(conn)
 
@@ -359,42 +409,44 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
         db_name = ensure_user_database(table["owner_username"]) if not db_name else db_name
         hg_conn = get_target_connection(db_name)
         try:
-            if not already_initialized:
-                col_names, comments = _process_file_headers(first_frame, user_comments, filename)
-                types = _create_real_table(hg_conn, table_name, col_names, first_frame, comments)
-                # persist real schema to registry
-                conn = get_sys_conn()
-                try:
-                    new_columns = []
-                    for i, cname in enumerate(col_names):
-                        new_columns.append({
-                            "comment": comments[i],
-                            "column_name": cname,
-                            "type": types[cname],
-                            "nullable": True,
-                            "is_primary_key": False,
-                        })
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            f"UPDATE {SYSTEM_TABLE_REGISTRY} SET columns=%s, db_name=%s, initialized=true, updated_at=now() WHERE id=%s",
-                            (json.dumps(new_columns), db_name, table_id),
-                        )
-                        conn.commit()
-                finally:
-                    put_sys_conn(conn)
-            else:
-                # Load persisted schema
-                conn = get_sys_conn()
-                try:
-                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                        cur.execute(f"SELECT columns FROM {SYSTEM_TABLE_REGISTRY} WHERE id=%s", (table_id,))
-                        persisted = cur.fetchone()
-                        persisted_cols = persisted["columns"] or []
-                    col_names = [c["column_name"] for c in persisted_cols]
-                    types = {c["column_name"]: c["type"] for c in persisted_cols}
-                finally:
-                    put_sys_conn(conn)
-                first_frame = _remap_frame_columns(first_frame, col_names)
+            # The table's schema is decided once, by whichever job gets here
+            # first for an uninitialized table. Concurrent jobs would otherwise
+            # each CREATE TABLE and all but one would fail on the duplicate
+            # object error, so the check must be re-done *inside* the lock: the
+            # value read before the lock is stale as soon as another job wins.
+            with _init_lock_for(table_id):
+                persisted_schema = _load_persisted_schema(table_id)
+                if persisted_schema is None:
+                    col_names, comments = _process_file_headers(
+                        first_frame, user_comments, filename,
+                    )
+                    types = _create_real_table(
+                        hg_conn, table_name, col_names, first_frame, comments,
+                    )
+                    # Persist the real schema so later jobs reuse it instead of
+                    # creating the table again.
+                    conn = get_sys_conn()
+                    try:
+                        new_columns = []
+                        for i, cname in enumerate(col_names):
+                            new_columns.append({
+                                "comment": comments[i],
+                                "column_name": cname,
+                                "type": types[cname],
+                                "nullable": True,
+                                "is_primary_key": False,
+                            })
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                f"UPDATE {SYSTEM_TABLE_REGISTRY} SET columns=%s, db_name=%s, initialized=true, updated_at=now() WHERE id=%s",
+                                (json.dumps(new_columns), db_name, table_id),
+                            )
+                            conn.commit()
+                    finally:
+                        put_sys_conn(conn)
+                else:
+                    col_names, types = persisted_schema
+                    first_frame = _remap_frame_columns(first_frame, col_names)
 
             success = 0
             insert_errors: list[dict] = []
@@ -507,7 +559,15 @@ def _schedule_job(job_id: str, table_id: str, file_path: str, filename: str) -> 
 
 
 def recover_import_jobs() -> int:
-    """Requeue interrupted jobs and schedule queued jobs after app restart."""
+    """Requeue interrupted jobs and schedule queued jobs after app restart.
+
+    Returns the number of jobs actually scheduled. This is the *only* path that
+    retries a job after it failed: a failed job is parked as ``pending`` with a
+    future ``next_retry_at`` and is rescheduled here once that time passes. A
+    crash inside this function therefore does not just skip a scan — it stops
+    every parked job from ever being retried, which is how a couple of failed
+    imports became permanently stuck.
+    """
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -521,10 +581,33 @@ def recover_import_jobs() -> int:
             conn.commit()
     finally:
         _put_conn(conn)
+
+    scheduled = 0
     for row in rows:
-        if Path(row["file_path"]).is_file():
-            _schedule_job(str(row["id"]), str(row["table_id"]), row["file_path"], row["filename"])
-    return len(rows)
+        # Per-row guard: one unusable row (missing file, bad path) must not stop
+        # the remaining pending jobs from being rescheduled.
+        try:
+            if not Path(row["file_path"]).is_file():
+                logger.warning(
+                    "data import recovery: staged file is gone for job %s (%s)",
+                    row["id"],
+                    row["file_path"],
+                )
+                continue
+            _schedule_job(
+                str(row["id"]),
+                str(row["table_id"]),
+                row["file_path"],
+                row["filename"],
+            )
+            scheduled += 1
+        except Exception:  # noqa: BLE001 - keep the scan going
+            logger.exception(
+                "data import recovery: failed to schedule job %s",
+                row.get("id"),
+            )
+    return scheduled
+
 
 
 async def import_recovery_loop() -> None:

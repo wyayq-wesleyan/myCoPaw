@@ -4,6 +4,7 @@ import re
 import time
 import logging
 import os
+import threading
 import uuid
 import hashlib
 
@@ -21,6 +22,13 @@ _target_pool: dict[str, ThreadedConnectionPool] = {}
 # Access order per database name, oldest first (LRU). Kept alongside the pool
 # map so idle pools can be reclaimed instead of accumulating one per account.
 _target_pool_order: list[str] = []
+
+# Import jobs run in worker threads, so pool creation and LRU bookkeeping need
+# a real thread lock. Without it two jobs for the same account both miss the
+# lookup and build a pool, and the loser's connections are unreachable from then
+# on (the map holds only one of them), which surfaces as "connection pool
+# exhausted" once the surviving pool's two connections are in use.
+_pool_lock = threading.RLock()
 
 
 def _slug_username(username: str) -> str:
@@ -133,36 +141,39 @@ def close_all_target_pools() -> None:
 
 
 def get_target_connection(db_name: str):
-    if db_name in _target_pool:
-        pool = _target_pool[db_name]
-        if db_name in _target_pool_order:
-            _target_pool_order.remove(db_name)
-        _target_pool_order.append(db_name)
-    else:
-        cfg = _system_db_config()
-        pool = ThreadedConnectionPool(
-            # minconn kept at 1 so a pool costs one connection while idle; the
-            # ceiling is deliberately small because concurrency per account is
-            # low (imports are globally limited to a couple at a time) and the
-            # total across accounts must stay under the server's limit.
-            1,
-            2,
-            host=cfg["host"],
-            port=cfg["port"],
-            dbname=db_name,
-            user=cfg["username"],
-            password=cfg["password"],
-            connect_timeout=10,
-        )
-        _target_pool[db_name] = pool
-        _target_pool_order.append(db_name)
-        _reclaim_idle_pools(keep=db_name)
-    return pool.getconn()
+    with _pool_lock:
+        if db_name in _target_pool:
+            pool = _target_pool[db_name]
+            if db_name in _target_pool_order:
+                _target_pool_order.remove(db_name)
+            _target_pool_order.append(db_name)
+        else:
+            cfg = _system_db_config()
+            pool = ThreadedConnectionPool(
+                # minconn kept at 1 so a pool costs one connection while idle; the
+                # ceiling is deliberately small because concurrency per account is
+                # low (imports are globally limited to a couple at a time) and the
+                # total across accounts must stay under the server's limit.
+                1,
+                2,
+                host=cfg["host"],
+                port=cfg["port"],
+                dbname=db_name,
+                user=cfg["username"],
+                password=cfg["password"],
+                connect_timeout=10,
+            )
+            _target_pool[db_name] = pool
+            _target_pool_order.append(db_name)
+            _reclaim_idle_pools(keep=db_name)
+        return pool.getconn()
 
 
 def put_target_connection(conn, db_name: str):
-    if db_name in _target_pool:
-        _target_pool[db_name].putconn(conn)
+    with _pool_lock:
+        pool = _target_pool.get(db_name)
+    if pool is not None:
+        pool.putconn(conn)
 
 
 def ensure_user_database(username: str) -> str:

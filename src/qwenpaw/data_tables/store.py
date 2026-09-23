@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from typing import Any
 
@@ -12,10 +13,13 @@ import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 
 from ..config.utils import load_config
+from ..constant import WORKING_DIR
 
 logger = logging.getLogger(__name__)
 
 _pool: ThreadedConnectionPool | None = None
+# How long a caller waits for a metadata connection before giving up.
+_POOL_WAIT_SECONDS = 10.0
 _schema_lock = threading.Lock()
 _schema_initialized = False
 
@@ -28,7 +32,13 @@ SYSTEM_TABLE_USER_DATABASE = "tb_hzxzh_user_database"
 
 # Import staging and limits. They live here rather than in ``import_api`` so the
 # agent tools can read them without importing the pandas-backed importer.
-UPLOAD_DIR = "/app/working/data_uploads"
+#
+# Derived from ``WORKING_DIR`` like every other storage location. It used to be
+# the literal "/app/working/data_uploads", which silently ignored a relocated
+# ``QWENPAW_WORKING_DIR``: every other path followed the override, so uploads
+# landed beside the container's root filesystem instead and the write failed
+# with a read-only error wherever /app does not exist.
+UPLOAD_DIR = str(WORKING_DIR / "data_uploads")
 ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
 MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024 * 1024
 # xlrd/pandas cannot stream legacy XLS files. Keep their limit materially
@@ -81,7 +91,30 @@ def _get_pool() -> ThreadedConnectionPool:
 
 
 def _get_conn():
-    return _get_pool().getconn()
+    """Check out a metadata connection, waiting briefly when the pool is full.
+
+    ``ThreadedConnectionPool.getconn`` raises ``PoolError`` the instant every
+    slot is taken, which turned a short burst of concurrent requests into a
+    confusing 500 ("connection pool exhausted"). Waiting for a slot instead
+    degrades that into ordinary latency. The wait is bounded so a genuinely
+    stuck pool still fails rather than hanging a worker thread forever.
+    """
+    global _pool
+    pool = _get_pool()
+    deadline = time.monotonic() + _POOL_WAIT_SECONDS
+    delay = 0.02
+    while True:
+        try:
+            return pool.getconn()
+        except psycopg2.pool.PoolError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.2)
+            # A previous holder may have closed the pool on error; re-resolve so
+            # the wait does not spin forever against a discarded pool object.
+            if _pool is not pool:
+                pool = _get_pool()
 
 
 def _put_conn(conn):
