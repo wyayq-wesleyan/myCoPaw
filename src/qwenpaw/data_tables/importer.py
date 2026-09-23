@@ -23,7 +23,14 @@ from .connection import (
     put_target_connection,
     sanitize_column_name,
 )
-from .store import SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn
+from .store import (
+    ALLOWED_COLUMN_TYPES,
+    COLUMN_TYPE_AUTO,
+    SYSTEM_TABLE_IMPORT_JOB,
+    SYSTEM_TABLE_REGISTRY,
+    _get_conn,
+    _put_conn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -263,14 +270,44 @@ def _ensure_unique_col_names(headers: list[str]) -> list[str]:
     return result
 
 
-def _create_real_table(hg_conn, table_name: str, col_names: list[str], df: pd.DataFrame, comments: list[str]) -> dict:
-    """Create the real HighGo table with id UUID PK + inferred column types."""
+def _resolve_column_type(
+    df: pd.DataFrame,
+    cname: str,
+    requested: str | None,
+) -> str:
+    """Return the PG type for one column.
+
+    A caller-pinned type always wins. Otherwise the column is TEXT: inferring a
+    narrower type from a sample of values silently breaks identifiers that look
+    numeric but are not numbers (an 11-digit phone number inferred as INTEGER
+    then fails every insert with "integer out of range"). Passing ``AUTO``
+    explicitly restores inference for callers who really want it.
+    """
+    normalized = (requested or "").strip().upper()
+    if normalized and normalized != COLUMN_TYPE_AUTO:
+        return ALLOWED_COLUMN_TYPES.get(normalized) or "TEXT"
+    if normalized == COLUMN_TYPE_AUTO:
+        return _infer_type(df[cname])
+    return "TEXT"
+
+
+def _create_real_table(
+    hg_conn,
+    table_name: str,
+    col_names: list[str],
+    df: pd.DataFrame,
+    comments: list[str],
+    requested_types: list[str | None] | None = None,
+) -> dict:
+    """Create the real PG table with id BIGSERIAL PK + resolved column types."""
     # BIGSERIAL keeps account databases self-contained. Unlike gen_random_uuid,
     # it does not depend on pgcrypto being installed in every new user database.
     col_defs = ['id BIGSERIAL PRIMARY KEY']
     types: list[str] = []
+    requested_types = requested_types or []
     for i, cname in enumerate(col_names):
-        ctype = _infer_type(df[cname])
+        requested = requested_types[i] if i < len(requested_types) else None
+        ctype = _resolve_column_type(df, cname, requested)
         types.append(ctype)
         col_defs.append(f'"{cname}" {ctype}')
     ddl = f'CREATE TABLE "{table_name}" ({", ".join(col_defs)})'
@@ -387,6 +424,10 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
             if not table:
                 raise RuntimeError(f"表不存在: {table_id}")
             user_comments = [c.get("comment", "") for c in (table["columns"] or [])]
+            # Column types pinned when the table was defined (TEXT by default).
+            requested_types = [
+                c.get("type") for c in (table["columns"] or [])
+            ]
             db_name = table["db_name"]
             table_name = table["table_name"]
     finally:
@@ -421,7 +462,12 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                         first_frame, user_comments, filename,
                     )
                     types = _create_real_table(
-                        hg_conn, table_name, col_names, first_frame, comments,
+                        hg_conn,
+                        table_name,
+                        col_names,
+                        first_frame,
+                        comments,
+                        requested_types=requested_types,
                     )
                     # Persist the real schema so later jobs reuse it instead of
                     # creating the table again.

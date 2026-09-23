@@ -40,6 +40,31 @@ SYSTEM_TABLE_USER_DATABASE = "tb_hzxzh_user_database"
 # with a read-only error wherever /app does not exist.
 UPLOAD_DIR = str(WORKING_DIR / "data_uploads")
 ALLOWED_EXTENSIONS = {".csv", ".xls", ".xlsx"}
+
+# Column types a caller may pin when defining a table.
+#
+# Every column defaults to TEXT. Type inference used to run on the first import
+# and was wrong in exactly the cases that matter: an 11-digit phone number or a
+# 15-digit IMEI matches "^[+-]?\d+$" and was declared INTEGER, so every insert
+# failed with "integer out of range" and the import reported 0 rows. Identifiers
+# (phone, IMEI, IMSI, account numbers, postal codes) are identifiers, not
+# numbers, and must not be narrowed to a machine integer that cannot hold them.
+#
+# ``AUTO`` restores the old inference behavior but is opt-in per column, never
+# the default. These values are interpolated into DDL, so the map is the
+# allowlist: an unrecognized key is rejected rather than passed through.
+COLUMN_TYPE_TEXT = "TEXT"
+COLUMN_TYPE_AUTO = "AUTO"
+ALLOWED_COLUMN_TYPES: dict[str, str | None] = {
+    COLUMN_TYPE_TEXT: "TEXT",
+    COLUMN_TYPE_AUTO: None,  # resolved by inference at first import
+    "INTEGER": "INTEGER",
+    "BIGINT": "BIGINT",
+    "NUMERIC": "NUMERIC(20,4)",
+    "DATE": "DATE",
+    "TIMESTAMP": "TIMESTAMP",
+    "BOOLEAN": "BOOLEAN",
+}
 MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024 * 1024
 # xlrd/pandas cannot stream legacy XLS files. Keep their limit materially
 # below the general limit so one upload cannot require several GB of RAM.

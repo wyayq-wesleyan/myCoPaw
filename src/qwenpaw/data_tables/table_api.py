@@ -16,7 +16,15 @@ from pydantic import BaseModel, Field
 
 from ..app.user_space import get_request_username
 from .connection import drop_table, ensure_user_database, generate_table_name
-from .store import SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
+from .store import (
+    ALLOWED_COLUMN_TYPES,
+    COLUMN_TYPE_TEXT,
+    SYSTEM_TABLE_IMPORT_JOB,
+    SYSTEM_TABLE_REGISTRY,
+    _get_conn,
+    _put_conn,
+    init_data_tables_schema,
+)
 
 router = APIRouter(
     prefix="/data-tables",
@@ -37,6 +45,21 @@ class CreateTableRequest(BaseModel):
     display_name: str = ""
     description: str = ""
     columns: list[str] = Field(default_factory=list)
+    # Optional per-column type keys (see ALLOWED_COLUMN_TYPES). Positional, and
+    # a missing/short list means every column defaults to TEXT.
+    column_types: list[str] = Field(default_factory=list)
+
+
+class UpdateTableRequest(BaseModel):
+    """Editable table metadata.
+
+    ``table_name`` is the physical name and is deliberately NOT editable: it is
+    already referenced by the account's real database table, so renaming it here
+    would orphan the data. Only the labels shown in the console change.
+    """
+
+    display_name: str | None = None
+    description: str | None = None
 
 
 def create_table_record(
@@ -44,13 +67,14 @@ def create_table_record(
     display_name: str = "",
     description: str = "",
     columns: list[str] | None = None,
+    column_types: list[str] | None = None,
 ) -> dict[str, str]:
     """Create one account's table definition and return its id and table name.
 
     The console API requires the user to describe every column meaning; the
-    agent tool may pass none, because the real column names and types are
-    inferred from the imported file's header row when the physical table is
-    created on first import.
+    agent tool may pass none, because the real column names are inferred from
+    the imported file's header row when the physical table is created on first
+    import. Column types default to TEXT; a caller may pin them per column.
     """
     description = (description or "").strip()
     display_name = (display_name or "").strip()
@@ -71,17 +95,40 @@ def create_table_record(
     finally:
         _put_conn(conn)
 
-    cols = [
-        {
-            "comment": str(c).strip(),
-            "column_name": None,
-            "type": None,
-            "nullable": True,
-            "is_primary_key": False,
-        }
-        for c in (columns or [])
-        if str(c).strip()
-    ]
+    requested = list(column_types or [])
+    for index, value in enumerate(requested):
+        key = str(value or "").strip().upper()
+        if key and key not in ALLOWED_COLUMN_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"第 {index + 1} 列的数据类型不支持：{value}。"
+                    f"可选：{', '.join(ALLOWED_COLUMN_TYPES)}"
+                ),
+            )
+
+    cols = []
+    for index, raw in enumerate(columns or []):
+        comment = str(raw).strip()
+        if not comment:
+            continue
+        requested_type = (
+            str(requested[index]).strip().upper()
+            if index < len(requested) and str(requested[index] or "").strip()
+            else COLUMN_TYPE_TEXT
+        )
+        cols.append(
+            {
+                "comment": comment,
+                "column_name": None,
+                # TEXT is stored explicitly: the importer reads this field, and
+                # an explicit value is what keeps identifiers from being
+                # inferred into an INTEGER that cannot hold them.
+                "type": requested_type,
+                "nullable": True,
+                "is_primary_key": False,
+            },
+        )
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -215,6 +262,7 @@ def create_table(payload: CreateTableRequest, request: Request):
         display_name=payload.display_name,
         description=payload.description,
         columns=payload.columns,
+        column_types=payload.column_types,
     )
 
 
@@ -252,6 +300,56 @@ def get_table(table_id: str, request: Request):
                 "created_at": str(row["created_at"]),
                 "updated_at": str(row["updated_at"]),
             }
+    finally:
+        _put_conn(conn)
+
+
+@router.put("/{table_id}")
+def update_table(table_id: str, payload: UpdateTableRequest, request: Request):
+    """Update a table's display name and description.
+
+    Ownership is checked the same way as every other endpoint; there is no
+    admin override. The physical table name and the imported data are untouched.
+    """
+    username = get_request_username(request) or "admin"
+
+    updates: dict[str, str] = {}
+    if payload.display_name is not None:
+        display_name = payload.display_name.strip()
+        if not display_name:
+            raise HTTPException(status_code=400, detail="表名不能为空")
+        updates["display_name"] = display_name
+    if payload.description is not None:
+        description = payload.description.strip()
+        if not description:
+            raise HTTPException(status_code=400, detail="表描述不能为空")
+        updates["description"] = description
+    if not updates:
+        raise HTTPException(status_code=400, detail="没有需要修改的内容")
+
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(f"SELECT * FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (table_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="表不存在")
+            if row["owner_username"] != username:
+                raise HTTPException(status_code=403, detail="无权修改此表")
+
+            assignments = ", ".join(f"{field} = %s" for field in updates)
+            cur.execute(
+                f"UPDATE {SYSTEM_TABLE_REGISTRY} SET {assignments}, updated_at = now() WHERE id = %s",
+                [*updates.values(), table_id],
+            )
+            conn.commit()
+        return {"ok": True, **updates}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         _put_conn(conn)
 

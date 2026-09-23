@@ -45,6 +45,7 @@ import {
   importFiles,
   listTables,
   previewTable,
+  updateTable,
 } from "../../api/modules/dataAnalysis";
 import type {
   DataImportJob,
@@ -79,6 +80,13 @@ export default function DataAnalysisPage() {
   const [createForm] = Form.useForm();
   const [columnNotes, setColumnNotes] = useState<string[]>([""]);
   const [creating, setCreating] = useState(false);
+
+  // Edit table metadata (display name + description only; the physical
+  // table_name is not editable, and imported data is untouched).
+  const [editOpen, setEditOpen] = useState(false);
+  const [editTableId, setEditTableId] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editForm] = Form.useForm();
 
   // Import
   const [importTableId, setImportTableId] = useState<string | null>(null);
@@ -269,6 +277,36 @@ export default function DataAnalysisPage() {
     return false;
   };
 
+  // Edit table metadata
+  const handleEditOpen = (record: DataTableItem) => {
+    setEditTableId(record.id);
+    editForm.setFieldsValue({
+      display_name: record.display_name || "",
+      description: record.description || "",
+    });
+    setEditOpen(true);
+  };
+
+  const handleEditSave = async () => {
+    if (!editTableId) return;
+    try {
+      const values = await editForm.validateFields();
+      setEditing(true);
+      await updateTable(editTableId, {
+        display_name: values.display_name || "",
+        description: values.description || "",
+      });
+      message.success("已更新表信息");
+      setEditOpen(false);
+      fetchTables();
+    } catch (err) {
+      if (err && typeof err === "object" && "errorFields" in err) return;
+      message.error("更新失败");
+    } finally {
+      setEditing(false);
+    }
+  };
+
   const handleImportMultiple = async (files: File[]) => {
     if (!importTableId || files.length === 0) return false;
     setImporting(true);
@@ -342,11 +380,14 @@ export default function DataAnalysisPage() {
     {
       title: "操作",
       key: "actions",
-      width: 180,
+      width: 230,
       render: (_, record) => (
         <Space size="small">
           <Button size="small" icon={<EyeOutlined />} onClick={() => handleShowDetail(record.id)}>
             详情
+          </Button>
+          <Button size="small" icon={<EditOutlined />} onClick={() => handleEditOpen(record)}>
+            编辑
           </Button>
           <Dropdown
             menu={{
@@ -579,7 +620,42 @@ export default function DataAnalysisPage() {
           </Form.Item>
         </Form>
         <div style={{ color: "#999", fontSize: 12 }}>
-          说明：您只需描述每列的含义，系统会在您上传真实数据文件时，根据文件内容自动确定列名、类型，并自动生成主键（id）。
+          说明：您只需描述每列的含义，系统会在您上传真实数据文件时自动取用文件表头作为列名，并自动生成主键（id）。所有列默认按文本（TEXT）存储，手机号、IMEI、账号等编号类数据不会被误转成数字而丢失。
+        </div>
+      </Modal>
+
+      {/* Edit table metadata */}
+      <Modal
+        title="编辑数据表"
+        open={editOpen}
+        onOk={handleEditSave}
+        onCancel={() => setEditOpen(false)}
+        confirmLoading={editing}
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item
+            name="display_name"
+            label="表名"
+            rules={[{ required: true, message: "请输入表名" }]}
+          >
+            <Input placeholder="如：销售订单" />
+          </Form.Item>
+          <Form.Item
+            name="description"
+            label="表描述"
+            rules={[{ required: true, message: "请输入表描述" }]}
+          >
+            <Input.TextArea
+              rows={3}
+              placeholder="该表所代表的数据含义，如：公司季度销售明细"
+            />
+          </Form.Item>
+        </Form>
+        <div style={{ color: "#999", fontSize: 12 }}>
+          说明：仅修改表名与描述，不影响已导入的数据；实际表名由系统生成，不可更改。
         </div>
       </Modal>
 

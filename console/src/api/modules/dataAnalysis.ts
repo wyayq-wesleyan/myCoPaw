@@ -69,6 +69,21 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return response.json();
 }
 
+async function apiPut<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(getApiUrl(path), {
+    method: "PUT",
+    headers: {
+      ...buildAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
 async function apiDelete<T>(path: string): Promise<T> {
   const response = await fetch(getApiUrl(path), {
     method: "DELETE",
@@ -103,8 +118,11 @@ export const dataAnalysisApi = {
   getTable: (id: string) =>
     apiGet<DataTableItem>(`/data-tables/${id}`),
 
-  createTable: (data: { display_name: string; description: string; columns: string[] }) =>
+  createTable: (data: { display_name: string; description: string; columns: string[]; column_types?: string[] }) =>
     apiPost<{ id: string; table_name: string }>("/data-tables", data),
+
+  updateTable: (id: string, data: { display_name?: string; description?: string }) =>
+    apiPut<{ ok: boolean }>(`/data-tables/${id}`, data),
 
   deleteTable: (id: string) =>
     apiDelete<{ ok: boolean }>(`/data-tables/${id}`),
@@ -136,6 +154,7 @@ export const dataAnalysisApi = {
 export const listTables = dataAnalysisApi.listTables;
 export const getTableDetail = dataAnalysisApi.getTable;
 export const createTable = dataAnalysisApi.createTable;
+export const updateTable = dataAnalysisApi.updateTable;
 export const deleteTable = dataAnalysisApi.deleteTable;
 export const batchDeleteTables = dataAnalysisApi.batchDeleteTables;
 export const previewTable = dataAnalysisApi.previewTable;
