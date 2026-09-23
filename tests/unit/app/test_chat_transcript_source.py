@@ -160,3 +160,19 @@ def test_helper_tolerates_missing_session_id(tmp_path, bad) -> None:
         assert store.load_session_messages(bad) == []
     finally:
         store.close()
+
+
+def test_durable_read_precedes_the_missing_state_early_return() -> None:
+    """A chat with no state file must still show its durable transcript.
+
+    The state file is rotated away or lost across restarts, while history.db
+    keeps the conversation. Reading the window first meant an early
+    ``if not state: return []`` answered "no messages" for a chat whose content
+    was fully intact on disk — the transcript simply looked empty.
+    """
+    import inspect
+
+    from qwenpaw.app.chats import api as chats_api
+
+    source = inspect.getsource(chats_api.get_chat)
+    assert source.index("_load_durable_transcript") < source.index("if not state:")
