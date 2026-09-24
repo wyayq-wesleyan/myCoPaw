@@ -256,12 +256,6 @@ class AutoMemoryMsgBuilder(BaseMemoryManager):
         return []
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> HistoryStore:
-    h = HistoryStore(tmp_path / "history.db")
-    yield h
-    h.close()
-
 
 def make_manager(store: HistoryStore, **kw) -> ScrollContextManager:
     kw.setdefault("session_id", "s1")
@@ -314,7 +308,9 @@ def test_persist_new_records_seq_and_headline_leaf(store: HistoryStore):
     assert a.id in mgr._seq_by_id
 
 
-def test_persist_new_refreshes_late_tool_call_metadata(store: HistoryStore):
+def test_persist_new_refreshes_late_tool_call_metadata(
+    store: HistoryStore, sql
+):
     """A streamed assistant row must gain metadata when its tool call lands."""
     mgr = make_manager(store)
     turn = assistant("starting")
@@ -340,7 +336,7 @@ def test_persist_new_refreshes_late_tool_call_metadata(store: HistoryStore):
     _persist_signature(turn, "call-late")
     mgr._persist_new(agent)
 
-    row = store._conn.execute(
+    row = sql.execute(
         "SELECT blocks, metadata FROM conversation_history "
         "WHERE kind='model_turn' AND dedup_key = ?",
         (turn.id,),
@@ -355,7 +351,7 @@ def test_persist_new_refreshes_late_tool_call_metadata(store: HistoryStore):
     }
 
 
-def test_tool_result_persisted_under_tool_call_id(store: HistoryStore):
+def test_tool_result_persisted_under_tool_call_id(store: HistoryStore, sql):
     mgr = make_manager(store)
     msg = assistant_with_tool("call-1", "big output")
     msg.content[2].metadata.update(
@@ -369,7 +365,7 @@ def test_tool_result_persisted_under_tool_call_id(store: HistoryStore):
     )
     agent = FakeAgent([msg])
     mgr._persist_new(agent)
-    rows = store._conn.execute(
+    rows = sql.execute(
         "SELECT content, metadata FROM conversation_history "
         "WHERE kind='tool_result' AND tool_call_id='call-1'",
     ).fetchall()
@@ -380,7 +376,7 @@ def test_tool_result_persisted_under_tool_call_id(store: HistoryStore):
     }
 
 
-def test_auto_memory_search_message_not_persisted(store: HistoryStore):
+def test_auto_memory_search_message_not_persisted(store: HistoryStore, sql):
     """Auto-search context is live-only and must not pollute history.db."""
     mgr = make_manager(store)
     auto_msg = auto_memory_search_msg(
@@ -392,7 +388,7 @@ def test_auto_memory_search_message_not_persisted(store: HistoryStore):
 
     mgr._persist_new(agent)
 
-    rows = store._conn.execute(
+    rows = sql.execute(
         "SELECT kind, name, content FROM conversation_history ORDER BY seq",
     ).fetchall()
     assert [(r["kind"], r["name"], r["content"]) for r in rows] == [
@@ -402,6 +398,7 @@ def test_auto_memory_search_message_not_persisted(store: HistoryStore):
 
 def test_auto_memory_search_blocks_stripped_from_mixed_message(
     store: HistoryStore,
+    sql,
 ):
     """If a real Msg also carries auto-search blocks, keep only real blocks."""
     mgr = make_manager(store)
@@ -418,7 +415,7 @@ def test_auto_memory_search_blocks_stripped_from_mixed_message(
 
     mgr._persist_new(FakeAgent([msg]))
 
-    rows = store._conn.execute(
+    rows = sql.execute(
         "SELECT kind, content, metadata FROM conversation_history",
     ).fetchall()
     assert len(rows) == 1
@@ -485,7 +482,7 @@ def test_load_state_tolerates_garbage(store: HistoryStore):
 # -- tool-result preview persistence ----------------------------------------
 
 
-def test_tool_result_preview_is_persisted_once(store: HistoryStore):
+def test_tool_result_preview_is_persisted_once(store: HistoryStore, sql):
     """Tool results are persisted exactly as they appear in live context."""
     mgr = make_manager(store)
     preview = (
@@ -496,13 +493,13 @@ def test_tool_result_preview_is_persisted_once(store: HistoryStore):
     agent = FakeAgent([assistant_with_tool("call-1", preview)])
     mgr._persist_new(agent)
 
-    rows = store._conn.execute(
+    rows = sql.execute(
         "SELECT content FROM conversation_history "
         "WHERE kind='tool_result' AND tool_call_id='call-1'",
     ).fetchall()
     assert [row["content"] for row in rows] == [preview]
     mgr._persist_new(agent)
-    rows = store._conn.execute(
+    rows = sql.execute(
         "SELECT content FROM conversation_history "
         "WHERE kind='tool_result' AND tool_call_id='call-1'",
     ).fetchall()
@@ -996,7 +993,7 @@ def test_summary_input_prioritizes_all_user_facts_over_tool_noise(
     assert len(rendered) <= 5000
 
 
-def test_summary_input_keeps_tool_outcome_budget(store: HistoryStore):
+def test_summary_input_keeps_tool_outcome_budget(store: HistoryStore, sql):
     """User priority must not starve every tool-result preview."""
     mgr = make_manager(store)
     messages = [
@@ -1195,6 +1192,7 @@ def test_summary_input_includes_timezone_safe_message_times(
 
 def test_summary_record_fitting_never_exceeds_tiny_budget(
     store: HistoryStore,
+    sql,
 ):
     """Even pathological record counts must respect the hard input bound."""
     mgr = make_manager(store)
@@ -1412,7 +1410,7 @@ async def test_summary_evidence_respects_model_token_budget(
 async def test_pretrim_avoids_eviction_at_or_below_trigger(
     store: HistoryStore,
     after_trim: int,
-):
+    sql,):
     """Batch pre-trim folds every eligible result and recounts once."""
     history = _completed_tool_history(7)
     current = user("current request")
@@ -1431,7 +1429,7 @@ async def test_pretrim_avoids_eviction_at_or_below_trigger(
         assert (
             turn.content[2].output[0].text.startswith(f"RESULT-tool-{index}")
         )
-    durable = store._conn.execute(
+    durable = sql.execute(
         "SELECT content FROM conversation_history "
         "WHERE kind='tool_result' AND tool_call_id='tool-0'",
     ).fetchone()
@@ -1648,7 +1646,7 @@ async def test_compress_replaces_old_preview_with_tool_call_pointer(
 
 async def test_pressure_fold_preserves_complete_active_turn(
     store: HistoryStore,
-):
+    sql,):
     """Normal pressure never folds results from the complete active turn."""
     turn = _multi_tool_turn(padding=500)
     ctx = [user("/heartbeat"), turn]
@@ -1669,7 +1667,7 @@ async def test_pressure_fold_preserves_complete_active_turn(
         assert out_text(index) == f"RESULT-{index}" + "x" * 500
     # The durable rows still hold the FULL outputs (persisted before fold).
     for i in range(3):
-        row = store._conn.execute(
+        row = sql.execute(
             "SELECT content FROM conversation_history "
             f"WHERE kind='tool_result' AND tool_call_id='c{i}'",
         ).fetchone()
@@ -1724,7 +1722,7 @@ async def test_parallel_unconsumed_active_results_remain_visible(
 
 async def test_hard_limit_folds_seen_old_active_results(
     store: HistoryStore,
-):
+    sql,):
     """Hard-limit recovery folds only acknowledged active-turn results."""
     turn = _multi_tool_turn(n=7, padding=5000)
     ctx = [user("run the long tool workflow"), turn]
@@ -1745,7 +1743,7 @@ async def test_hard_limit_folds_seen_old_active_results(
                 f"RESULT-{index}",
             )
         )
-    durable = store._conn.execute(
+    durable = sql.execute(
         "SELECT content FROM conversation_history "
         "WHERE kind='tool_result' AND tool_call_id='c0'",
     ).fetchone()
@@ -2301,7 +2299,7 @@ def test_serialize_captures_tool_input():
     assert turn.tool_input == '{"file_path": "PROFILE.md"}'
 
 
-def test_tool_input_round_trips_to_db(store: HistoryStore):
+def test_tool_input_round_trips_to_db(store: HistoryStore, sql):
     """End-to-end: the persisted row's ``tool_input`` column is populated."""
     from qwenpaw.agents.context.scroll.serialize import msg_to_entries
 
@@ -2319,7 +2317,7 @@ def test_tool_input_round_trips_to_db(store: HistoryStore):
     )
     (turn,) = msg_to_entries(msg)
     store.append(session_id="s1", dedup_key="m1", entry=turn)
-    row = store._conn.execute(
+    row = sql.execute(
         "SELECT tool_input FROM conversation_history "
         "WHERE tool_call_id='call-9'",
     ).fetchone()

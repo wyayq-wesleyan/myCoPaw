@@ -27,6 +27,8 @@ from qwenpaw.agents.context.scroll.sync import (
 )
 from qwenpaw.agents.context.types import LogEntry
 
+from .conftest import reset_history
+
 
 def _sample_msgs() -> list[Msg]:
     return [
@@ -128,14 +130,8 @@ def _sync_registered(
     )
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> HistoryStore:
-    h = HistoryStore(tmp_path / "history.db")
-    yield h
-    h.close()
 
-
-def test_syncs_session_under_registered_id(store, tmp_path: Path):
+def test_syncs_session_under_registered_id(store, sql, tmp_path: Path):
     sessions = tmp_path / "sessions"
     _write_session_2x(
         sessions,
@@ -149,14 +145,14 @@ def test_syncs_session_under_registered_id(store, tmp_path: Path):
     assert store.count("canonical-sid") == report.rows_inserted
     assert store.count("internal-state-id") == 0
     # Faithful: the tool result is recallable by its call id.
-    rows = store._conn.execute(
+    rows = sql.execute(
         "SELECT content FROM conversation_history "
         "WHERE tool_call_id='c1' AND kind='tool_result'",
     ).fetchall()
     assert rows and rows[0]["content"] == "found it"
 
 
-def test_legacy_1x_session_requires_registered_id(store, tmp_path: Path):
+def test_legacy_1x_session_requires_registered_id(store, sql, tmp_path: Path):
     sessions = tmp_path / "sessions"
     _write_session_1x(sessions, "old.json", _sample_msgs())
     report = _sync_registered(store, sessions, [_chat("old")])
@@ -230,6 +226,7 @@ def test_chat_registry_overrides_internal_2x_agent_state_id(
 
 def test_existing_synthetic_manifest_is_rekeyed_to_canonical_session(
     store,
+    sql,
     tmp_path: Path,
 ):
     sessions = tmp_path / "sessions"
@@ -263,7 +260,7 @@ def test_existing_synthetic_manifest_is_rekeyed_to_canonical_session(
             },
         },
     )
-    source_before = store._conn.execute(
+    source_before = sql.execute(
         "SELECT seq FROM conversation_history "
         "WHERE session_id='sync:default_legacy-session' ORDER BY seq",
     ).fetchall()
@@ -290,7 +287,7 @@ def test_existing_synthetic_manifest_is_rekeyed_to_canonical_session(
     # source can be imported under the canonical registry ID.
     assert not any(result.skipped for result in second.files)
     assert store.count("sync:default_legacy-session") == 0
-    after = store._conn.execute(
+    after = sql.execute(
         "SELECT seq FROM conversation_history "
         "WHERE session_id='legacy-session' ORDER BY seq",
     ).fetchall()
@@ -308,6 +305,7 @@ def test_existing_synthetic_manifest_is_rekeyed_to_canonical_session(
 
 def test_changed_synthetic_manifest_rekeys_then_adds_new_history(
     store,
+    sql,
     tmp_path: Path,
 ):
     sessions = tmp_path / "sessions"
@@ -344,7 +342,7 @@ def test_changed_synthetic_manifest_rekeys_then_adds_new_history(
     )
     original_seqs = {
         row["seq"]
-        for row in store._conn.execute(
+        for row in sql.execute(
             "SELECT seq FROM conversation_history "
             "WHERE session_id='sync:default_changed-session'",
         )
@@ -383,7 +381,7 @@ def test_changed_synthetic_manifest_rekeys_then_adds_new_history(
     assert store.count("sync:default_changed-session") == 0
     canonical_seqs = {
         row["seq"]
-        for row in store._conn.execute(
+        for row in sql.execute(
             "SELECT seq FROM conversation_history "
             "WHERE session_id='changed-session'",
         )
@@ -491,11 +489,8 @@ def test_manifest_skip_self_heals_when_db_was_reset(tmp_path: Path):
     finally:
         h1.close()
 
-    # DB reset (corruption recovery / manual delete); manifest is untouched.
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(db_path) + suffix)
-        if p.exists():
-            p.unlink()
+    # DB reset (corruption recovery / manual clear); manifest is untouched.
+    reset_history(h1)
 
     h2 = HistoryStore(db_path)  # fresh, empty
     try:
@@ -508,7 +503,7 @@ def test_manifest_skip_self_heals_when_db_was_reset(tmp_path: Path):
         h2.close()
 
 
-def test_idempotent_even_without_manifest(store, tmp_path: Path):
+def test_idempotent_even_without_manifest(store, sql, tmp_path: Path):
     """Without the manifest, the DB UNIQUE index still blocks duplicates."""
     sessions = tmp_path / "sessions"
     _write_session_2x(sessions, "sid.json", "sid", _sample_msgs())
@@ -559,6 +554,7 @@ def test_unavailable_chat_registry_blocks_import_explicitly(
 @pytest.mark.parametrize("use_manifest", [True, False])
 def test_synthetic_rows_rekey_without_manifest_provenance(
     store,
+    sql,
     tmp_path: Path,
     use_manifest: bool,
 ):
@@ -572,7 +568,7 @@ def test_synthetic_rows_rekey_without_manifest_provenance(
     )
     before = [
         row["seq"]
-        for row in store._conn.execute(
+        for row in sql.execute(
             "SELECT seq FROM conversation_history "
             "WHERE session_id = 'sync:old' ORDER BY seq",
         )
@@ -591,7 +587,7 @@ def test_synthetic_rows_rekey_without_manifest_provenance(
     assert store.count("sync:old") == 0
     after = [
         row["seq"]
-        for row in store._conn.execute(
+        for row in sql.execute(
             "SELECT seq FROM conversation_history "
             "WHERE session_id = 'old' ORDER BY seq",
         )
@@ -627,7 +623,7 @@ def test_embedded_2x_id_rekeys_without_manifest(store, tmp_path: Path):
     assert store.count("canonical") == seeded.rows_inserted
 
 
-def test_v1_manifest_rekeys_arbitrary_legacy_id(store, tmp_path: Path):
+def test_v1_manifest_rekeys_arbitrary_legacy_id(store, sql, tmp_path: Path):
     sessions = tmp_path / "sessions"
     path = _write_session_1x(sessions, "canonical.json", _sample_msgs())
     seeded = sync_mod._sync_file(
@@ -667,13 +663,14 @@ def test_v1_manifest_rekeys_arbitrary_legacy_id(store, tmp_path: Path):
 
 def test_manifest_skip_claims_legacy_null_agent_rows(
     store,
+    sql,
     tmp_path: Path,
 ):
     sessions = tmp_path / "sessions"
     _write_session_2x(sessions, "sid.json", "sid", _sample_msgs())
     first = _sync_registered(store, sessions, [_chat("sid")], agent_id=None)
     assert first.rows_inserted
-    assert store._conn.execute(
+    assert sql.execute(
         "SELECT COUNT(*) FROM conversation_history WHERE agent_id IS NULL",
     ).fetchone()[0]
 
@@ -681,14 +678,14 @@ def test_manifest_skip_claims_legacy_null_agent_rows(
 
     assert all(result.skipped for result in second.files)
     assert (
-        store._conn.execute(
+        sql.execute(
             "SELECT COUNT(*) FROM conversation_history "
             "WHERE session_id = 'sid' AND agent_id = 'ag1'",
         ).fetchone()[0]
         == first.rows_inserted
     )
     assert (
-        store._conn.execute(
+        sql.execute(
             "SELECT COUNT(*) FROM conversation_history "
             "WHERE session_id = 'sid' AND agent_id IS NULL",
         ).fetchone()[0]
@@ -816,7 +813,7 @@ def _write_session_dated(
     return path
 
 
-def test_retention_skips_messages_older_than_window(store, tmp_path: Path):
+def test_retention_skips_messages_older_than_window(store, sql, tmp_path: Path):
     sessions = tmp_path / "sessions"
     now = datetime.now(timezone.utc)
     old = (now - timedelta(days=40)).isoformat()
@@ -837,7 +834,7 @@ def test_retention_skips_messages_older_than_window(store, tmp_path: Path):
     assert report.aged_out == 1  # the 40-day-old user turn was skipped
     assert store.count("sid") > 0  # the recent assistant turn landed
     # The aged-out message's content must NOT be in the DB.
-    rows = store._conn.execute(
+    rows = sql.execute(
         "SELECT 1 FROM conversation_history "
         "WHERE content LIKE '%please do X%'",
     ).fetchall()
@@ -1027,15 +1024,14 @@ def test_blocked_registry_does_not_purge_existing_history(
 
     sync_all_scroll_agents()
 
-    conn = sqlite3.connect(workspace / "history.db")
+    # A blocked migration must leave the existing history intact. Read it back
+    # through the store rather than opening the SQLite file directly (history is
+    # now in PostgreSQL).
+    reopened = HistoryStore(workspace / "history.db")
     try:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM conversation_history "
-            "WHERE session_id = 'existing'",
-        ).fetchone()[0]
+        assert reopened.count("existing") == 1
     finally:
-        conn.close()
-    assert count == 1
+        reopened.close()
 
 
 @pytest.mark.usefixtures("capture_qwenpaw_logs")

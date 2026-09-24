@@ -1,13 +1,43 @@
 # -*- coding: utf-8 -*-
-"""Durable, file-backed conversation history shared across sessions."""
+"""Durable conversation history in PostgreSQL.
+
+Every event the agent appends is written through to a PostgreSQL table with full
+structure (blocks, tool args, state) so a later session can retrieve it.
+
+**Why PostgreSQL rather than the per-workspace SQLite file this replaced.** The
+platform now keeps its own data in one database instead of scattering it across
+per-workspace files: one thing to operate and back up, queryable across
+workspaces, and with index maintenance, atomicity and concurrency handled by the
+server rather than by hand-written WAL and FTS upkeep.
+
+**What stayed the same.** The public API is unchanged — ``append``,
+``append_many``, ``update_entry``, ``count``, ``load_session_messages``,
+``claim_session``, ``reconcile_session_rows``, ``existing_seqs``,
+``contents_by_seqs``, ``estimate_purge``, ``purge``, ``vacuum``, ``close`` — so
+the scroll manager, the session-sync pass and the chat API did not need to
+change. Two contracts are load-bearing and are preserved exactly:
+
+* ``seq`` remains a **per-workspace** watermark starting at 1. The eviction index
+  persists ``seq`` ranges inside session state, and ``update_entry`` /
+  ``existing_seqs`` / ``contents_by_seqs`` address rows by ``seq`` alone, so
+  renumbering existing history would invalidate all of it. A per-workspace
+  counter allocates it (see ``_alloc_seqs``) rather than a global sequence.
+
+* ``(session_id, dedup_key)`` remains the idempotency key, and a NULL key is
+  never deduped — so re-persisting a restored window is a no-op instead of a
+  duplicate.
+
+The workspace is identified by the same ``db_path`` the callers already pass
+(``<workspace_dir>/history.db``). The file is neither created nor read; the path
+is only hashed into a stable key, which keeps every call site working unchanged
+and gives the legacy import a natural mapping from file to workspace.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import sqlite3
-import sys
-import threading
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,28 +45,36 @@ from typing import Any
 
 from agentscope.message import Msg
 
+from ....platform_store import (
+    PlatformStoreUnavailable,
+    dict_cursor,
+    ensure_schema,
+    get_conn,
+    put_conn,
+)
+from ....platform_store.migrations import ALL_MIGRATIONS
 from ..types import LogEntry
 
 logger = logging.getLogger(__name__)
 
-_BUSY_TIMEOUT_MS = 5000
 _UNSET = object()
 
 # The recall tool's own turns — the model's ``ms.*`` Python source and its
-# printed stdout/stderr — are written through to history like any turn, but
-# they are the agent *reading* memory, not memory content. Keyword-indexing
-# them lets a later ``ms.search`` match the agent's own past queries (and their
-# tracebacks), drowning the real content: a self-pollution feedback loop. So
-# these rows stay durable + recallable by ``seq``, but are kept OUT of the FTS
-# index (and out of ``search`` — see ``MemorySpace``). Must match the recall
-# tool names in ``repl.py`` and ``recall_tool.py``.
-_RECALL_TOOL_NAMES = (
+# printed stdout/stderr — are written through to history like any turn, but they
+# are the agent *reading* memory, not memory content. Keyword-indexing them lets
+# a later ``ms.search`` match the agent's own past queries (and their
+# tracebacks), drowning the real content: a self-pollution feedback loop. Search
+# filters these out by name. Must match the tool names in ``repl.py`` and
+# ``recall_tool.py``.
+RECALL_TOOL_NAMES = (
     "recall_history_python",
     "recall_history",
 )
+# Backwards-compatible private alias (older imports used the underscore name).
+_RECALL_TOOL_NAMES = RECALL_TOOL_NAMES
 
-# Columns of conversation_history, in INSERT order (minus the
-# autoincrement seq).
+# Columns written by every insert, in order. ``seq`` and ``workspace_key`` are
+# added by the store, not the caller.
 _INSERT_COLUMNS = (
     "session_id",
     "agent_id",
@@ -55,188 +93,56 @@ _INSERT_COLUMNS = (
 )
 
 
-class HistoryStore:
-    """Owns the *read-write* connection to the ``conversation_history`` file.
+def workspace_key_for(path: str | Path) -> str:
+    """Stable key identifying one workspace's history.
 
-    Every event the agent appends is write-through-persisted here with full
-    structure (blocks, tool args, state) so a later session can retrieve it.
-    The model reaches the same file *read-only* through its ``MemorySpace``
-    (ATTACHed ``hist`` schema), so this writer and those readers coexist under
-    WAL. The file is never dropped; ``close()`` only closes this connection.
+    Derived from the resolved path so the same workspace always maps to the same
+    key, and different workspaces never collide. Hashed rather than using the
+    path directly: keys are stored on every row (a long path would bloat the
+    table and its indexes) and a CJK account directory would otherwise produce an
+    awkward key.
     """
+    resolved = str(Path(path).expanduser().resolve())
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:24]
 
-    # FTS5 is a property of the SQLite build, not of one DB — warn at most once
-    # per process when it's missing, so a long-lived server doesn't log-spam.
-    _fts_unavailable_warned = False
+
+class HistoryStore:
+    """Conversation history for one workspace, stored in PostgreSQL."""
 
     def __init__(self, db_path: str | Path) -> None:
+        # The path identifies the workspace; no file is created or opened.
         self._path = Path(db_path).expanduser()
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        # Serializes the single connection across threads: ``compress`` writes
-        # from a worker thread (``asyncio.to_thread``, to spare the event loop)
-        # while ``on_save`` writes on the loop thread. Both share this
-        # connection, so every access takes ``self._lock``.
-        self._lock = threading.Lock()
+        self._workspace_key = workspace_key_for(self._path)
+        # Kept for API compatibility: SQLite could quarantine a corrupt file, but
+        # a server-side table has nothing to quarantine (and no local file to
+        # rename). Unavailability is reported through PlatformStoreUnavailable
+        # instead, which the callers already handle as a degraded state.
         self.quarantined_to: Path | None = None
-        # Durability health: flipped True the first time a write-through fails
-        # (disk/SQLite error). The durability promise no longer holds while
-        # degraded; callers/monitoring can read this.
+        # Durability health: flipped True the first time a write-through fails.
+        # The durability promise no longer holds while degraded; callers and
+        # monitoring can read this.
         self.degraded = False
         self.write_failures = 0
-        # Flipped True by ``close()`` so callers can tell an intentional
-        # teardown race from a real disk outage (see ``closed``).
         self._closed = False
-        try:
-            self._open_and_init()
-        except sqlite3.DatabaseError as exc:
-            # A corrupt / unreadable DB (truncated file, stale WAL trio, bad
-            # page) would crash every task at startup. Quarantine the bad file
-            # and recreate fresh, degrading "broken memory" to "lost history".
-            self._quarantine(exc)
-            self._open_and_init()
+        # Schema is process-global; applying it here keeps construction simple
+        # while the migration framework makes it a no-op after the first call.
+        ensure_schema(ALL_MIGRATIONS)
 
-    def _open_and_init(self) -> None:
-        # check_same_thread=False: used from both loop and worker threads;
-        # ``self._lock`` provides the serialization SQLite would get from
-        # same-thread affinity.
-        self._conn = sqlite3.connect(
-            str(self._path),
-            check_same_thread=False,
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-        # Probe for corruption that only surfaces on read.
-        row = self._conn.execute("PRAGMA quick_check").fetchone()
-        if not row or row[0] != "ok":
-            raise sqlite3.DatabaseError(
-                f"quick_check failed: {row[0] if row else None}",
-            )
-        self._init_schema()
-
-    def _quarantine(self, exc: Exception) -> None:
-        """Move the unreadable DB + its -wal/-shm aside with a timestamp."""
-        try:
-            self._conn.close()
-        except (AttributeError, sqlite3.Error):
-            pass
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        for suffix in ("", "-wal", "-shm"):
-            src = Path(str(self._path) + suffix)
-            if not src.exists():
-                continue
-            dest = Path(f"{self._path}.corrupt-{ts}{suffix}")
-            try:
-                src.rename(dest)
-                if suffix == "":
-                    self.quarantined_to = dest
-            except OSError:
-                try:
-                    src.unlink()  # last resort so a fresh DB can be created
-                except OSError:
-                    pass
-        print(
-            f"[HistoryStore] {self._path} was unreadable ({exc}); quarantined "
-            f"to {self.quarantined_to} and recreated a fresh store.",
-            file=sys.stderr,
-        )
+    # --- identity ------------------------------------------------------
 
     @property
     def path(self) -> Path:
+        """The workspace path this store is scoped to.
+
+        Retained because callers pass it to the recall tools; it is an
+        identifier, not an open file.
+        """
         return self._path
 
-    def _init_schema(self) -> None:
-        with self._conn:
-            self._conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversation_history (
-                    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id   TEXT NOT NULL,
-                    agent_id     TEXT,
-                    kind         TEXT NOT NULL,
-                    role         TEXT,
-                    name         TEXT,
-                    content      TEXT,
-                    tool_call_id TEXT,
-                    tool_input   TEXT,
-                    tool_state   TEXT,
-                    headline     TEXT,
-                    blocks       TEXT,
-                    metadata     TEXT,
-                    created_at   TEXT,
-                    dedup_key    TEXT
-                )
-                """,
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ch_session "
-                "ON conversation_history(session_id)",
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ch_agent "
-                "ON conversation_history(agent_id)",
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ch_kind "
-                "ON conversation_history(kind)",
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS ch_created_at "
-                "ON conversation_history(created_at)",
-            )
-            # Idempotency net: a second append of the same logical event, such
-            # as a resume re-persisting its restored window, collides here and
-            # is dropped by ON CONFLICT rather than duplicating a row. NULL
-            # dedup_key never conflicts, so un-keyed rows are simply never
-            # deduped.
-            self._conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS ux_dedup "
-                "ON conversation_history(session_id, dedup_key)",
-            )
-            self._init_fts()
-
-    def _init_fts(self) -> None:
-        """Create the FTS5 full-text index over ``content``, if available.
-
-        External-content FTS5 indexes without duplicating the text; it is kept
-        in sync by ``append``/``update_entry``. On a pre-existing DB it is
-        back-filled once via 'rebuild'. Porter stemming on top of unicode61
-        casefolding so "tanks" matches "tank".
-
-        Attempting the ``CREATE VIRTUAL TABLE`` is itself the availability
-        probe: SQLite builds without the FTS5 module (some minimal
-        container/distro builds) raise ``no such module: fts5`` here. We catch
-        that, leave ``self._fts`` False so the write path skips FTS upkeep, and
-        log one warning — search then degrades to a LIKE scan (see
-        ``MemorySpace.search``). The store itself stays fully functional.
-        """
-        try:
-            existed = self._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='conversation_history_fts'",
-            ).fetchone()
-            self._conn.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS conversation_history_fts "
-                "USING fts5(content, content='conversation_history', "
-                "content_rowid='seq', tokenize='porter unicode61')",
-            )
-            if not existed:
-                self._conn.execute(
-                    "INSERT INTO conversation_history_fts"
-                    "(conversation_history_fts) VALUES('rebuild')",
-                )
-            self._fts = True
-        except sqlite3.OperationalError as exc:
-            self._fts = False
-            if not HistoryStore._fts_unavailable_warned:
-                HistoryStore._fts_unavailable_warned = True
-                logger.warning(
-                    "SQLite has no FTS5 module (%s); scroll history keyword "
-                    "search degrades to a slower LIKE scan. The history store "
-                    "is otherwise fully functional. Use a SQLite build with "
-                    "FTS5 to restore ranked full-text recall.",
-                    exc,
-                )
+    @property
+    def workspace_key(self) -> str:
+        """The key every row of this workspace is stored under."""
+        return self._workspace_key
 
     # --- write path ----------------------------------------------------
 
@@ -247,7 +153,7 @@ class HistoryStore:
         entry: LogEntry,
         dedup_key: str | None,
     ) -> tuple:
-        """Build the SQLite row shared by single and batched appends."""
+        """Build the row values shared by single and batched appends."""
         return (
             session_id,
             agent_id,
@@ -265,6 +171,30 @@ class HistoryStore:
             dedup_key,
         )
 
+    def _alloc_seqs(self, cur, count: int) -> list[int]:
+        """Reserve *count* consecutive ``seq`` values for this workspace.
+
+        One statement, so concurrent writers cannot interleave and hand out the
+        same number: the upsert increments the counter and returns the new value
+        atomically. The counter stores the *last allocated* value, which makes
+        the fresh-row case and the increment case expressible in one statement
+        (a fresh row must yield ``count``, not ``count - 1``).
+        """
+        if count <= 0:
+            return []
+        cur.execute(
+            """
+            INSERT INTO platform.history_seq (workspace_key, last_seq)
+            VALUES (%s, %s)
+            ON CONFLICT (workspace_key)
+            DO UPDATE SET last_seq = platform.history_seq.last_seq + %s
+            RETURNING last_seq AS allocated
+            """,
+            (self._workspace_key, count, count),
+        )
+        last = int(cur.fetchone()["allocated"])
+        return list(range(last - count + 1, last + 1))
+
     def append(
         self,
         *,
@@ -275,40 +205,56 @@ class HistoryStore:
     ) -> int:
         """Write-through one event. Returns the assigned ``seq`` (watermark).
 
-        ``dedup_key`` is the row's stable identity within the session (the
-        source ``msg.id`` for a turn, the ``tool_call_id`` for a result). A
-        second append carrying the same ``(session_id, dedup_key)`` is a no-op
-        and returns the *existing* seq, so a resume that re-persists its
-        restored window can re-link bookkeeping without duplicating rows. A
-        ``None`` key is never deduped.
+        ``dedup_key`` is the row's stable identity within the session (the source
+        ``msg.id`` for a turn, the ``tool_call_id`` for a result). A second append
+        carrying the same ``(session_id, dedup_key)`` is a no-op and returns the
+        *existing* seq, so a resume that re-persists its restored window re-links
+        its bookkeeping instead of duplicating rows. A ``None`` key is never
+        deduped.
         """
-        row = self._insert_row(session_id, agent_id, entry, dedup_key)
-        placeholders = ", ".join("?" for _ in _INSERT_COLUMNS)
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                f"INSERT INTO conversation_history "
-                f"({', '.join(_INSERT_COLUMNS)}) VALUES ({placeholders}) "
-                f"ON CONFLICT(session_id, dedup_key) DO NOTHING",
-                row,
-            )
-            if cur.rowcount == 0:
-                # Conflict: this event is already durable. Return its seq so
-                # the caller re-links to the existing row; no new row, no FTS
-                # write.
-                existing = self._conn.execute(
-                    "SELECT seq FROM conversation_history "
-                    "WHERE session_id = ? AND dedup_key = ?",
-                    (session_id, dedup_key),
-                ).fetchone()
-                return int(existing["seq"]) if existing else 0
-            seq = int(cur.lastrowid or 0)
-            if self._fts and entry.name not in _RECALL_TOOL_NAMES:
-                self._conn.execute(
-                    "INSERT INTO conversation_history_fts(rowid, content) "
-                    "VALUES (?, ?)",
-                    (seq, entry.content or ""),
+        values = self._insert_row(session_id, agent_id, entry, dedup_key)
+        columns = ", ".join(_INSERT_COLUMNS)
+        placeholders = ", ".join("%s" for _ in _INSERT_COLUMNS)
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                seq = self._alloc_seqs(cur, 1)[0]
+                cur.execute(
+                    f"INSERT INTO platform.conversation_history "
+                    f"(workspace_key, seq, {columns}) "
+                    f"VALUES (%s, %s, {placeholders}) "
+                    f"ON CONFLICT (workspace_key, session_id, dedup_key) "
+                    f"DO NOTHING "
+                    f"RETURNING seq",
+                    (self._workspace_key, seq, *values),
                 )
-            return seq
+                row = cur.fetchone()
+                if row is None:
+                    # Conflict: this event is already durable. Return its seq so
+                    # the caller re-links to the existing row. ``ON CONFLICT``
+                    # suppresses the insert but not the counter advance, leaving
+                    # a gap in ``seq`` — harmless, because ``seq`` is only ever
+                    # compared against the ranges recorded in session state, and
+                    # the legacy importer preserves the original numbering.
+                    cur.execute(
+                        "SELECT seq FROM platform.conversation_history "
+                        "WHERE workspace_key = %s AND session_id = %s "
+                        "AND dedup_key = %s",
+                        (self._workspace_key, session_id, dedup_key),
+                    )
+                    existing = cur.fetchone()
+                    conn.commit()
+                    return int(existing["seq"]) if existing else 0
+            conn.commit()
+            return int(row["seq"])
+        except PlatformStoreUnavailable:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
 
     def append_many(
         self,
@@ -319,41 +265,42 @@ class HistoryStore:
     ) -> int:
         """Append a group of events in one transaction.
 
-        Returns the number of newly inserted rows. Duplicate keys remain
-        no-ops and only newly inserted rows are added to FTS, matching
-        :meth:`append`. This is intended for backfills where committing every
-        individual row would turn SQLite fsync latency into startup latency.
+        Returns the number of newly inserted rows. Duplicate keys remain no-ops,
+        matching :meth:`append`. Intended for backfills, where committing every
+        individual row would turn round-trip latency into startup latency.
         """
         if not entries:
             return 0
 
-        placeholders = ", ".join("?" for _ in _INSERT_COLUMNS)
+        columns = ", ".join(_INSERT_COLUMNS)
+        placeholders = ", ".join("%s" for _ in _INSERT_COLUMNS)
         sql = (
-            f"INSERT INTO conversation_history "
-            f"({', '.join(_INSERT_COLUMNS)}) VALUES ({placeholders}) "
-            f"ON CONFLICT(session_id, dedup_key) DO NOTHING"
+            f"INSERT INTO platform.conversation_history "
+            f"(workspace_key, seq, {columns}) "
+            f"VALUES (%s, %s, {placeholders}) "
+            f"ON CONFLICT (workspace_key, session_id, dedup_key) DO NOTHING"
         )
+        conn = get_conn()
         inserted = 0
-        with self._lock, self._conn:
-            for entry, dedup_key in entries:
-                row = self._insert_row(
-                    session_id,
-                    agent_id,
-                    entry,
-                    dedup_key,
-                )
-                cur = self._conn.execute(sql, row)
-                if cur.rowcount == 0:
-                    continue
-                inserted += 1
-                seq = int(cur.lastrowid or 0)
-                if self._fts and entry.name not in _RECALL_TOOL_NAMES:
-                    self._conn.execute(
-                        "INSERT INTO conversation_history_fts(rowid, content) "
-                        "VALUES (?, ?)",
-                        (seq, entry.content or ""),
+        try:
+            with dict_cursor(conn) as cur:
+                seqs = self._alloc_seqs(cur, len(entries))
+                for seq, (entry, dedup_key) in zip(seqs, entries):
+                    values = self._insert_row(
+                        session_id, agent_id, entry, dedup_key,
                     )
-        return inserted
+                    cur.execute(sql, (self._workspace_key, seq, *values))
+                    inserted += cur.rowcount
+            conn.commit()
+            return inserted
+        except PlatformStoreUnavailable:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
 
     def update_entry(
         self,
@@ -368,84 +315,74 @@ class HistoryStore:
         tool_input: Any = None,
         metadata: Any = _UNSET,
     ) -> None:
-        """Refresh an already-appended row in place (keeping FTS in sync).
+        """Refresh an already-appended row in place. ``seq`` is unchanged.
 
-        Used when one logical turn is *extended* after first write: AgentScope
-        accumulates a whole reply into a single assistant Msg, so the durable
-        row must end up with every cell's blocks and any later-emitted
-        headline. The scalar ``tool_call_id``/``name``/``tool_state``/
-        ``tool_input`` and message ``metadata`` are refreshed too, so a turn
-        that grows a *later* tool call doesn't leave them frozen at their
-        first-write values. ``seq`` is unchanged. Omitting ``metadata`` keeps
-        the stored value unchanged for backwards-compatible direct callers.
+        Used when one logical turn is *extended* after its first write: AgentScope
+        accumulates a whole reply into a single assistant Msg, so the durable row
+        must end up with every cell's blocks and any later-emitted headline. The
+        scalar ``tool_call_id``/``name``/``tool_state``/``tool_input`` and the
+        message ``metadata`` are refreshed too, so a turn that grows a *later*
+        tool call does not leave them frozen at their first-write values. Omitting
+        ``metadata`` keeps the stored value unchanged for older callers.
         """
-        # Recall-tool rows are never FTS-indexed (see ``_RECALL_TOOL_NAMES``),
-        # so don't touch the index for them on update either.
-        fts_sync = self._fts and name not in _RECALL_TOOL_NAMES
-        with self._lock, self._conn:
-            old_content = None
-            if fts_sync:
-                r = self._conn.execute(
-                    "SELECT content FROM conversation_history WHERE seq = ?",
-                    (seq,),
-                ).fetchone()
-                old_content = r["content"] if r else None
-            # Keep every column name below as a hard-coded literal. Only
-            # values are parameterized; never add caller-controlled names.
-            assignments = [
-                "content = ?",
-                "headline = ?",
-                "blocks = ?",
-                "tool_call_id = ?",
-                "name = ?",
-                "tool_state = ?",
-                "tool_input = ?",
-            ]
-            values: list[Any] = [
-                content,
-                headline,
-                _to_json(blocks),
-                tool_call_id,
-                name,
-                tool_state,
-                _to_json(tool_input),
-            ]
-            if metadata is not _UNSET:
-                assignments.append("metadata = ?")
-                # The history schema canonically represents empty metadata
-                # as SQL NULL, matching the initial insert path.
-                values.append(_to_json(metadata or None))
-            values.append(seq)
-            self._conn.execute(
-                "UPDATE conversation_history SET "
-                + ", ".join(assignments)
-                + " WHERE seq = ?",
-                values,
-            )
-            if fts_sync:
-                if old_content is not None:
-                    self._conn.execute(
-                        "INSERT INTO conversation_history_fts"
-                        "(conversation_history_fts, rowid, content) "
-                        "VALUES('delete', ?, ?)",
-                        (seq, old_content),
-                    )
-                self._conn.execute(
-                    "INSERT INTO conversation_history_fts(rowid, content) "
-                    "VALUES (?, ?)",
-                    (seq, content or ""),
+        # Column names below are hard-coded literals; only values are
+        # parameterized. Never add a caller-controlled name here.
+        assignments = [
+            "content = %s",
+            "headline = %s",
+            "blocks = %s",
+            "tool_call_id = %s",
+            "name = %s",
+            "tool_state = %s",
+            "tool_input = %s",
+        ]
+        values: list[Any] = [
+            content,
+            headline,
+            _to_json(blocks),
+            tool_call_id,
+            name,
+            tool_state,
+            _to_json(tool_input),
+        ]
+        if metadata is not _UNSET:
+            assignments.append("metadata = %s")
+            # The schema canonically represents empty metadata as SQL NULL,
+            # matching the insert path.
+            values.append(_to_json(metadata or None))
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE platform.conversation_history SET "
+                    + ", ".join(assignments)
+                    + " WHERE workspace_key = %s AND seq = %s",
+                    (*values, self._workspace_key, seq),
                 )
+            conn.commit()
+        except PlatformStoreUnavailable:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
 
     # --- read path -----------------------------------------------------
 
     def count(self, session_id: str) -> int:
-        with self._lock:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM conversation_history "
-                "WHERE session_id = ?",
-                (session_id,),
-            )
-            return int(cur.fetchone()["n"])
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM platform.conversation_history "
+                    "WHERE workspace_key = %s AND session_id = %s",
+                    (self._workspace_key, session_id),
+                )
+                return int(cur.fetchone()["n"])
+        finally:
+            put_conn(conn)
 
     def load_session_messages(
         self,
@@ -454,12 +391,10 @@ class HistoryStore:
     ) -> list[Msg]:
         """Rebuild this session's full transcript, oldest first.
 
-        The live context window only holds what Scroll has not evicted, so it
-        is *not* the conversation: reading it as the transcript silently
-        dropped every evicted turn (the anchor list shrank while chatting, and
-        "jump to top" landed in the middle of the session). These rows are the
-        durable record the model itself recalls from, so they are the correct
-        source for a transcript view.
+        The live context window only holds what Scroll has not evicted, so it is
+        *not* the conversation: reading it as the transcript silently dropped
+        every evicted turn. These rows are the durable record the model itself
+        recalls from, so they are the correct source for a transcript view.
 
         ``blocks`` holds each block's ``model_dump``; AgentScope coerces those
         dicts back into typed blocks by their ``type`` discriminator, so tool
@@ -469,41 +404,42 @@ class HistoryStore:
         """
         if not session_id:
             return []
-        where = ["session_id = ?"]
-        params: list[Any] = [session_id]
+        where = ["workspace_key = %s", "session_id = %s"]
+        params: list[Any] = [self._workspace_key, session_id]
         if agent_id:
             # Early migration versions wrote agent_id=NULL. Session plus seq
             # range already pins those rows here, so keep them.
-            where.append("(agent_id = ? OR agent_id IS NULL)")
+            where.append("(agent_id = %s OR agent_id IS NULL)")
             params.append(agent_id)
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT seq, kind, role, name, content, blocks, metadata, "
-                "created_at "
-                "FROM conversation_history "
-                "WHERE " + " AND ".join(where) +
-                # Order by the time the turn happened, NOT by ``seq``.
-                #
-                # ``seq`` is the *write* order, and it does not always match
-                # the conversation's order: a turn can be persisted later than
-                # the turn that follows it (a resumed/retried turn, or rows
-                # imported by the session-sync pass), which made the console
-                # render a question *below* its answer after a refresh. The
-                # live context window was unaffected, which is why this only
-                # appeared once the transcript came from the durable store.
-                #
-                # ``seq`` remains the tie-break: every row of one turn shares
-                # its message's ``created_at`` (the serializer stamps them all
-                # from the same Msg), so the within-turn order — tool call
-                # before its result — is still the write order.
-                #
-                # ``created_at IS NULL`` is sorted on first so a row with no
-                # timestamp falls *last* (keeping its seq relative to other
-                # undated rows) instead of jumping to the head of the
-                # conversation, which is where SQLite puts NULLs by default.
-                " ORDER BY (created_at IS NULL), created_at, seq",
-                tuple(params),
-            ).fetchall()
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                cur.execute(
+                    "SELECT seq, kind, role, name, content, blocks, metadata, "
+                    "created_at "
+                    "FROM platform.conversation_history "
+                    "WHERE " + " AND ".join(where) +
+                    # Order by the time the turn happened, NOT by ``seq``.
+                    #
+                    # ``seq`` is the *write* order, and it does not always match
+                    # the conversation's order: a turn can be persisted later than
+                    # the turn that follows it (a resumed/retried turn, or rows
+                    # imported by the session-sync pass), which made the console
+                    # render a question *below* its answer after a refresh.
+                    #
+                    # ``seq`` remains the tie-break: every row of one turn shares
+                    # its message's ``created_at``, so the within-turn order — tool
+                    # call before its result — is still the write order.
+                    #
+                    # ``NULLS LAST`` keeps an undated row at the end (keeping its
+                    # seq relative to other undated rows) instead of jumping to the
+                    # head of the conversation.
+                    " ORDER BY created_at ASC NULLS LAST, seq",
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+        finally:
+            put_conn(conn)
 
         messages: list[Msg] = []
         seen: set[tuple] = set()
@@ -513,22 +449,19 @@ class HistoryStore:
                 continue
             # Collapse rows that describe the same logical event.
             #
-            # ``append`` dedupes on ``(session_id, dedup_key)`` with
-            # ``ON CONFLICT DO NOTHING``, so a row is only protected while its
-            # key stays identical. It does not: ``_persist_new`` falls back to
-            # ``str(id(msg))`` when a message carries no id, and the session-sync
-            # pass derives the key from the file — so a re-persist or a restart
-            # can write the same message again under a different key, and a
-            # ``NULL`` key never conflicts at all. Replaying every row then
-            # showed a question twice with its answer in between.
+            # ``append`` dedupes on ``(session_id, dedup_key)``, so a row is only
+            # protected while its key stays identical — and a re-persist under a
+            # different key (or a NULL key, which never conflicts) can write the
+            # same message twice. Replaying every row then showed a question twice
+            # with its answer in between.
             #
-            # Identity is (role, name, created_at, text): all rows of one Msg
-            # share its ``created_at``, and a user genuinely asking the same
-            # thing again gets a new timestamp, so real repetition survives.
+            # Identity is (role, name, created_at, text): all rows of one Msg share
+            # its ``created_at``, and a user genuinely asking the same thing again
+            # gets a new timestamp, so real repetition survives.
             key = (
                 row["role"],
                 row["name"],
-                row["created_at"] if "created_at" in row.keys() else None,
+                row.get("created_at"),
                 msg.get_text_content() or "",
             )
             if key in seen:
@@ -544,13 +477,23 @@ class HistoryStore:
         """Assign legacy unowned rows in a canonical session to an agent."""
         if not session_id or not agent_id:
             return 0
-        with self._lock, self._conn:
-            cur = self._conn.execute(
-                "UPDATE conversation_history SET agent_id = ? "
-                "WHERE session_id = ? AND agent_id IS NULL",
-                (agent_id, session_id),
-            )
-            return int(cur.rowcount)
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE platform.conversation_history SET agent_id = %s "
+                    "WHERE workspace_key = %s AND session_id = %s "
+                    "AND agent_id IS NULL",
+                    (agent_id, self._workspace_key, session_id),
+                )
+                claimed = int(cur.rowcount)
+            conn.commit()
+            return claimed
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
 
     def reconcile_session_rows(
         self,
@@ -562,14 +505,14 @@ class HistoryStore:
     ) -> tuple[int, int, int]:
         """Move rows proven to come from one file into its canonical session.
 
-        ``source_ids`` alone is not sufficient provenance because synthetic
-        IDs can collide across channel directories. Restricting the operation
-        to dedup keys recomputed from the source file prevents unrelated rows
-        from being swept into ``target_id``.
+        ``source_ids`` alone is not sufficient provenance because synthetic IDs
+        can collide across channel directories. Restricting the operation to
+        dedup keys recomputed from the source file prevents unrelated rows from
+        being swept into ``target_id``.
 
         Returns ``(moved, deduplicated, claimed)``. Non-conflicting rows retain
-        their original ``seq``; source duplicates are removed in favor of the
-        existing canonical row so the unique dedup contract remains valid.
+        their original ``seq``; source duplicates are removed in favour of the
+        existing canonical row so the unique dedup contract stays valid.
         """
         sources = sorted(
             source_id
@@ -583,125 +526,149 @@ class HistoryStore:
         moved = 0
         deduplicated = 0
         claimed = 0
-        with self._lock, self._conn:
-            for source_id in sources:
-                for start in range(0, len(keys), 400):
-                    chunk = keys[slice(start, start + 400)]
-                    placeholders = ", ".join("?" for _ in chunk)
-                    ownership = ""
-                    params: list[Any] = [source_id, *chunk]
-                    if agent_id:
-                        ownership = " AND (agent_id = ? OR agent_id IS NULL)"
-                        params.append(agent_id)
-                    rows = self._conn.execute(
-                        "SELECT seq, dedup_key, content "
-                        "FROM conversation_history "
-                        "WHERE session_id = ? AND dedup_key IN ("
-                        + placeholders
-                        + ")"
-                        + ownership,
-                        params,
-                    ).fetchall()
-                    if not rows:
-                        continue
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                for source_id in sources:
+                    # Chunked: a tool-heavy session can carry thousands of keys
+                    # and PostgreSQL has a parameter ceiling per statement.
+                    for start in range(0, len(keys), 400):
+                        chunk = keys[start : start + 400]
+                        rows = self._select_actionable_rows(
+                            cur, source_id, chunk, agent_id,
+                        )
+                        if not rows:
+                            continue
 
-                    row_keys = [str(row["dedup_key"]) for row in rows]
-                    target_placeholders = ", ".join("?" for _ in row_keys)
-                    existing = self._conn.execute(
-                        "SELECT dedup_key FROM conversation_history "
-                        "WHERE session_id = ? AND dedup_key IN ("
-                        + target_placeholders
-                        + ")",
-                        [target_id, *row_keys],
-                    ).fetchall()
-                    existing_keys = {str(row["dedup_key"]) for row in existing}
-                    duplicates = [
-                        row
-                        for row in rows
-                        if str(row["dedup_key"]) in existing_keys
-                    ]
-                    movable = [
-                        row
-                        for row in rows
-                        if str(row["dedup_key"]) not in existing_keys
-                    ]
+                        row_keys = [str(row["dedup_key"]) for row in rows]
+                        cur.execute(
+                            "SELECT dedup_key FROM platform.conversation_history "
+                            "WHERE workspace_key = %s AND session_id = %s "
+                            "AND dedup_key = ANY(%s)",
+                            (self._workspace_key, target_id, row_keys),
+                        )
+                        existing_keys = {
+                            str(row["dedup_key"]) for row in cur.fetchall()
+                        }
+                        duplicates = [
+                            row
+                            for row in rows
+                            if str(row["dedup_key"]) in existing_keys
+                        ]
+                        movable = [
+                            row
+                            for row in rows
+                            if str(row["dedup_key"]) not in existing_keys
+                        ]
 
-                    if self._fts:
-                        for row in duplicates:
-                            self._conn.execute(
-                                "INSERT INTO conversation_history_fts"
-                                "(conversation_history_fts, rowid, content) "
-                                "VALUES('delete', ?, ?)",
-                                (row["seq"], row["content"] or ""),
+                        if duplicates:
+                            cur.execute(
+                                "DELETE FROM platform.conversation_history "
+                                "WHERE workspace_key = %s AND seq = ANY(%s)",
+                                (
+                                    self._workspace_key,
+                                    [int(row["seq"]) for row in duplicates],
+                                ),
                             )
-                    if duplicates:
-                        self._conn.executemany(
-                            "DELETE FROM conversation_history WHERE seq = ?",
-                            [(row["seq"],) for row in duplicates],
-                        )
-                        deduplicated += len(duplicates)
+                            deduplicated += len(duplicates)
 
-                    if movable:
-                        seqs = [int(row["seq"]) for row in movable]
-                        seq_placeholders = ", ".join("?" for _ in seqs)
-                        cur = self._conn.execute(
-                            "UPDATE conversation_history "
-                            "SET session_id = ?, "
-                            "agent_id = COALESCE(agent_id, ?) "
-                            "WHERE seq IN (" + seq_placeholders + ")",
-                            [target_id, agent_id, *seqs],
-                        )
-                        moved += int(cur.rowcount)
+                        if movable:
+                            cur.execute(
+                                "UPDATE platform.conversation_history "
+                                "SET session_id = %s, "
+                                "agent_id = COALESCE(agent_id, %s) "
+                                "WHERE workspace_key = %s AND seq = ANY(%s)",
+                                (
+                                    target_id,
+                                    agent_id,
+                                    self._workspace_key,
+                                    [int(row["seq"]) for row in movable],
+                                ),
+                            )
+                            moved += int(cur.rowcount)
 
-            if agent_id:
-                cur = self._conn.execute(
-                    "UPDATE conversation_history SET agent_id = ? "
-                    "WHERE session_id = ? AND agent_id IS NULL",
-                    (agent_id, target_id),
-                )
-                claimed = int(cur.rowcount)
-        return (moved, deduplicated, claimed)
+                if agent_id:
+                    cur.execute(
+                        "UPDATE platform.conversation_history SET agent_id = %s "
+                        "WHERE workspace_key = %s AND session_id = %s "
+                        "AND agent_id IS NULL",
+                        (agent_id, self._workspace_key, target_id),
+                    )
+                    claimed = int(cur.rowcount)
+            conn.commit()
+            return (moved, deduplicated, claimed)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
+
+    def _select_actionable_rows(
+        self,
+        cur,
+        source_id: str,
+        chunk: list[str],
+        agent_id: str | None,
+    ) -> list[dict]:
+        """Rows in *source_id* whose dedup keys prove they belong to this file."""
+        ownership = ""
+        params: list[Any] = [self._workspace_key, source_id, chunk]
+        if agent_id:
+            ownership = " AND (agent_id = %s OR agent_id IS NULL)"
+            params.append(agent_id)
+        cur.execute(
+            "SELECT seq, dedup_key, content FROM platform.conversation_history "
+            "WHERE workspace_key = %s AND session_id = %s "
+            "AND dedup_key = ANY(%s)" + ownership,
+            params,
+        )
+        return list(cur.fetchall())
 
     def existing_seqs(self, seqs: set[int]) -> set[int]:
-        """Return the subset of globally addressed history rows that exist."""
+        """Return the subset of this workspace's ``seq`` values that exist."""
         if not seqs:
             return set()
         ordered = sorted(int(seq) for seq in seqs)
-        placeholders = ", ".join("?" for _ in ordered)
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT seq FROM conversation_history WHERE seq IN ("
-                + placeholders
-                + ")",
-                ordered,
-            ).fetchall()
-        return {int(row["seq"]) for row in rows}
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                cur.execute(
+                    "SELECT seq FROM platform.conversation_history "
+                    "WHERE workspace_key = %s AND seq = ANY(%s)",
+                    (self._workspace_key, ordered),
+                )
+                return {int(row["seq"]) for row in cur.fetchall()}
+        finally:
+            put_conn(conn)
 
     def contents_by_seqs(self, seqs: set[int]) -> dict[int, str | None]:
-        """Return exact persisted content for globally addressed rows.
+        """Return exact persisted content for the given ``seq`` values.
 
         Summary evidence uses this after live tool results have been folded.
-        Querying exact primary keys, instead of a broad ``lo..hi`` range,
-        prevents interleaved rows from another agent or session entering the
-        evidence. Chunking also keeps the query below SQLite parameter limits
-        for unusually tool-heavy histories.
+        Querying exact keys, instead of a broad ``lo..hi`` range, prevents
+        interleaved rows from another agent or session entering the evidence.
         """
         if not seqs:
             return {}
         ordered = sorted(int(seq) for seq in seqs)
         found: dict[int, str | None] = {}
-        with self._lock:
-            for start in range(0, len(ordered), 500):
-                chunk = ordered[start : start + 500]
-                placeholders = ", ".join("?" for _ in chunk)
-                rows = self._conn.execute(
-                    "SELECT seq, content FROM conversation_history "
-                    f"WHERE seq IN ({placeholders})",
-                    chunk,
-                ).fetchall()
-                found.update(
-                    {int(row["seq"]): row["content"] for row in rows},
-                )
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                # Chunked so a tool-heavy summary does not build one enormous
+                # array parameter.
+                for start in range(0, len(ordered), 500):
+                    chunk = ordered[start : start + 500]
+                    cur.execute(
+                        "SELECT seq, content FROM platform.conversation_history "
+                        "WHERE workspace_key = %s AND seq = ANY(%s)",
+                        (self._workspace_key, chunk),
+                    )
+                    found.update(
+                        {int(row["seq"]): row["content"] for row in cur.fetchall()},
+                    )
+        finally:
+            put_conn(conn)
         return found
 
     @staticmethod
@@ -709,20 +676,19 @@ class HistoryStore:
         before: str,
         kinds: tuple[str, ...] | None,
     ) -> tuple[str, list]:
-        """Build the shared ``WHERE`` for purge/estimate so they can't drift.
+        """Build the shared ``WHERE`` for purge/estimate so they cannot drift.
 
-        Always bounds by ``created_at < before`` (NULL ``created_at`` is never
+        Always bounds by ``created_at < before`` (a NULL ``created_at`` is never
         matched, so unstamped rows are retained). When ``kinds`` is given, also
-        restricts to those row kinds (e.g. ``("tool_result",)`` to drop only
-        tool output and keep the conversation). Values are bound, never
-        interpolated.
+        restricts to those row kinds (e.g. ``("tool_result",)`` to drop only tool
+        output and keep the conversation). Values are bound, never interpolated;
+        the workspace predicate is prepended by the callers.
         """
-        clause = "created_at IS NOT NULL AND created_at < ?"
+        clause = "created_at IS NOT NULL AND created_at < %s"
         params: list = [before]
         if kinds:
-            placeholders = ", ".join("?" for _ in kinds)
-            clause += f" AND kind IN ({placeholders})"
-            params.extend(kinds)
+            clause += " AND kind = ANY(%s)"
+            params.append(list(kinds))
         return clause, params
 
     def estimate_purge(
@@ -733,25 +699,29 @@ class HistoryStore:
     ) -> dict:
         """How much ``purge(before=...)`` would remove — WITHOUT removing it.
 
-        Returns ``{"rows": n, "content_bytes": b}`` where ``content_bytes`` is
-        the summed length of the ``content`` column for the matched rows (the
-        bulk of the on-disk weight; the FTS index roughly mirrors it, so true
-        reclaim is larger). ``kinds`` narrows to specific row kinds (e.g.
-        ``("tool_result",)`` to size only tool output). A dry-run estimate to
-        show before an operator commits a purge, so they never delete blindly.
+        Returns ``{"rows": n, "content_bytes": b}`` where ``content_bytes`` is the
+        summed length of the ``content`` column for the matched rows (the bulk of
+        the on-disk weight). ``kinds`` narrows to specific row kinds. A dry-run
+        estimate to show an operator before they commit a purge.
         """
         where, params = self._purge_where(before, kinds)
-        with self._lock, self._conn:
-            row = self._conn.execute(
-                "SELECT COUNT(*) AS rows, "
-                "COALESCE(SUM(LENGTH(content)), 0) AS content_bytes "
-                "FROM conversation_history WHERE " + where,
-                params,
-            ).fetchone()
-        return {
-            "rows": int(row["rows"]),
-            "content_bytes": int(row["content_bytes"]),
-        }
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                cur.execute(
+                    "SELECT COUNT(*) AS rows, "
+                    "COALESCE(SUM(LENGTH(content)), 0) AS content_bytes "
+                    "FROM platform.conversation_history "
+                    "WHERE workspace_key = %s AND " + where,
+                    (self._workspace_key, *params),
+                )
+                row = cur.fetchone()
+            return {
+                "rows": int(row["rows"]),
+                "content_bytes": int(row["content_bytes"]),
+            }
+        finally:
+            put_conn(conn)
 
     def purge(
         self,
@@ -760,66 +730,57 @@ class HistoryStore:
         dry_run: bool = False,
         kinds: tuple[str, ...] | None = None,
     ) -> int:
-        """Delete history rows with ``created_at < before`` (ISO-8601).
+        """Delete this workspace's history rows with ``created_at < before``.
 
         Returns the number of rows that match (and, unless ``dry_run``, were
-        removed). With ``dry_run=True`` nothing is deleted — the count is
-        computed and returned so a caller can preview the blast radius (pair
-        with :meth:`estimate_purge` for the byte estimate). ``kinds`` narrows
-        the delete to specific row kinds — e.g. ``("tool_result",)`` drops only
-        tool output (the bulk of the bloat) while keeping the conversation
-        turns. The FTS index is kept in sync (each purged row is removed from
-        it first). Rows with a NULL/empty ``created_at`` are never matched, so
-        they are retained. This is the retention/clear path — driven on
-        startup and teardown by ``history_retention_days`` (default 30; set 0
-        to keep history forever, which calls nothing here).
-
-        Note: this DELETEs but does not ``VACUUM``, so freed pages are reused
-        but the file does not shrink on disk until a separate vacuum.
+        removed). ``kinds`` narrows the delete to specific row kinds — e.g.
+        ``("tool_result",)`` drops only tool output (the bulk of the weight) while
+        keeping the conversation turns. Rows with a NULL/empty ``created_at`` are
+        never matched, so they are retained. This is the retention/clear path,
+        driven on startup and teardown by ``history_retention_days`` (default 30;
+        set 0 to keep history forever, which never calls this).
         """
         where, params = self._purge_where(before, kinds)
-        with self._lock, self._conn:
-            doomed = self._conn.execute(
-                "SELECT seq, content FROM conversation_history WHERE " + where,
-                params,
-            ).fetchall()
-            if not doomed:
-                return 0
-            if dry_run:
-                return len(doomed)
-            if self._fts:
-                for row in doomed:
-                    self._conn.execute(
-                        "INSERT INTO conversation_history_fts"
-                        "(conversation_history_fts, rowid, content) "
-                        "VALUES('delete', ?, ?)",
-                        (row["seq"], row["content"] or ""),
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                if dry_run:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM platform.conversation_history "
+                        "WHERE workspace_key = %s AND " + where,
+                        (self._workspace_key, *params),
                     )
-            self._conn.execute(
-                "DELETE FROM conversation_history WHERE " + where,
-                params,
-            )
-            return len(doomed)
+                    matched = int(cur.fetchone()[0])
+                else:
+                    cur.execute(
+                        "DELETE FROM platform.conversation_history "
+                        "WHERE workspace_key = %s AND " + where,
+                        (self._workspace_key, *params),
+                    )
+                    matched = int(cur.rowcount)
+            conn.commit()
+            return matched
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
 
     def vacuum(self) -> None:
-        """Rebuild the database file to reclaim space freed by ``purge``.
+        """Reclaim space freed by :meth:`purge`.
 
-        ``purge`` only DELETEs rows, so freed pages are reused but the file
-        does not shrink on disk. VACUUM rewrites it compactly. It is O(db size)
-        and briefly needs extra scratch space, so it is an explicit, separate
-        step rather than run inline on the retention purge path.
+        SQLite needed an explicit ``VACUUM`` to shrink the file. PostgreSQL's
+        autovacuum reclaims dead tuples in the background, so there is nothing to
+        do here; kept as a no-op because it is part of the retention path's call
+        sequence and callers should not have to special-case the backend.
         """
-        # VACUUM cannot run inside an open transaction; sqlite3 in its default
-        # isolation mode opens one implicitly on writes, so commit first.
-        with self._lock:
-            self._conn.commit()
-            self._conn.execute("VACUUM")
+        return
 
     def note_write_failure(self, exc: BaseException) -> None:
         """Record a write-through failure — durability is now degraded.
 
-        Logs prominently on the first failure (then counts the rest, to avoid
-        log spam). Read ``degraded`` to gate any "fully durable" guarantees.
+        Logs prominently on the first failure, then counts the rest to avoid log
+        spam. Read ``degraded`` to gate any "fully durable" guarantee.
         """
         self.write_failures += 1
         if not self.degraded:
@@ -832,19 +793,20 @@ class HistoryStore:
 
     @property
     def closed(self) -> bool:
-        """True once :meth:`close` has run — the connection is gone."""
+        """True once :meth:`close` has run."""
         return self._closed
 
     def close(self) -> None:
+        """Mark this store closed.
+
+        Connections are pooled and returned per call, so there is nothing to
+        release; the flag exists so callers can distinguish an intentional
+        teardown from a real outage.
+        """
         self._closed = True
-        with self._lock:
-            try:
-                self._conn.close()
-            except sqlite3.Error:
-                pass
 
     def __repr__(self) -> str:
-        return f"<HistoryStore path={self._path}>"
+        return f"<HistoryStore workspace={self._workspace_key}>"
 
 
 def _to_json(value) -> str | None:
@@ -867,8 +829,6 @@ def _loads(value: Any) -> Any:
         return None
 
 
-_BLOCK_TYPES: dict[str, Any] | None = None
-
 # Transcript payload budget for one tool result.
 #
 # Returning the whole durable transcript (instead of only the live window) is
@@ -876,7 +836,7 @@ _BLOCK_TYPES: dict[str, Any] | None = None
 # result to hold tens of KB, so 500 such turns produced a 19MB response and a
 # 1000-turn session tens of MB — which the console then had to download and
 # parse. The transcript view only needs enough to recognise the call; the full
-# text stays in ``history.db`` and is recoverable through the recall tools.
+# text stays in the store and is recoverable through the recall tools.
 _TRANSCRIPT_TOOL_RESULT_MAX_CHARS = 4000
 _TRANSCRIPT_TRUNCATED_MARK = "\n\n…[内容过长已截断，完整内容可用 recall 工具获取]"
 
@@ -884,8 +844,8 @@ _TRANSCRIPT_TRUNCATED_MARK = "\n\n…[内容过长已截断，完整内容可用
 def _truncate_tool_result(block: Any) -> Any:
     """Cap one tool result's rendered output for the transcript view.
 
-    ``output`` is either a string or a list of blocks; both shapes are bounded
-    so no single result can dominate the response.
+    ``output`` is either a string or a list of blocks; both shapes are bounded so
+    no single result can dominate the response.
     """
     limit = _TRANSCRIPT_TOOL_RESULT_MAX_CHARS
     output = getattr(block, "output", None)
@@ -913,14 +873,17 @@ def _truncate_tool_result(block: Any) -> Any:
     return block
 
 
+_BLOCK_TYPES: dict[str, Any] | None = None
+
+
 def _coerce_block(item: Any) -> Any:
     """Turn one stored block dict into its typed AgentScope block.
 
     ``Msg.content`` is a union whose **first** member is ``TextBlock``, and
     pydantic does not fall through to the other members once a member's literal
     ``type`` fails — so handing ``Msg`` raw dicts rejects every non-text block.
-    Resolving the concrete class by ``type`` first keeps tool calls, tool
-    results, thinking and media intact instead of degrading a turn to text.
+    Resolving the concrete class by ``type`` first keeps tool calls, tool results,
+    thinking and media intact instead of degrading a turn to text.
 
     Tool results are additionally capped: see ``_TRANSCRIPT_TOOL_RESULT_MAX_CHARS``.
     """
@@ -963,14 +926,14 @@ def _coerce_block(item: Any) -> Any:
     return block
 
 
-def _row_to_msg(row: sqlite3.Row) -> Msg | None:
+def _row_to_msg(row: Any) -> Msg | None:
     """Rebuild one durable row into a ``Msg`` for the transcript view.
 
     ``blocks`` is the faithful copy of the turn's content (each block's
     ``model_dump``), so it wins over the flattened ``content`` text, which has
-    already lost tool calls and media. A row with no usable content — or one
-    that fails to parse at all — is dropped rather than raising, so a single
-    bad row cannot blank an entire conversation.
+    already lost tool calls and media. A row with no usable content — or one that
+    fails to parse at all — is dropped rather than raising, so a single bad row
+    cannot blank an entire conversation.
     """
     from agentscope.message import Msg
 
@@ -992,11 +955,11 @@ def _row_to_msg(row: sqlite3.Row) -> Msg | None:
     if not isinstance(metadata, dict):
         metadata = {}
     # The console reads a message's time from ``metadata.timestamp`` (see
-    # ``sessionApi.parseTimestamp``), and `Msg.timestamp` aliases
-    # ``created_at``. Without restoring it here, every rebuilt message had no
-    # time at all, so the frontend could not order a turn's request against its
-    # reply — after a refresh the question rendered *below* the answer.
-    created_at = row["created_at"] if "created_at" in row.keys() else None
+    # ``sessionApi.parseTimestamp``), and ``Msg.timestamp`` aliases
+    # ``created_at``. Without restoring it here, every rebuilt message had no time
+    # at all, so the frontend could not order a turn's request against its reply —
+    # after a refresh the question rendered *below* the answer.
+    created_at = row.get("created_at")
     if created_at and "timestamp" not in metadata:
         metadata["timestamp"] = created_at
     try:
@@ -1007,9 +970,9 @@ def _row_to_msg(row: sqlite3.Row) -> Msg | None:
             "content": content,
             "metadata": metadata,
             # A stable id per row. ``Msg`` would otherwise mint a fresh random
-            # uuid on every read, so the same message looked like a different
-            # one each time the transcript was fetched (and the console keys
-            # its cards by id).
+            # uuid on every read, so the same message looked like a different one
+            # each time the transcript was fetched (and the console keys its cards
+            # by id).
             "id": f"hist-{row['seq']}",
         }
         if created_at:
@@ -1017,7 +980,10 @@ def _row_to_msg(row: sqlite3.Row) -> Msg | None:
         return Msg(**fields)
     except Exception:  # noqa: BLE001 - one bad row must not break the read
         logger.debug(
-            "scroll: could not rebuild history row seq=%s", row["seq"],
+            "scroll: could not rebuild history row seq=%s", row.get("seq"),
             exc_info=True,
         )
         return None
+
+
+__all__ = ["HistoryStore", "RECALL_TOOL_NAMES", "workspace_key_for"]
