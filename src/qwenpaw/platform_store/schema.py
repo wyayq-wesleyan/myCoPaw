@@ -148,20 +148,39 @@ def apply_migrations(migrations: list[Migration]) -> list[str]:
     return applied_now
 
 
-def ensure_schema(migrations: list[Migration]) -> None:
-    """Apply *migrations* once per process.
+def ensure_schema(migrations: list[Migration]) -> bool:
+    """Apply *migrations* once per process, tolerating an unreachable database.
 
-    Called from startup; later calls short-circuit so the hot path never touches
-    the lock or the database for schema reasons.
+    Called from constructors on the startup path, so it must NOT raise when the
+    database is down: the platform has to boot and report the affected features
+    as unavailable, rather than crash-looping while PostgreSQL comes up. A
+    failure is logged and answered with ``False``, and the once-per-process flag
+    stays unset so the next call retries instead of treating an empty schema as
+    ready.
+
+    Returns whether the schema is known to be applied. Callers that need data
+    immediately should let their own query raise ``PlatformStoreUnavailable``
+    with a specific message; this only covers the bookkeeping step.
     """
     global _schema_ready
     if _schema_ready:
-        return
+        return True
     with _schema_lock:
         if _schema_ready:
-            return
-        apply_migrations(migrations)
+            return True
+        try:
+            apply_migrations(migrations)
+        except PlatformStoreUnavailable as exc:
+            logger.warning(
+                "platform store: schema not applied (database unavailable): %s",
+                exc.detail,
+            )
+            return False
+        except Exception:  # noqa: BLE001 - startup must survive schema errors
+            logger.exception("platform store: schema migration failed")
+            return False
         _schema_ready = True
+        return True
 
 
 def reset_schema_flag() -> None:

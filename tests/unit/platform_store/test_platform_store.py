@@ -141,6 +141,47 @@ def test_failed_open_is_not_cached(monkeypatch):
     store_pool.reset_pool()
 
 
+def test_schema_step_tolerates_a_down_database(monkeypatch):
+    """Booting must not require the database to be up.
+
+    ``ensure_schema`` runs from constructors on the startup path, so an
+    unreachable database has to be reported rather than raised — otherwise a
+    deployment whose PostgreSQL is still coming up would crash-loop instead of
+    starting and then reporting the affected features as unavailable.
+    """
+    from qwenpaw.platform_store import schema as store_schema
+    from qwenpaw.platform_store.migrations import ALL_MIGRATIONS
+
+    def _boom():
+        raise store_pool.PlatformStoreUnavailable("connection refused")
+
+    monkeypatch.setattr(store_schema, "get_conn", _boom)
+    store_schema.reset_schema_flag()
+    try:
+        assert store_schema.ensure_schema(ALL_MIGRATIONS) is False
+        # Not marked ready: the next call retries instead of assuming success.
+        assert store_schema._schema_ready is False
+    finally:
+        store_schema.reset_schema_flag()
+
+
+def test_history_store_constructs_with_a_down_database(monkeypatch):
+    """The platform boots; the failure surfaces only when data is read."""
+    from qwenpaw.agents.context.scroll.history import HistoryStore
+
+    def _boom():
+        raise store_pool.PlatformStoreUnavailable("connection refused")
+
+    monkeypatch.setattr(store_pool, "_get_pool", _boom)
+
+    # Construction must not raise — that is what makes the app start.
+    store = HistoryStore("/tmp/qwenpaw-down-test/history.db")
+
+    # And a read gives the typed error a route can turn into a clear message.
+    with pytest.raises(store_pool.PlatformStoreUnavailable):
+        store.count("s1")
+
+
 def test_broken_connection_is_not_returned_to_the_pool(monkeypatch):
     """Bookkeeping must never raise, even when the pool is gone."""
     store_pool.reset_pool()
