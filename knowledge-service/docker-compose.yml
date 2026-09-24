@@ -15,6 +15,12 @@ services:
       - "127.0.0.1:${KNOWLEDGE_POSTGRES_PORT:-15432}:5432"
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
+    # The platform store (conversation history, audit) shares this instance with
+    # the knowledge service and the per-account analysis databases, so the
+    # default 100-connection ceiling is too low: the analysis pools alone can
+    # reach ~40 and history adds a pool on top. Raised explicitly rather than
+    # left to the image default so the ceiling is visible and intentional.
+    command: ["postgres", "-c", "max_connections=${KNOWLEDGE_POSTGRES_MAX_CONNECTIONS:-200}"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
