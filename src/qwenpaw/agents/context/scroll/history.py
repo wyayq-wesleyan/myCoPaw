@@ -370,6 +370,73 @@ class HistoryStore:
         finally:
             put_conn(conn)
 
+    # --- legacy import -------------------------------------------------
+
+    def import_rows(self, rows: Sequence[dict]) -> int:
+        """Insert pre-existing rows verbatim, preserving their ``seq``.
+
+        Used only by the SQLite→PostgreSQL upgrade, which must keep the original
+        numbering: the eviction index stores ``seq`` ranges inside session state,
+        so renumbering imported history would break every existing reference.
+        For the same reason the per-workspace counter is raised to the imported
+        maximum afterwards — otherwise the next ``append`` would hand out a
+        ``seq`` that is already taken and hit the primary key.
+
+        Idempotent: ``ON CONFLICT DO NOTHING`` covers both the ``(workspace_key,
+        seq)`` primary key and the ``(workspace_key, session_id, dedup_key)``
+        unique index, so re-running an interrupted import inserts only what is
+        missing. Returns the number of rows actually inserted.
+        """
+        if not rows:
+            return 0
+        columns = ", ".join(_INSERT_COLUMNS)
+        placeholders = ", ".join("%s" for _ in _INSERT_COLUMNS)
+        sql = (
+            f"INSERT INTO platform.conversation_history "
+            f"(workspace_key, seq, {columns}) "
+            f"VALUES (%s, %s, {placeholders}) "
+            f"ON CONFLICT DO NOTHING"
+        )
+        conn = get_conn()
+        inserted = 0
+        try:
+            with dict_cursor(conn) as cur:
+                for row in rows:
+                    values = tuple(row.get(column) for column in _INSERT_COLUMNS)
+                    cur.execute(
+                        sql,
+                        (self._workspace_key, int(row["seq"]), *values),
+                    )
+                    inserted += cur.rowcount
+                # Raise the watermark past everything imported so ordinary
+                # appends continue after the legacy numbering. ``GREATEST`` keeps
+                # this safe to re-run and safe against a later append.
+                cur.execute(
+                    """
+                    INSERT INTO platform.history_seq (workspace_key, last_seq)
+                    VALUES (%s, %s)
+                    ON CONFLICT (workspace_key)
+                    DO UPDATE SET last_seq = GREATEST(
+                        platform.history_seq.last_seq,
+                        EXCLUDED.last_seq
+                    )
+                    """,
+                    (
+                        self._workspace_key,
+                        max(int(row["seq"]) for row in rows),
+                    ),
+                )
+            conn.commit()
+            return inserted
+        except PlatformStoreUnavailable:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
+
     # --- read path -----------------------------------------------------
 
     def count(self, session_id: str) -> int:

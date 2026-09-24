@@ -82,7 +82,20 @@ load_envs_into_environ()
 
 
 async def _sync_scroll_history_on_startup() -> None:
-    """Run the composed legacy-history migration outside the event loop."""
+    """Run the composed legacy-history migration outside the event loop.
+
+    Order matters. The pre-PostgreSQL SQLite files are imported FIRST: the
+    session sync below re-derives the same turns from ``sessions/*.json``, so
+    importing first lets the sync recognise them as already durable (via the
+    ``(session_id, dedup_key)`` key) instead of writing duplicates. Both steps
+    are idempotent, so a later boot re-runs them harmlessly.
+    """
+    try:
+        from ..platform_store import run_legacy_import
+
+        await run_sync_io(run_legacy_import)
+    except Exception:  # noqa: BLE001 - must never block startup
+        logger.warning("legacy-import: failed", exc_info=True)
     try:
         from ..agents.context.scroll.sync import sync_all_scroll_agents
 
