@@ -73,8 +73,10 @@ CSV 分块读取、XLSX read-only、Embedding 32 块一批、有限大小的检�
 #### 3. SQLite 和同步数据库调用不适合并发入库
 
 SQLite 单文件写锁、无中文分词和每次操作新建数据库连接在多人场景下会放大延迟。
-已改用 PostgreSQL 17、连接池（默认 2–20）、CJK 二元组检索、向量化计算，并把
-FastAPI 中的同步数据库操作移到线程池，避免一个用户的导入阻塞所有请求。
+知识服务已改用 PostgreSQL 17、连接池、CJK 二元组检索和向量化计算，并把 FastAPI
+中的同步数据库操作移到线程池，避免一个用户的导入阻塞所有请求。平台自身的数据
+（会话历史、审计、词元用量）后来也从 SQLite/JSON 一并迁入 PostgreSQL 的 `platform`
+schema，详见「E 节」之后的「F. 平台自有数据迁移到 PostgreSQL」。
 
 #### 4. 模型或解析服务长时间无输出会导致页面断线
 
@@ -129,6 +131,8 @@ LightRAG 32 GB/4 核。总上限约 208 GB/34 核，仍需根据模型服务是�
 - SSE 心跳、LLM 流看门狗、有限缓冲、短期重放和前端异常帧容错。
 - 知识文档列表的 LATERAL 子查询投影缺陷已修复，并有静态回归测试兜住同类错误。
 - 代码挂载、独立 PostgreSQL Compose、宿主机日志目录和主应用/知识服务打包脚本。
+- 平台自有数据（会话历史、审计、词元用量）从 SQLite/JSON 迁入 PostgreSQL，
+  升级时自动导入、幂等可续传；数据库不可用时平台仍能启动并明确报错。
 
 #### 已缓解但必须在正式环境持续观察
 
@@ -153,7 +157,47 @@ LightRAG 32 GB/4 核。总上限约 208 GB/34 核，仍需根据模型服务是�
   外部 Oracle/MySQL 等系统的业务行级权限仍由外部系统负责。
 - 旧版第三方 API/iframe/回调方案已撤回，不能按历史文档重新启用。
 
-### F. 故障排查所需信息
+### F. 平台自有数据迁移到 PostgreSQL（SQLite 退役）
+
+正式环境不再使用 SQLite 存平台自身数据，全部迁入 PostgreSQL 的 `platform` schema。
+这样部署只需备份一个数据库，跨账号查询和索引维护也交给数据库完成。
+
+**已迁移的表**（`platform` schema，随启动自动建表、带版本记录）：
+
+| 原存储 | 现表 | 说明 |
+| --- | --- | --- |
+| 各工作区 `history.db` | `conversation_history` | 会话历史，按 `workspace_key` 隔离；`seq` 仍为每工作区序号 |
+| 全局 `governance/audit.db` | `audit_events` | 工具审批审计；不再是一个多账号混写的共享文件 |
+| 全局 `token_usage.json` | `token_usage` | 一行一个 (日期, 供应商, 模型, 账号)，递增改为原子 upsert |
+| — | `history_seq` / `schema_migrations` / `legacy_import_state` | 序号分配、建表版本、升级导入记账 |
+
+**隔离方式的改变（重要）**：SQLite 时代靠「每个工作区一个文件」实现隔离，模型即使
+跑任意 SQL 也只能读到本工作区。PostgreSQL 是共享的，没有逐连接授权器，因此召回
+改为**只提供参数化的结构化操作**（`recall_history` 的 expand/search/recall_tool），
+每条语句都以 `workspace_key` 作为绑定参数；原本用于跑模型自写 SQL 的
+`recall_history_python` 沙箱 REPL 已下线。检索改为字面量子串匹配（大小写不敏感），
+中文等无空格分隔的语言因此可以关键词召回。
+
+**升级自动同步**：启动时会扫描旧的 `history.db`、`governance/audit.db` 和
+`token_usage.json`，把数据导入 PostgreSQL，无需手工操作。
+
+- 历史行**保留原 `seq`**（eviction index 把 seq 区间存在会话状态里，重编号会使既有引用失效）
+- **幂等 + 断点续传**：按源文件 checksum 记账，已完成的文件后续启动跳过，中断后重跑只补缺失行
+- **不删除旧文件**：迁移完成前它们是唯一副本
+- 顺序在会话回填之前，使回填能识别已导入的轮次而不重复写入
+
+**PostgreSQL 不可用时**：平台照常启动，只影响用到的功能，并给出明确报错（而不是崩在启动阶段）。
+历史读取、recall 检索会抛出带原因的「平台数据库当前不可用」；审计写入只记错误日志、
+不打断策略决策；升级导入整步跳过，留待下次启动重试。`max_connections` 已在 compose 中
+显式抬到 200。
+
+**保留的非平台存储**：macOS 系统 Messages 的 `chat.db`（只读外部数据源）；
+`config.json`/`agent.json`/`policy.yaml` 等人工可读可编辑的配置；`media/`、
+`data_uploads/`、`skills/`、`plugins/` 等文件资产；以及各账号工作区下的
+`state.json`、`chats.json`、`jobs.json` 等运行态 JSON——这些不是 SQLite，且需保持
+脱离数据库也能定位问题的能力。
+
+### G. 故障排查所需信息
 
 遇到“页面崩溃、回答消失、容器重启”时，不要只截 `docker logs`。应同时保留：
 
