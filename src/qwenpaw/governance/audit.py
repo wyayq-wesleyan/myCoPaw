@@ -1,12 +1,24 @@
 # -*- coding: utf-8 -*-
 """AuditLog — Audit records for each assert_policy + audit call.
 
-Storage: single-file SQLite (~/.qwenpaw/audit.db), global singleton.
-- record() writes immediately, no in-memory buffer
-- query() supports filtering by workspace / agent / tool / decision /
-  time range, with pagination
-- purge() deletes expired records and VACUUMs to reclaim space
-- Auto-cleanup: when total records reach 100k, deletes the oldest 10k
+Storage: the platform's PostgreSQL store (``platform.audit_events``), global
+singleton.
+
+* record() writes immediately, no in-memory buffer
+* query() supports filtering by workspace / agent / tool / decision / time range,
+  with pagination
+* purge() deletes expired records
+* Auto-cleanup: when total records reach 100k, deletes the oldest 10k
+
+**Why this moved off SQLite.** It used to be one global ``audit.db`` file shared
+by every account: isolation existed only as a column in the row, so one tenant's
+policy decisions sat in a file every process could read. It now lives in the
+platform database alongside the rest of the platform's own data, where the same
+rows can be filtered per workspace and an operator has one database to back up.
+
+The public API is unchanged, including the singleton accessor and the
+record-a-failure-never-propagates contract: an audit write must never disrupt the
+policy decision returned to the caller.
 """
 
 from __future__ import annotations
@@ -14,39 +26,27 @@ from __future__ import annotations
 import atexit
 import json
 import logging
-import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from ..constant import WORKING_DIR
+import psycopg2
+import psycopg2.extras
+
+from ..platform_store import (
+    PlatformStoreUnavailable,
+    dict_cursor,
+    ensure_schema,
+    get_conn,
+    put_conn,
+)
+from ..platform_store.migrations import AUDIT_MIGRATIONS
 
 from .policy import GovernanceDecision, ToolCallSpec
 
 _logger = logging.getLogger(__name__)
-
-# ``ts`` is stored as INTEGER (milliseconds since epoch, UTC) so that
-# ``WHERE ts >= ? / <= ?`` performs strict numeric comparison instead of
-# fragile lexicographic comparison on ISO 8601 strings.
-_SCHEMA = """\
-CREATE TABLE IF NOT EXISTS audit_events (
-    ts            INTEGER NOT NULL,
-    workspace_dir TEXT NOT NULL,
-    agent_id      TEXT NOT NULL,
-    session_id    TEXT NOT NULL,
-    tool_name     TEXT NOT NULL,
-    target        TEXT NOT NULL,
-    decision      TEXT NOT NULL,
-    reason        TEXT NOT NULL DEFAULT '',
-    extra         TEXT NOT NULL DEFAULT '{}'
-);
-CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts);
-CREATE INDEX IF NOT EXISTS idx_audit_workspace ON audit_events(workspace_dir);
-CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_events(agent_id);
-CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_events(tool_name);
-"""
 
 
 def _now_unix_ms() -> int:
@@ -73,36 +73,41 @@ class AuditEvent:
     extra: dict = field(default_factory=dict)
 
 
-def _event_from_row(row: sqlite3.Row) -> AuditEvent:
-    """Construct an AuditEvent from a SQLite row."""
+def _event_from_row(row) -> AuditEvent:
+    """Construct an AuditEvent from a database row."""
+    raw_extra = row["extra"]
+    if isinstance(raw_extra, str):
+        try:
+            extra = json.loads(raw_extra)
+        except (TypeError, ValueError):
+            extra = {}
+    else:
+        extra = raw_extra or {}
     return AuditEvent(
-        ts=row["ts"],
-        workspace_dir=row["workspace_dir"],
-        agent_id=row["agent_id"],
-        session_id=row["session_id"],
-        tool_name=row["tool_name"],
-        target=row["target"],
-        decision=row["decision"],
-        reason=row["reason"],
-        extra=json.loads(row["extra"]),
+        ts=int(row["ts"]),
+        workspace_dir=row["workspace_dir"] or "",
+        agent_id=row["agent_id"] or "",
+        session_id=row["session_id"] or "",
+        tool_name=row["tool_name"] or "",
+        target=row["target"] or "",
+        decision=row["decision"] or "",
+        reason=row["reason"] or "",
+        extra=extra,
     )
 
 
 class AuditLog:
-    """Append-only audit log, SQLite-backed, global singleton.
+    """Append-only audit log in PostgreSQL, global singleton.
 
-    Shared by multiple ResourceGovernor instances; each audit()
-    call (typically after assert_policy()) invokes record() which writes
-    to the database immediately.
+    Shared by multiple ResourceGovernor instances; each ``audit()`` call
+    (typically after ``assert_policy()``) invokes ``record()``, which writes
+    immediately.
 
-    .. note:: Threading & async
+    .. note:: Threading
 
-        All SQLite operations are synchronous and protected by a
-        ``threading.Lock``.  When called from an async context
-        (e.g. ``check_permissions``), the event-loop thread is briefly
-        blocked for the INSERT + commit (~sub-ms with WAL mode).
-        TODO: migrate to ``aiosqlite`` or ``asyncio.to_thread()`` for
-        true non-blocking audit writes.
+        Writes are synchronous and serialized by a ``threading.RLock``. A
+        connection is checked out per operation and returned immediately, so the
+        pool is never held across an idle period.
     """
 
     MAX_RECORDS = 100_000  # Threshold to trigger auto-cleanup
@@ -112,7 +117,6 @@ class AuditLog:
     _instance: Optional[AuditLog] = None
     _instance_lock = threading.Lock()
     _db_path: Path
-    _conn: Optional[sqlite3.Connection]
     _insert_count: int
     _lock: threading.RLock
 
@@ -124,79 +128,57 @@ class AuditLog:
         """Get the global singleton, initializing on first call.
 
         Args:
-            db_dir: Optional directory to place ``audit.db`` in. Only
-                honored on first creation; if the singleton already
-                exists in a different directory, the request is logged
-                and ignored (the singleton stays shared).
+            db_dir: Retained for call-site compatibility. The audit table lives
+                in the platform database now, so there is no per-directory file
+                to select; the argument no longer changes where records go.
         """
         with cls._instance_lock:
             if cls._instance is None:
-                if db_dir is not None:
-                    resolved_dir = Path(db_dir)
-                else:
-                    resolved_dir = WORKING_DIR / "governance"
-                cls._instance = cls._create(resolved_dir / "audit.db")
+                cls._instance = cls._create(db_dir)
             return cls._instance
 
     @classmethod
     def close_instance(cls) -> None:
-        """Close the process-wide singleton if it has been initialized."""
+        """Reset the process-wide singleton.
+
+        Connections are pooled and returned per call, so there is nothing to
+        close here; dropping the reference lets a later ``get_instance`` build a
+        fresh one (tests rely on this).
+        """
         with cls._instance_lock:
             instance = cls._instance
+            cls._instance = None
         if instance is not None:
             instance.close()
 
     @classmethod
-    def _create(cls, db_path: Path) -> AuditLog:
-        """Internal factory method: create instance and initialize database."""
+    def _create(cls, db_dir: Optional[Path] = None) -> AuditLog:
+        """Internal factory: build the instance and ensure the table exists."""
         obj = object.__new__(cls)
-        obj._db_path = db_path
-        obj._db_path.parent.mkdir(parents=True, exist_ok=True)
-        obj._conn = sqlite3.connect(
-            str(obj._db_path),
-            check_same_thread=False,
-        )
-        obj._conn.row_factory = sqlite3.Row
-        obj._conn.execute("PRAGMA journal_mode=WAL")
-        # Drop legacy schema where ``ts`` was TEXT (ISO 8601). Audit data
-        # written before the migration is discarded; this is acceptable
-        # while the feature is still pre-release.
-        cls._migrate_legacy_schema(obj._conn)
-        obj._conn.executescript(_SCHEMA)
-        obj._conn.commit()
+        obj._db_path = Path(db_dir) if db_dir is not None else Path(".")
         obj._insert_count = 0
         obj._lock = threading.RLock()
+        # Schema is process-global and applied once; failures are isolated per
+        # statement inside the migration framework.
+        ensure_schema(AUDIT_MIGRATIONS)
         return obj
 
-    @staticmethod
-    def _migrate_legacy_schema(conn: sqlite3.Connection) -> None:
-        """Drop the table if its ``ts`` column was created as TEXT."""
-        cursor = conn.execute("PRAGMA table_info(audit_events)")
-        for row in cursor.fetchall():
-            # row: (cid, name, type, notnull, dflt_value, pk)
-            if row[1] == "ts" and row[2].upper() != "INTEGER":
-                conn.execute("DROP TABLE audit_events")
-                conn.commit()
-                break
-
     def close(self) -> None:
-        """Close the database connection and reset the singleton.
+        """Reset the singleton.
 
-        Runs VACUUM before closing to reclaim space from any prior
-        auto-purge DELETE operations (VACUUM is intentionally NOT run
-        inside ``_auto_purge`` to avoid blocking the event loop).
+        Takes the write lock first so closing cannot interleave with an in-flight
+        ``record()``. There is no connection to release — one is checked out per
+        operation — but the same lock still serializes the two, and a later
+        ``record()`` on this instance keeps working (it checks out a fresh
+        connection, matching the previous behaviour where the object stayed
+        usable).
         """
         with self._lock:
-            if self._conn is not None:
-                try:
-                    self._conn.execute("VACUUM")
-                except sqlite3.Error:
-                    pass
-                self._conn.close()
-                self._conn = None
-        with AuditLog._instance_lock:
-            if AuditLog._instance is self:
-                AuditLog._instance = None
+            with AuditLog._instance_lock:
+                if AuditLog._instance is self:
+                    AuditLog._instance = None
+
+    # --- writes --------------------------------------------------------
 
     def record(
         self,
@@ -204,44 +186,41 @@ class AuditLog:
         tc_spec: ToolCallSpec,
         decision: GovernanceDecision,
     ) -> None:
-        """Record a policy decision, writing to SQLite immediately.
+        """Record a policy decision, writing to the database immediately.
 
-        Args:
-            workspace_dir: Workspace path this event belongs to
-            tc_spec: ToolCallSpec instance
-            decision: GovernanceDecision instance (action + reason)
-        Errors are caught and logged: an audit-write failure must NOT
-        propagate into ``assert_policy`` and disrupt the policy
-        decision returned to the caller.
+        Errors are caught and logged: an audit-write failure must NOT propagate
+        into ``assert_policy`` and disrupt the policy decision returned to the
+        caller. That includes the database being unreachable — an audit gap is
+        reported, never fatal.
 
-        ``audit_level == "none"`` is handled by
-        ``ResourceGovernor.audit()`` before this method is called.
-        If finer-grained filtering is needed later (for example,
-        ``"write_only"``), apply it at the INSERT boundary.
+        ``audit_level == "none"`` is handled by ``ResourceGovernor.audit()``
+        before this method is called.
         """
         try:
             with self._lock:
-                conn = self._conn
-                if conn is None:
-                    return
-                conn.execute(
-                    "INSERT INTO audit_events "
-                    "(ts, workspace_dir, agent_id, session_id, "
-                    "tool_name, target, decision, reason, extra) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        _now_unix_ms(),
-                        workspace_dir,
-                        tc_spec.agent_id,
-                        tc_spec.session_id,
-                        tc_spec.tool_name,
-                        tc_spec.target,
-                        str(decision.action.value),
-                        decision.reason,
-                        "{}",
-                    ),
-                )
-                conn.commit()
+                conn = get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO platform.audit_events "
+                            "(ts, workspace_dir, agent_id, session_id, "
+                            "tool_name, target, decision, reason, extra) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (
+                                _now_unix_ms(),
+                                workspace_dir,
+                                tc_spec.agent_id,
+                                tc_spec.session_id,
+                                tc_spec.tool_name,
+                                tc_spec.target,
+                                str(decision.action.value),
+                                decision.reason,
+                                "{}",
+                            ),
+                        )
+                    conn.commit()
+                finally:
+                    put_conn(conn)
 
                 # Auto-cleanup check
                 self._insert_count += 1
@@ -249,14 +228,80 @@ class AuditLog:
                     self._insert_count = 0
                     if self.count >= self.MAX_RECORDS:
                         self._auto_purge()
-        except sqlite3.Error as e:
+        except PlatformStoreUnavailable as e:
             _logger.error(
-                "AuditLog.record: SQLite error (tool=%s, target=%r): %s",
+                "AuditLog.record: platform database unavailable "
+                "(tool=%s, target=%r): %s",
+                tc_spec.tool_name,
+                (tc_spec.target or "")[:120],
+                e.detail,
+            )
+        except psycopg2.Error as e:
+            _logger.error(
+                "AuditLog.record: database error (tool=%s, target=%r): %s",
                 tc_spec.tool_name,
                 (tc_spec.target or "")[:120],
                 e,
                 exc_info=True,
             )
+
+    def purge(self, before: int) -> int:
+        """Delete records before the specified time.
+
+        Args:
+            before: Cutoff time (unix ms, UTC), exclusive
+
+        Returns:
+            Number of deleted records, or ``0`` on error. PostgreSQL reclaims the
+            freed space itself, so there is no VACUUM step.
+        """
+        try:
+            with self._lock:
+                conn = get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM platform.audit_events WHERE ts < %s",
+                            (before,),
+                        )
+                        deleted = int(cur.rowcount)
+                    conn.commit()
+                finally:
+                    put_conn(conn)
+                return deleted
+        except (PlatformStoreUnavailable, psycopg2.Error) as e:
+            _logger.error("AuditLog.purge: database error: %s", e, exc_info=True)
+            return 0
+
+    def _auto_purge(self) -> None:
+        """Delete the oldest ``PURGE_COUNT`` records (caller holds ``_lock``)."""
+        try:
+            conn = get_conn()
+            try:
+                with conn.cursor() as cur:
+                    # One statement so the cutoff cannot drift between reading the
+                    # boundary row and deleting up to it.
+                    cur.execute(
+                        "DELETE FROM platform.audit_events WHERE id IN ("
+                        "  SELECT id FROM platform.audit_events "
+                        "  ORDER BY id ASC LIMIT %s"
+                        ")",
+                        (self.PURGE_COUNT,),
+                    )
+                    deleted = int(cur.rowcount)
+                conn.commit()
+            finally:
+                put_conn(conn)
+            if deleted:
+                _logger.info(
+                    "AuditLog: auto-purged %d oldest records.", deleted,
+                )
+        except (PlatformStoreUnavailable, psycopg2.Error) as e:
+            _logger.error(
+                "AuditLog._auto_purge: database error: %s", e, exc_info=True,
+            )
+
+    # --- reads ---------------------------------------------------------
 
     def query(
         self,
@@ -271,140 +316,73 @@ class AuditLog:
     ) -> Tuple[List[AuditEvent], int]:
         """Query audit events with pagination.
 
-        Args:
-            workspace_dir: Filter by workspace
-            agent_id: Filter by agent
-            tool_name: Filter by tool name
-            decision: Filter by decision result
-            since: Start time (unix ms, UTC), inclusive
-            until: End time (unix ms, UTC), inclusive
-            limit: Page size
-            offset: Offset (for pagination)
-
-        Returns:
-            (events, total) — event list and total count of matching
-            records. Returns ``([], 0)`` if a SQLite error occurs so
-            callers (e.g. the Console UI) get a safe empty page rather
-            than an unhandled exception.
+        Returns ``(events, total)`` — the page and the total number of matching
+        records. Returns ``([], 0)`` when the database is unavailable or a query
+        fails, so callers (e.g. the Console UI) get a safe empty page rather than
+        an unhandled exception.
         """
         clauses: list[str] = []
         params: list = []
 
         if workspace_dir:
-            clauses.append("workspace_dir = ?")
+            clauses.append("workspace_dir = %s")
             params.append(workspace_dir)
         if agent_id:
-            clauses.append("agent_id = ?")
+            clauses.append("agent_id = %s")
             params.append(agent_id)
         if tool_name:
-            clauses.append("tool_name = ?")
+            clauses.append("tool_name = %s")
             params.append(tool_name)
         if decision:
-            clauses.append("decision = ?")
+            clauses.append("decision = %s")
             params.append(decision)
         if since:
-            clauses.append("ts >= ?")
+            clauses.append("ts >= %s")
             params.append(since)
         if until:
-            clauses.append("ts <= ?")
+            clauses.append("ts <= %s")
             params.append(until)
 
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
 
         try:
             with self._lock:
-                conn = self._conn
-                if conn is None:
-                    return [], 0
-                count_sql = f"SELECT COUNT(*) FROM audit_events{where}"
-                total = conn.execute(count_sql, params).fetchone()[0]
+                conn = get_conn()
+                try:
+                    with dict_cursor(conn) as cur:
+                        cur.execute(
+                            f"SELECT COUNT(*) AS n FROM platform.audit_events{where}",
+                            params,
+                        )
+                        total = int(cur.fetchone()["n"])
 
-                data_sql = (
-                    f"SELECT * FROM audit_events{where} "
-                    "ORDER BY ts DESC LIMIT ? OFFSET ?"
-                )
-                data_params = params + [limit, offset]
-                rows = conn.execute(data_sql, data_params).fetchall()
-
-                return [_event_from_row(r) for r in rows], total
-        except sqlite3.Error as e:
-            _logger.error(
-                "AuditLog.query: SQLite error: %s",
-                e,
-                exc_info=True,
-            )
+                        cur.execute(
+                            f"SELECT * FROM platform.audit_events{where} "
+                            "ORDER BY ts DESC, id DESC LIMIT %s OFFSET %s",
+                            params + [limit, offset],
+                        )
+                        rows = cur.fetchall()
+                    return [_event_from_row(r) for r in rows], total
+                finally:
+                    put_conn(conn)
+        except (PlatformStoreUnavailable, psycopg2.Error) as e:
+            _logger.error("AuditLog.query: database error: %s", e, exc_info=True)
             return [], 0
-
-    def purge(self, before: int) -> int:
-        """Delete records before the specified time and VACUUM to
-        reclaim space.
-
-        Args:
-            before: Cutoff time (unix ms, UTC), exclusive
-
-        Returns:
-            Number of deleted records, or ``0`` on SQLite error.
-        """
-        try:
-            with self._lock:
-                conn = self._conn
-                if conn is None:
-                    return 0
-                cursor = conn.execute(
-                    "DELETE FROM audit_events WHERE ts < ?",
-                    (before,),
-                )
-                conn.commit()
-                deleted = cursor.rowcount
-                if deleted > 0:
-                    conn.execute("VACUUM")
-                return deleted
-        except sqlite3.Error as e:
-            _logger.error(
-                "AuditLog.purge: SQLite error: %s",
-                e,
-                exc_info=True,
-            )
-            return 0
 
     @property
     def count(self) -> int:
-        """Total number of records."""
-        with self._lock:
-            if self._conn is None:
-                return 0
-            return self._conn.execute(
-                "SELECT COUNT(*) FROM audit_events",
-            ).fetchone()[0]
-
-    def _auto_purge(self) -> None:
-        """Delete the oldest PURGE_COUNT records (caller holds ``_lock``).
-
-        VACUUM is intentionally deferred to ``close()`` to avoid blocking
-        the event loop for seconds on a large database.
-        """
-        # ``OFFSET PURGE_COUNT - 1`` returns the rowid of the PURGE_COUNT-th
-        # oldest row; ``DELETE ... WHERE rowid <= ?`` then removes exactly
-        # PURGE_COUNT rows. Using ``OFFSET PURGE_COUNT`` would have left an
-        # off-by-one bug (deleting PURGE_COUNT + 1 rows).
-        if self._conn is None:
-            return
-        row = self._conn.execute(
-            "SELECT rowid FROM audit_events "
-            "ORDER BY rowid ASC LIMIT 1 OFFSET ?",
-            (self.PURGE_COUNT - 1,),
-        ).fetchone()
-        if row:
-            self._conn.execute(
-                "DELETE FROM audit_events WHERE rowid <= ?",
-                (row["rowid"],),
-            )
-            self._conn.commit()
-            _logger.info(
-                "AuditLog: auto-purged %d oldest records "
-                "(VACUUM deferred to close).",
-                self.PURGE_COUNT,
-            )
+        """Total number of records (0 when the database is unavailable)."""
+        try:
+            with self._lock:
+                conn = get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT COUNT(*) FROM platform.audit_events")
+                        return int(cur.fetchone()[0])
+                finally:
+                    put_conn(conn)
+        except (PlatformStoreUnavailable, psycopg2.Error):
+            return 0
 
 
 atexit.register(AuditLog.close_instance)

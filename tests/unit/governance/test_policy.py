@@ -96,6 +96,10 @@ def test_governor_stop_keeps_process_audit_log_open(tmp_path):
     first.stop()
 
     assert second.audit_log is audit_log
+    # The audit table is shared process-wide, so assert on the delta rather
+    # than an absolute count: the point is that the log is still writable
+    # after one governor stops.
+    before = audit_log.count
     audit_log.record(
         str(tmp_path),
         _tc("Bash", "git status"),
@@ -104,7 +108,7 @@ def test_governor_stop_keeps_process_audit_log_open(tmp_path):
             reason="test",
         ),
     )
-    assert audit_log.count == 1
+    assert audit_log.count == before + 1
     audit_log.close()
 
 
