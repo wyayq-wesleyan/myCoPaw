@@ -64,8 +64,9 @@ _UNSET = object()
 # are the agent *reading* memory, not memory content. Keyword-indexing them lets
 # a later ``ms.search`` match the agent's own past queries (and their
 # tracebacks), drowning the real content: a self-pollution feedback loop. Search
-# filters these out by name. Must match the tool names in ``repl.py`` and
-# ``recall_tool.py``.
+# filters these out by name. ``recall_history_python`` is the removed REPL: its
+# name is retained so rows written before the PostgreSQL migration stay
+# excluded.
 RECALL_TOOL_NAMES = (
     "recall_history_python",
     "recall_history",

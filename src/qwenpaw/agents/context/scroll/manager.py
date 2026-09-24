@@ -21,14 +21,15 @@ import hashlib
 import inspect
 import json
 import logging
-import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import psycopg2
 from agentscope.message import Msg, SystemMsg, TextBlock, UserMsg
 from agentscope.model import FinishedReason
 
+from ....platform_store import PlatformStoreUnavailable
 from ....constant import (
     QWENPAW_MESSAGE_TAG_KEY,
     SCROLL_MEMORY_MESSAGE_TAG,
@@ -345,7 +346,7 @@ class ScrollContextManager:
         )
 
     def _persist_guarded(self, agent: Any) -> bool:
-        """Write through, swallowing only disk/SQLite failures.
+        """Write through, swallowing only storage failures.
 
         Returns ``True`` on success, ``False`` if a write outage was caught and
         recorded as degraded durability. Any other exception is a real bug and
@@ -354,12 +355,12 @@ class ScrollContextManager:
         :meth:`_persist_guarded_async`, which must NOT evict when this returns
         ``False``, or it would drop un-persisted turns).
 
-        The SQLite writes are synchronous. ``on_save`` runs this directly on
-        the event loop because its AgentScope hook is synchronous and its
-        write is incremental (one turn); ``compress`` instead offloads it to a
-        worker thread (see :meth:`_persist_guarded_async`) so the larger
-        whole-window persist never blocks the loop. ``HistoryStore`` serializes
-        both paths on its own lock.
+        The writes are synchronous and go to the platform PostgreSQL store.
+        ``on_save`` runs this directly on the event loop because its AgentScope
+        hook is synchronous and its write is incremental (one turn);
+        ``compress`` instead offloads it to a worker thread (see
+        :meth:`_persist_guarded_async`) so the larger whole-window persist never
+        blocks the loop. ``HistoryStore`` serializes both paths on its own lock.
         """
         if self._recall_loop_guard is not None:
             active = self._active_turn_tail(agent)
@@ -373,7 +374,7 @@ class ScrollContextManager:
         try:
             self._persist_new(agent)
             return True
-        except (sqlite3.Error, OSError) as exc:
+        except (PlatformStoreUnavailable, psycopg2.Error, OSError) as exc:
             self._history.note_write_failure(exc)
             logger.exception("ScrollContextManager write-through failed")
             return False

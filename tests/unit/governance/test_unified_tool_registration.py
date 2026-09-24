@@ -174,7 +174,6 @@ class TestBuiltinDescriptorGovernance:
             "GetCurrentTime": "internal",
             "SetUserTimezone": "internal",
             "RecallHistory": "internal",
-            "RecallHistoryPython": "shell",
             "MemorySearch": "internal",
         }
         for name, tool_type in expected.items():

@@ -11,6 +11,7 @@ branch (and the native no-op) without constructing a real model/agent.
 from types import SimpleNamespace
 
 from qwenpaw.agents.command_handler import CommandHandler
+from qwenpaw.agents.context.scroll.history import HistoryStore
 
 
 def _config(strategy="scroll"):
@@ -44,7 +45,12 @@ def test_builds_scroll_manager_under_scroll(tmp_path, monkeypatch):
         assert mgr is not None
         # Bound to the authoritative session id, not state.session_id.
         assert mgr._session_id == "sess-x"
-        assert (tmp_path / "history.db").exists()
+        # History lives in PostgreSQL now: the store is scoped to this
+        # workspace's handle rather than creating a file on disk.
+        assert (
+            mgr._history.workspace_key
+            == HistoryStore(tmp_path / "history.db").workspace_key
+        )
     finally:
         if mgr is not None:
             mgr.close()

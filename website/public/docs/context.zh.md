@@ -2,7 +2,7 @@
 
 ## 概述
 
-QwenPaw 当前默认的上下文策略是 **scroll**：旧轮次不会被总结后丢弃，而是先写入持久化 SQLite 历史库；当模型窗口接近上限时，再把中间历史从实时上下文中驱逐出去，并用一条紧凑的上下文内索引表示。之后 Agent 可以按需把原始历史读回来。
+QwenPaw 当前默认的上下文策略是 **scroll**：旧轮次不会被总结后丢弃，而是先写入持久化历史库（平台自带的 PostgreSQL）；当模型窗口接近上限时，再把中间历史从实时上下文中驱逐出去，并用一条紧凑的上下文内索引表示。之后 Agent 可以按需把原始历史读回来。
 
 Scroll 是面向用户的默认方案。已有的 `strategy: "native"` 配置仍会为向后兼容和安全降级而被接受，但控制台不再提供策略切换入口。
 
@@ -13,7 +13,7 @@ QwenPaw 把记忆组织为三套互补的系统——工作记忆（Working）�
 | 记忆系统     | 是什么                                                                                     | 文档                    |
 | ------------ | ------------------------------------------------------------------------------------------ | ----------------------- |
 | **工作记忆** | 实时提示词窗口。较早轮次驱逐后由可展开索引和紧凑的任务状态摘要表示；原始轮次持久保留。     | [上下文管理](./context) |
-| **情景记忆** | 跨会话、逐字的持久记录，通过 `recall_history`（或 `recall_history_python` REPL）按需取回。 | [上下文管理](./context) |
+| **情景记忆** | 跨会话、逐字的持久记录，通过 `recall_history` 按需取回。 | [上下文管理](./context) |
 | **语义记忆** | 提炼后的事实、偏好与知识；ReMe 把每日记忆沉淀进 `digest/`，用 `memory_search` 检索。       | [长期记忆](./memory)    |
 
 其中 **工作记忆** 与 **情景记忆** 由 **scroll** 上下文管理器（`ScrollContextManager`）实现；**语义记忆** 由 **ReMe** 实现。三者刻意保持正交：scroll 逐字保留原始历史，只用带来源的 continuation summary 路由当前任务状态；ReMe 则提炼可复用知识、从不触碰实时窗口或逐字历史库。
@@ -24,7 +24,7 @@ QwenPaw 把记忆组织为三套互补的系统——工作记忆（Working）�
 
 ```mermaid
 flowchart LR
-    A[新轮次进入上下文] --> B[写穿到 history.db]
+    A[新轮次进入上下文] --> B[写穿到历史库]
     B --> C{实时上下文超过触发比例?}
     C -->|否| D[保持当前窗口]
     C -->|是| E[批量折叠符合条件的已完成工具结果]
@@ -48,10 +48,10 @@ flowchart LR
 
 核心特性：
 
-- **先持久化**：`ScrollContextManager` 在任何驱逐前，都会先把实时上下文写入 `{working_dir}/history.db`。
+- **先持久化**：`ScrollContextManager` 在任何驱逐前，都会先把实时上下文写入平台的 PostgreSQL 历史库（按工作区隔离）。
 - **保护当前活动轮次**：最新的用户请求及其进行中的工具链绝不会在任务中途被驱逐。只有达到有效硬上限时，已经被一次成功模型调用确认读取的早期工具结果才可能折叠为精确 recall 指针；pending、未读和最新 5 条结果继续原样保留。
-- **不依赖有损摘要**：被驱逐的原文仍以 `history.db` 和 `EvictionIndex` 为准。Continuation summary 只是紧凑的任务状态缓存；更新失败会保留上一份有效摘要，绝不阻塞驱逐。
-- **可回溯原文**：索引中的每一行都带 `seq` 区间。Agent 可以调用 `recall_history(op="expand", lo, hi)` 读取完整原始记录（或在 `recall_history_python` REPL 中用 `ms.expand(lo, hi)`）。
+- **不依赖有损摘要**：被驱逐的原文仍以持久历史库和 `EvictionIndex` 为准。Continuation summary 只是紧凑的任务状态缓存；更新失败会保留上一份有效摘要，绝不阻塞驱逐。
+- **可回溯原文**：索引中的每一行都带 `seq` 区间。Agent 可以调用 `recall_history(op="expand", lo, hi)` 读取完整原始记录。
 - **跨会话历史**：历史行包含 `session_id` 和 `agent_id`，默认可检索当前 Agent 的所有历史会话；显式放宽时也能查询同一工作区内其他 Agent 的历史。
 - **安全降级**：如果 scroll 无法构建，或 recall 工具无法安全运行，QwenPaw 会退回 native 上下文管理，避免把历史驱逐到无法读取的位置。
 
@@ -61,11 +61,11 @@ flowchart LR
 
 | 路径                                    | 默认值                                          | 用途                                                            |
 | --------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------- |
-| `{working_dir}/history.db`              | `scroll_config.db_filename = "history.db"`      | 主要持久化 SQLite 历史库，是 scroll recall 的真相来源。         |
+| 平台 PostgreSQL（`platform.conversation_history`） | `scroll_config.db_filename`（工作区标识句柄） | 主要持久化历史库，是 scroll recall 的真相来源；按工作区隔离。 |
 | `{working_dir}/dialog/YYYY-MM-DD.jsonl` | 可选                                            | `scroll_config.offload_dialog = true` 时写入的旧版 JSONL 归档。 |
 | `{working_dir}/tool_results/`           | `tool_result_pruning_config.tool_results_cache` | 旧版分层工具结果裁剪中间件使用的文件缓存。                      |
 
-`history.db` 中的核心表是 `conversation_history`：
+历史库中的核心表是 `platform.conversation_history`：
 
 | 字段                                            | 含义                                                    |
 | ----------------------------------------------- | ------------------------------------------------------- |
@@ -77,7 +77,7 @@ flowchart LR
 | `headline`                                      | 模型写入的可选任务状态里程碑，用作驱逐索引叶子。        |
 | `blocks`, `metadata`, `created_at`, `dedup_key` | 完整序列化块、元数据、时间戳和幂等键。                  |
 
-如果当前 SQLite 支持 FTS5，QwenPaw 会维护 `conversation_history_fts` 全文索引；否则 `ms.search` 会降级为较慢的 `LIKE` 扫描。
+搜索按字面词做大小写不敏感的子串匹配（`ILIKE`），因此中文等没有空格分隔的语言也能关键词召回；空白分隔的多个词在同一 `OR` 分支内按 AND 组合，裸的大写 `OR` 表示「或」。
 
 ## 工作记忆（Working Memory）
 
@@ -93,7 +93,7 @@ flowchart LR
 
 - **结构**：`任务或主题｜状态：具体结果；下一步：具体动作｜锚点：精确检索词`。“下一步”和“锚点”没有增益时可以省略。headline 通常只写一句，由 2～4 个短分句组成，最多保留 5 个高价值锚点；不复述正文、不讲述推理过程、不罗列每次工具调用，也不堆砌关键词。2000 字符只作为兼容性上限。
 - **怎么被收录**：Scroll 把 `⟦ … ⟧` 一行抽进 assistant 轮次的 `headline` 字段，并从聊天界面隐藏；持久历史仍原样保留。
-- **作用**：headline 是紧凑的语义检查点和导航标签，不是真相来源。原始轮次被驱逐后，它会成为该轮的 `seq · ⟦ … ⟧` 索引叶子；精确细节仍从 `history.db` recall。
+- **作用**：headline 是紧凑的语义检查点和导航标签，不是真相来源。原始轮次被驱逐后，它会成为该轮的 `seq · ⟦ … ⟧` 索引叶子；精确细节仍从持久历史库 recall。
 - **高覆盖打标**：确认、尝试、被排除的假设、决定、修改、验证结果、失败、暂停和 blocker，即使没有改变任务整体状态，也会生成 headline。只有纯社交闲聊、裸确认和完全没有新增任务相关信息的回复才省略。未打标区段仍以 `seq lo–hi · (no milestone)` 精确召回；压缩阶段不会额外调用模型补写。
 
 ### Continuation Summary
@@ -146,7 +146,7 @@ Continuation summary（当前任务状态 + 代码维护的来源范围）
    [scroll folded] old tool result content cleared; recover with recall_history(op="recall_tool", tool_call_id='call_abc')
    ```
 
-   正常压力下，请求原文、工具调用、推理文本、完整活动轮次和最近结果尾部全部原样保留；每条被折叠的输出都和其他历史一样在折叠前已持久化，可以通过准确的 tool call ID 取回。`recall_tool` 使用有界分页；返回 `next_cursor` 时按该 cursor 继续。如果结果提供了完整输出的 `file_path`，再用 `read_file` 分段读取该 artifact。stub 特意指向结构化工具：它在进程内运行、不依赖沙箱，所以即使在 Python REPL 无法运行的平台上也能读回。
+   正常压力下，请求原文、工具调用、推理文本、完整活动轮次和最近结果尾部全部原样保留；每条被折叠的输出都和其他历史一样在折叠前已持久化，可以通过准确的 tool call ID 取回。`recall_tool` 使用有界分页；返回 `next_cursor` 时按该 cursor 继续。如果结果提供了完整输出的 `file_path`，再用 `read_file` 分段读取该 artifact。stub 特意指向结构化工具：它在进程内运行、不依赖沙箱，所以在任何平台上都能读回。
 
 4. **活动轮次硬上限折叠**——Scroll 为下一次模型输出预留 `min(4096, context_size 的 5%)` 个 token。输入仍超过由此得到的有效硬上限时，会把已经进入一次成功模型调用的早期活动轮次工具结果批量替换为精确 `recall_tool` 指针，然后只重新统计一次。当前请求、pending call、未读结果和最新 5 条结果继续原样保留；失败或中断的模型请求不会确认其输入已读。这些受保护内容仍装不下时，Scroll 明确抛出 `CONTEXT_UNFIT`，不会修改未读证据、重置会话或无限重试。
 
@@ -156,7 +156,7 @@ Continuation summary（当前任务状态 + 代码维护的来源范围）
 
 - **Tier 0** 保存最近被驱逐的块，细节最多。
 - 更老的 Tier 会把旧块折叠成端点区间。
-- 每一行仍然带 `seq` 或 `seq lo-hi` 区间，因此即便折叠后也能从 `history.db` 展开原文。
+- 每一行仍然带 `seq` 或 `seq lo-hi` 区间，因此即便折叠后也能从持久历史库展开原文。
 
 示例形态：
 
@@ -180,13 +180,13 @@ Re-expand a span with the recall_history tool: recall_history(op="expand", lo, h
 
 ## 情景记忆（Episodic Memory）
 
-**情景记忆** 是 Agent 说过、做过的一切的持久、逐字记录——写入 `history.db`，跨所有会话按需取回。工作记忆从实时窗口驱逐掉的内容不会丢失，都精确、可检索地留在这里。下面几节分别讲如何取回它、超长工具结果如何卸载进来，以及旧会话如何在启动时迁移进来。
+**情景记忆** 是 Agent 说过、做过的一切的持久、逐字记录——写入平台历史库，跨所有会话按需取回。工作记忆从实时窗口驱逐掉的内容不会丢失，都精确、可检索地留在这里。下面几节分别讲如何取回它、超长工具结果如何卸载进来，以及旧会话如何在启动时迁移进来。
 
 ### Recall API
 
-Recall API 是情景记忆的接口：把工作记忆驱逐后留下的、持久且逐字的历史读回来。scroll 启用时，QwenPaw 会注入两个工具：
+Recall API 是情景记忆的接口：把工作记忆驱逐后留下的、持久且逐字的历史读回来。scroll 启用时，QwenPaw 会注入一个工具：
 
-- **`recall_history`**——常规读取的结构化入口。每次调用都是参数绑定的只读查询，在进程内执行，因此在任何平台上都不需要沙箱、不需要审批：
+- **`recall_history`**——统一的结构化入口。每次调用都是参数绑定的只读查询，在进程内执行，因此在任何平台上都不需要沙箱、不需要审批：
 
   ```text
   recall_history(op="expand", lo=81, hi=96)          # 展开索引中的区间
@@ -194,42 +194,16 @@ Recall API 是情景记忆的接口：把工作记忆驱逐后留下的、持久
   recall_history(op="recall_tool", tool_call_id="tool-call-id")
   ```
 
-- **`recall_history_python`**——沙箱化的 Python REPL，覆盖这三种读取之外的需求（列出会话、自写 SQL 聚合、scratch 表）。cell 中已经定义好 `ms`，它是一个 `MemorySpace` 对象。
+这里没有「自写 SQL」的逃生通道。历史现在存放在平台共享的 PostgreSQL 中，模型生成的任意查询会读到**其他账号**的数据，而 PostgreSQL 没有逐连接授权器可以拦住它，因此只有上面这些参数化的结构化操作可供调用。需要列出会话或按日期取回时，也用 `recall_history`：
 
-REPL 中常用的 `ms` helper：
-
-```python
-# 展开索引中的区间。
-print(ms.expand(81, 96))
-
-# 搜索当前 Agent 跨会话的持久历史。
-hits = ms.search("deployment decision", k=20)
-for row in hits:
-    print(row["seq"], row["session_id"], row["content"][:500])
-
-# 读取某次工具调用及其结果。
-print(ms.recall_tool("tool-call-id"))
-
-# 发现并读取会话。
-print(ms.sessions())
-print(ms.session("cron:nightly-report"))
-
-# 明确需要时查看工作区内 Agent。
-print(ms.agents())
+```text
+recall_history(op="search", query="")                     # 只按日期取回
+recall_history(op="search", query="...", created_from="2024-11-01", created_to="2024-11-07")
 ```
 
-持久历史对 recall 是只读的：`history.db` 会以只读方式挂载为 SQLite schema `hist`。模型只能写自己的 scratch `main` 数据库。
+取回的每一行都带 `seq`、`session_id`、`role` 等字段，以及包含它的完整轮次 `turn`；分页未取完时会返回 `next_cursor`。
 
-失败的 cell 不会被误读：观察结果会以 `RECALL FAILED — the history was NOT read` 横幅开头；正常退出但什么都没打印的 cell 也会明确说明「无输出不代表历史为空」——执行错误永远不会被误认成「不存在这段历史」。
-
-搜索（`recall_history(op="search")` 与 `ms.search` 皆然）也不会把 Agent 自己的回声搜回来：recall 工具自身的源码/输出行不会出现在结果里，当前**活动轮次**（最新的用户请求和正在写的回复）同样被排除——否则多轮 recall 时，top-k 会命中上一轮引用过的内容而不是真正的历史。本会话更早的已驱逐轮次仍然可搜；`ms.expand` / `ms.recall_tool` 不做过滤（逐字回放正是它们的用途）。
-
-安全说明：`recall_history_python` 会运行模型生成的 Python。正常情况下，它需要治理层注入 sandbox 配置；如果没有 sandbox，它会默认拒绝执行。（`recall_history` 不受影响：它从不执行模型生成的代码，所以在没有可用沙箱后端或沙箱被禁用时仍能正常运行。QwenPaw 支持原生 Windows 沙箱后端，WSL2 本身不是启用沙箱的前提。）只有同时满足以下条件时才允许 REPL 非沙箱运行：
-
-- 环境变量 `QWENPAW_ALLOW_UNSANDBOXED_RECALL` 为 truthy
-- `running.light_context_config.scroll_config.allow_unsandboxed = true`
-
-非沙箱 recall 等同于让模型以 Agent 用户身份执行任意宿主机 Python，仅适合可信本地开发。
+搜索不会把 Agent 自己的回声搜回来：recall 工具自身的输出行不会出现在结果里，当前**活动轮次**（最新的用户请求和正在写的回复）同样被排除——否则多轮 recall 时，匹配会命中上一轮引用过的内容而不是真正的历史。本会话更早的已驱逐轮次仍然可搜；`op="expand"` / `op="recall_tool"` 不做过滤（逐字回放正是它们的用途）。
 
 ### 工具结果
 
@@ -247,12 +221,12 @@ scroll 不再有独立的 token 工具结果 cap。所有实时 preview 都使�
 
 ### 历史迁移（旧会话回填）
 
-早于 scroll 的对话——或工作区里已有的任何 `sessions/*.json` 会话——会被自动回填进 `history.db`，这样旧历史依然能被情景记忆工具取回。
+早于 scroll 的对话——或工作区里已有的任何 `sessions/*.json` 会话——会被自动回填进平台历史库，这样旧历史依然能被情景记忆工具取回。
 
 - **时机**：应用启动时，对每个 `strategy` 为 `"scroll"` 的 Agent 执行。
 - **来源**：`{working_dir}/sessions/*.json`（含渠道子目录）。原始会话文件不会被修改或删除。
 - **逐文件一次性**：`sessions/.synced.json` 清单记录已导入的内容，之后的启动会跳过未变更的文件。重复导入是空操作——`UNIQUE` 索引会去重。
-- **遵循保留期**：导入时会跳过早于 `scroll_config.history_retention_days`（默认 `30`）的消息，与同次启动把 `history.db` 裁剪到保留期的清理保持一致。把 `history_retention_days` 设为 `0` 可保留并导入全部历史。
+- **遵循保留期**：导入时会跳过早于 `scroll_config.history_retention_days`（默认 `30`）的消息，与同次启动对历史库的保留期清理保持一致。把 `history_retention_days` 设为 `0` 可保留并导入全部历史。
 - **不阻塞启动**：回填失败也不影响启动，该 Agent 只是没导入旧对话，scroll 仍会正常记录新轮次。
 
 > 首次启动导入会话文件时会打印一次性提示，因为积压较多时可能需要一点时间；之后的启动有清单，会直接跳过。
@@ -276,9 +250,7 @@ scroll 不再有独立的 token 工具结果 cap。所有实时 preview 都使�
       },
       "scroll_config": {
         "db_filename": "history.db",
-        "repl_timeout_s": 300,
         "history_retention_days": 30,
-        "allow_unsandboxed": false,
         "offload_dialog": false
       },
       "tool_result_pruning_config": {
@@ -301,11 +273,10 @@ scroll 不再有独立的 token 工具结果 cap。所有实时 preview 都使�
 | `strategy`                                       | `"scroll"`     | 选择 Scroll 的持久历史协议；旧版 Native 值仅为兼容和安全降级而保留。              |
 | `context_compact_config.compact_threshold_ratio` | `0.8`          | 模型输入达到上下文窗口该比例时触发。                                              |
 | `context_compact_config.reserve_threshold_ratio` | `0.1`          | 驱逐后保留最近尾部的预算。                                                        |
-| `scroll_config.db_filename`                      | `"history.db"` | 相对工作区的 SQLite 文件名。                                                      |
+| `scroll_config.db_filename`                      | `"history.db"` | 工作区标识句柄名（相对工作区）；历史数据存于 PostgreSQL。                      |
 | `scroll_config.tool_output_token_cap`            | `3000`         | 已废弃且会被忽略；显式配置会输出 warning。请改用 `pruning_recent_msg_max_bytes`。 |
-| `scroll_config.repl_timeout_s`                   | `300`          | `recall_history_python` 单次调用超时时间。                                        |
 | `scroll_config.history_retention_days`           | `30`           | 自动清理早于该天数的历史行；设为 `0` 表示永久保留。                               |
-| `scroll_config.offload_dialog`                   | `false`        | 是否额外写旧版 `dialog/*.jsonl` 归档；`history.db` 仍是真相来源。                 |
+| `scroll_config.offload_dialog`                   | `false`        | 是否额外写旧版 `dialog/*.jsonl` 归档；持久历史库仍是真相来源。                 |
 
 ## 手动压缩
 

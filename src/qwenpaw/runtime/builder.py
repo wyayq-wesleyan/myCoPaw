@@ -899,76 +899,21 @@ class AgentBuilder:
 
     @staticmethod
     def _scroll_recall_runnable(agent_config: Any, governor: Any) -> bool:
-        """Whether scroll's recall tools can actually execute in this build.
+        """Whether scroll's recall tool can actually execute in this build.
 
-        Two recall paths exist: the structured ``recall_history`` tool
-        (in-process bound queries — needs no sandbox, only a working guard
-        layer) and the sandboxed ``recall_history_python`` REPL, which fails
-        closed unless a ``sandbox_config`` is supplied. That config is
-        injected only by the governor (via ``PolicyGuardedTool``); the
-        ``GuardedFunctionTool`` fallback used when the governor is absent
-        never supplies one. A missing governor means the guard layer itself is
-        degraded, so we stay conservative: recall is runnable iff the governor
-        is present, or the deployment has opted into unsandboxed recall —
-        which requires BOTH the ``QWENPAW_ALLOW_UNSANDBOXED_RECALL`` env var
-        and ``scroll_config.allow_unsandboxed`` (see
-        ``scroll_unsandboxed_allowed`` — agent.json alone can never bypass the
-        sandbox). When neither holds, wiring scroll would evict history that
-        nothing can read back, so the caller degrades to native context
-        management.
+        The structured ``recall_history`` tool runs in-process (bound queries —
+        no sandbox needed), but it is still wrapped by the guard layer. With no
+        governor that layer is itself degraded, so we stay conservative: recall
+        is runnable iff the governor is present, or the deployment has opted
+        into unsandboxed recall — which requires BOTH the
+        ``QWENPAW_ALLOW_UNSANDBOXED_RECALL`` env var and
+        ``scroll_config.allow_unsandboxed`` (see ``scroll_unsandboxed_allowed``
+        — agent.json alone can never bypass the sandbox). When neither holds,
+        wiring scroll would evict history that nothing can read back, so the
+        caller degrades to native context management.
         """
         if governor is not None:
             return True
-        try:
-            from ..agents.context import scroll_unsandboxed_allowed
-
-            sc = agent_config.running.light_context_config.scroll_config
-            return scroll_unsandboxed_allowed(sc)
-        except Exception:
-            return False
-
-    @staticmethod
-    def _scroll_repl_runnable(agent_config: Any, governor: Any) -> bool:
-        """Whether the sandboxed ``recall_history_python`` REPL should be
-        offered to the model in this build.
-
-        The REPL runs model-authored Python and so needs a sandbox. It is
-        worth registering only when one is actually usable — meaning the
-        governor's platform probe found a sandbox AND the global sandbox
-        switch is enabled — or when the operator explicitly opted into
-        unsandboxed recall (both the
-        ``QWENPAW_ALLOW_UNSANDBOXED_RECALL`` env var and
-        ``scroll_config.allow_unsandboxed``, via
-        ``scroll_unsandboxed_allowed``).
-
-        When neither holds, every call would fail closed, and the guard layer
-        misreads that ``DENIED`` as a sandbox violation and escalates to a
-        recurring approval prompt. So we omit the REPL and let the model recall
-        through the structured ``recall_history`` tool, which needs no sandbox.
-        This is narrower than
-        :meth:`_scroll_recall_runnable`, which gates whether scroll is wired at
-        all; here scroll is already wired and structured recall is present.
-
-        Note: this is a build-time decision. Registration is evaluated once
-        when the agent is built; toggling ``security.sandbox_enabled`` at
-        runtime does NOT add or remove the REPL from an already-running
-        agent. The switch is still honoured on the execution path
-        (``_prepare_off_mode_sandbox`` / ``_sandbox_usable``) -- an already
-        registered REPL will simply skip sandbox provisioning once the switch
-        is off. Rebuild the agent to change which tools are offered.
-        """
-        if governor is not None:
-            sandbox_usable = getattr(governor, "sandbox_usable", None)
-            if sandbox_usable is None:
-                # Compatibility for lightweight/custom governor objects that
-                # predate the effective-usability property.
-                sandbox_usable = getattr(
-                    governor,
-                    "sandbox_available",
-                    False,
-                )
-            if sandbox_usable:
-                return True
         try:
             from ..agents.context import scroll_unsandboxed_allowed
 
@@ -986,19 +931,16 @@ class AgentBuilder:
         request_context: dict[str, Any],
         governor: Any,
     ) -> None:
-        """Register scroll's recall tools onto ``extra_tools``.
+        """Register scroll's recall tool onto ``extra_tools``.
 
-        The structured ``recall_history`` tool is ALWAYS registered: its
+        Only the structured ``recall_history`` tool exists: its
         expand/search/recall_tool ops are bound read-only queries (internal
         governance type) — no sandbox, no approval, working on every platform.
-
-        The sandboxed ``recall_history_python`` REPL is registered ONLY when
-        it can actually run in a sandbox (or unsandboxed recall is explicitly
-        opted in). Where no sandbox exists, or an OFF-mode path skips sandbox
-        compilation, every call would fail closed, and the guard layer misreads
-        that ``DENIED`` as a sandbox violation and turns it into a recurring
-        approval prompt. Omitting it removes that dead-end: the model recalls
-        through the structured tool.
+        The sandboxed ``recall_history_python`` REPL that used to sit beside it
+        is gone: history now lives in the platform's shared PostgreSQL
+        database, which has no per-connection authorizer, so a tool that ran
+        model-authored SQL could read every tenant's rows. The parameterized
+        structured operations are the only safe surface.
         """
         extra_tools.append(
             self._wrap_tool(
@@ -1008,22 +950,6 @@ class AgentBuilder:
                 governor,
             ),
         )
-        if self._scroll_repl_runnable(agent_config, governor):
-            extra_tools.append(
-                self._wrap_tool(
-                    scroll.repl_tool,
-                    agent_id,
-                    request_context,
-                    governor,
-                ),
-            )
-        else:
-            _logger.info(
-                "scroll: sandbox unavailable or disabled for "
-                "recall_history_python — registering only the structured "
-                "recall_history tool (no approval prompt, works without a "
-                "sandbox)",
-            )
 
     @staticmethod
     def _wrap_tool(

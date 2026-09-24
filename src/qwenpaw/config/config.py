@@ -1023,17 +1023,23 @@ class ToolResultPruningConfig(BaseModel):
 class ScrollContextConfig(BaseModel):
     """Scroll (retrieval-driven) context manager configuration.
 
-    Only consulted when ``LightContextConfig.strategy == "scroll"``. The
-    durable history lives at ``{working_dir}/{db_filename}``; evicted turns
-    fold into an in-context eviction index recallable from the sandboxed
-    ``recall_history_python`` REPL.
+    Only consulted when ``LightContextConfig.strategy == "scroll"``. Durable
+    history lives in the platform PostgreSQL store; ``db_filename`` is only the
+    per-workspace handle whose path identifies the workspace (and where a
+    pre-migration ``history.db`` may remain). Evicted turns fold into an
+    in-context eviction index recallable through the structured
+    ``recall_history`` tool.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     db_filename: str = Field(
         default="history.db",
-        description="SQLite history store filename, relative to working_dir.",
+        description=(
+            "Per-workspace history handle name, relative to working_dir. The "
+            "path identifies which workspace's rows to read; history itself is "
+            "stored in PostgreSQL."
+        ),
     )
 
     tool_output_token_cap: int = Field(
@@ -1047,14 +1053,6 @@ class ScrollContextConfig(BaseModel):
         ),
     )
 
-    repl_timeout_s: int = Field(
-        default=300,
-        ge=1,
-        description=(
-            "Per-call timeout for the recall_history_python REPL tool."
-        ),
-    )
-
     history_retention_days: int = Field(
         default=30,
         ge=0,
@@ -1063,18 +1061,6 @@ class ScrollContextConfig(BaseModel):
             "purged automatically on startup and on agent teardown. Default "
             "30 keeps roughly the last month. Set 0 to keep history forever "
             "(unbounded growth — only the capacity warning fires)."
-        ),
-    )
-
-    allow_unsandboxed: bool = Field(
-        default=False,
-        description=(
-            "UNSAFE escape hatch. The recall_history_python recall REPL runs "
-            "model-authored Python and is only isolated by the sandbox; the "
-            "sandbox config is injected by the governance layer. When that "
-            "layer is degraded the tool fails closed and refuses to run. Set "
-            "this to true to run the REPL with NO isolation (arbitrary host "
-            "code as the agent user) — trusted local/dev use only."
         ),
     )
 
@@ -1118,8 +1104,8 @@ class LightContextConfig(BaseModel):
         default="scroll",
         description=(
             "Context management strategy. 'native' = AgentScope compression; "
-            "'scroll' = retrieval-driven history.db + eviction index with a "
-            "sandboxed recall_history_python recall REPL (the default)."
+            "'scroll' = retrieval-driven durable history + eviction index with "
+            "a structured recall_history tool (the default)."
         ),
     )
 

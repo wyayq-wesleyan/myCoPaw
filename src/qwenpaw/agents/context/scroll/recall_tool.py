@@ -6,10 +6,12 @@ The parameterized front door to durable history: ``expand`` / ``search`` /
 them needs model-authored code — each is a bound, read-only SQL query over
 :class:`.memoryspace.MemorySpace`, executed in-process. That is why this tool
 needs no sandbox and no approval (it is registered as an ``internal``
-governance type): unlike ``recall_history_python`` there is nothing here the
+governance type): there is nothing here the
 model controls beyond scalar parameters, so there is nothing to isolate.
 
-``recall_history_python`` remains the escape hatch for everything else
+Arbitrary-SQL access is deliberately not offered: history now lives in the
+platform's shared PostgreSQL store, where a model-authored query could read
+every tenant's rows. The structured ops below are the only recall surface.
 (sessions listing, custom SQL aggregation, scratch tables) — but it executes
 model-authored Python and therefore requires the sandbox. When no sandbox
 backend is available, it fails closed unless the explicit unsafe fallback is

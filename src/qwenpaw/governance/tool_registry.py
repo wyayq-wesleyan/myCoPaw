@@ -401,25 +401,20 @@ def _register_non_descriptor_tools(registry: ToolRegistry) -> None:
     """Register tools that intentionally skip ``@tool_descriptor`` collection.
 
     Exception path for dynamic / mode-scoped tools that must not appear in
-    the global builtin set (scroll ``recall_history*``, memory manager
+    the global builtin set (scroll ``recall_history``, memory manager
     ``memory_search``). Keep this list documented when adding similar tools.
     """
-    # Scroll strategy tools — hand-built descriptors, not global builtins.
+    # Scroll strategy tool — a hand-built descriptor, not a global builtin.
+    # The sandboxed ``recall_history_python`` REPL was removed when history
+    # moved into the platform's shared PostgreSQL store: a tool running
+    # model-authored SQL could read every tenant's rows, and PostgreSQL has no
+    # per-connection authorizer to stop it.
     register_tool_governance(
         registry,
         python_name="recall_history",
         tool_type="internal",
         target_param="op",
         policy_name="RecallHistory",
-        owner="builtin",
-    )
-    register_tool_governance(
-        registry,
-        python_name="recall_history_python",
-        tool_type="shell",
-        target_param="source",
-        policy_name="RecallHistoryPython",
-        sandbox_required=True,
         owner="builtin",
     )
     # Memory manager tool — registered dynamically outside agents.tools.

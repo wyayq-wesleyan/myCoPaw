@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=too-few-public-methods,protected-access
-"""The scroll first-run notice.
+"""The scroll switch-over notices.
 
 Scroll became the DEFAULT context strategy, so agents that never set
-``strategy`` are switched to it silently and get a durable ``history.db`` in
-their workspace. ``build_scroll_components`` must log a one-time notice the
-first time it wires scroll in a workspace (the db file's absence is the
-signal), and must stay silent on every later run.
+``strategy`` are switched to it silently. ``build_scroll_components`` must log
+one notice per workspace per process so the switch and its rollback path are
+discoverable. The store now lives in PostgreSQL, so there is no created file to
+key on — the dedupe set is process-level.
 """
 
 import logging
@@ -48,6 +48,16 @@ def _notice_records(caplog) -> list[logging.LogRecord]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _clear_notice_dedupe():
+    """Each test starts with a clean process-level notice set."""
+    saved = set(context_mod._FIRST_RUN_WARNED)
+    context_mod._FIRST_RUN_WARNED.clear()
+    yield
+    context_mod._FIRST_RUN_WARNED.clear()
+    context_mod._FIRST_RUN_WARNED.update(saved)
+
+
 def test_removed_eviction_headline_settings_are_ignored():
     config = LightContextConfig(
         strategy="scroll",
@@ -66,33 +76,47 @@ def test_removed_eviction_headline_settings_are_ignored():
     )
 
 
+def test_removed_repl_settings_are_ignored():
+    """The REPL knobs are gone; a legacy config that still sets them loads
+    without error and simply drops them."""
+    config = LightContextConfig(
+        strategy="scroll",
+        scroll_config={"repl_timeout_s": 30, "allow_unsandboxed": True},
+    )
+    assert not hasattr(config.scroll_config, "repl_timeout_s")
+    assert not hasattr(config.scroll_config, "allow_unsandboxed")
+
+
 @pytest.mark.usefixtures("capture_qwenpaw_logs")
 def test_first_run_logs_notice_once(tmp_path: Path, caplog):
-    db = tmp_path / "history.db"
-    assert not db.exists()
-
     with caplog.at_level(logging.WARNING, logger="qwenpaw.agents.context"):
         components = _build(tmp_path)
-    # Scroll actually wired and created the durable store.
+    # Scroll actually wired.
     assert components is not None
-    assert db.exists()
-    # Exactly one notice, and it points at the rollback path.
+    # Exactly one notice, naming the workspace handle and the rollback path.
     records = _notice_records(caplog)
     assert len(records) == 1
     msg = records[0].getMessage()
-    assert str(db) in msg
+    assert str(tmp_path / "history.db") in msg
     assert "native" in msg
 
 
-def test_notice_does_not_repeat_when_db_exists(tmp_path: Path, caplog):
-    # Pre-create the store so this looks like a second startup.
+def test_notice_does_not_repeat_in_the_same_process(tmp_path: Path, caplog):
     _build(tmp_path)
-    assert (tmp_path / "history.db").exists()
 
-    caplog.clear()  # drop the first run's notice; only watch the second
+    caplog.clear()  # drop the first build's notice; only watch the second
     with caplog.at_level(logging.WARNING, logger="qwenpaw.agents.context"):
         _build(tmp_path)
     assert _notice_records(caplog) == []
+
+
+def test_notice_fires_for_a_different_workspace(tmp_path: Path, caplog):
+    """Dedupe is per workspace, not global: a second workspace still gets told."""
+    _build(tmp_path / "one")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="qwenpaw.agents.context"):
+        _build(tmp_path / "two")
+    assert len(_notice_records(caplog)) == 1
 
 
 def _size_records(caplog) -> list[logging.LogRecord]:
@@ -104,18 +128,19 @@ def _size_records(caplog) -> list[logging.LogRecord]:
 
 
 @pytest.mark.usefixtures("capture_qwenpaw_logs")
-def test_large_existing_db_warns_about_retention(tmp_path: Path, caplog):
-    # First build creates a small store (no size warning, just first-run).
+def test_large_legacy_db_warns_about_retention(tmp_path: Path, caplog):
+    """A leftover pre-migration ``history.db`` still triggers the retention
+    warning — that is the file the warning is about."""
     _build(tmp_path)
     db = tmp_path / "history.db"
+    db.write_bytes(b"x" * 64)  # stand in for a legacy store
     assert db.exists()
 
-    # Drop the warn threshold below the tiny db so the next build trips it,
-    # and clear the process-level dedupe set so the test is order-independent.
-    monkey = db.stat().st_size - 1
-    context_mod._DB_SIZE_WARNED.discard(str(db))
+    # Drop the warn threshold below the file so the next build trips it, and
+    # clear the process-level dedupe set so the test is order-independent.
     orig = context_mod._DB_SIZE_WARN_BYTES
-    context_mod._DB_SIZE_WARN_BYTES = monkey
+    context_mod._DB_SIZE_WARN_BYTES = db.stat().st_size - 1
+    context_mod._DB_SIZE_WARNED.discard(str(db))
     try:
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="qwenpaw.agents.context"):
@@ -141,9 +166,8 @@ def test_no_notice_when_strategy_is_native(tmp_path: Path, caplog):
             session_id="s1",
             agent_id="ag1",
         )
-    # Native is unaffected: nothing wired, no db, no notice.
+    # Native is unaffected: nothing wired, no notice.
     assert components is None
-    assert not (tmp_path / "history.db").exists()
     assert _notice_records(caplog) == []
 
 

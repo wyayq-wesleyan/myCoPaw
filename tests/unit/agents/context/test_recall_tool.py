@@ -1164,12 +1164,26 @@ async def test_invalid_cursor_fails_instead_of_skipping_history(tool):
     assert "exact value returned by recall_history" in _text(chunk)
 
 
-async def test_broken_db_is_a_failure_not_an_empty_history(tmp_path: Path):
-    """An unreadable store must produce RECALL FAILED, never '0 rows'."""
-    bad = tmp_path / "not-a-db"
-    bad.write_text("garbage", encoding="utf-8")
+async def test_unreachable_backend_is_a_failure_not_an_empty_history(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """An unreachable store must produce RECALL FAILED, never '0 rows'.
+
+    The equivalent of the old "corrupt history.db" case: history now lives in
+    PostgreSQL, so the way a store becomes unreadable is the database being
+    down. A failure must not be reported as an empty history — the model would
+    then answer from stale context instead of retrying.
+    """
+    import qwenpaw.agents.context.scroll.memoryspace as memoryspace_mod
+    from qwenpaw.platform_store import PlatformStoreUnavailable
+
+    def _unavailable():
+        raise PlatformStoreUnavailable("diagnostic: database is down")
+
+    monkeypatch.setattr(memoryspace_mod, "get_conn", _unavailable)
     tool = make_recall_history(
-        history_db_path=str(bad),
+        history_db_path=str(tmp_path / "history.db"),
         session_id="s1",
         agent_id="ag1",
     )

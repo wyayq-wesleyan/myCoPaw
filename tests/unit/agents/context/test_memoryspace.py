@@ -1,23 +1,18 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=redefined-outer-name,protected-access,unused-argument
-"""Unit tests for :class:`MemorySpace` — the model's SQLite recall surface.
+"""Unit tests for :class:`MemorySpace` — the read-only recall surface.
 
-The security-critical guarantee is that the model, which runs arbitrary SQL
-here, cannot escape the read-only attach of durable history. These tests pin
-the SQLite-authorizer contract plus the recall ``scope`` semantics.
+The security-critical guarantee is that every query is scoped to one
+``workspace_key``: one account must never be able to read another's history.
+These tests pin that isolation plus the recall ``scope`` semantics.
 """
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from qwenpaw.agents.context.scroll.history import HistoryStore
-from qwenpaw.agents.context.scroll.memoryspace import (
-    MemorySpace,
-    fts_match_query,
-    sanitize_suffix,
-)
+from qwenpaw.agents.context.scroll.memoryspace import MemorySpace
 from qwenpaw.agents.context.types import LogEntry
 
 
@@ -71,47 +66,50 @@ def ms(history_db: Path) -> MemorySpace:
     space.close()
 
 
-# -- the read-only-attach contract ------------------------------------------
+# -- the tenant-isolation contract ------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "ATTACH DATABASE ':memory:' AS other",
-        "DETACH DATABASE hist",
-        "INSERT INTO hist.conversation_history(session_id, kind) "
-        "VALUES ('x', 'k')",
-        "UPDATE hist.conversation_history SET content = 'tampered'",
-        "DELETE FROM hist.conversation_history",
-        "DROP TABLE hist.conversation_history",
-    ],
-)
-def test_authorizer_blocks_escape_attempts(ms: MemorySpace, sql: str):
-    with pytest.raises(sqlite3.Error):
-        ms.sql_exec(sql)
-    # And the durable data is untouched.
-    assert (
-        ms.sql_query(
-            "SELECT COUNT(*) AS n FROM hist.conversation_history",
-        )[
-            0
-        ]["n"]
-        == 3
+def test_cannot_read_another_workspaces_history(tmp_path: Path):
+    """The security boundary: a MemorySpace sees only its own workspace.
+
+    SQLite gave each workspace its own file, so arbitrary SQL could not reach
+    another tenant. PostgreSQL is shared, so isolation now rests entirely on
+    ``workspace_key`` being bound into every statement — this is the test that
+    would fail loudly if a query ever forgot its scope.
+    """
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other = HistoryStore(other_dir / "history.db")
+    other.append(
+        session_id="s1",
+        agent_id="ag1",
+        dedup_key="secret",
+        entry=LogEntry(
+            kind="model_turn",
+            role="assistant",
+            content="another tenants secret plans",
+        ),
     )
+    other.close()
 
-
-def test_scratch_is_read_write(ms: MemorySpace):
-    ms.sql_exec("CREATE TABLE notes(x INTEGER)")
-    ms.sql_exec("INSERT INTO notes VALUES (42)")
-    assert ms.sql_query("SELECT x FROM notes")[0]["x"] == 42
-    assert "notes" in ms.tables()
-
-
-def test_hist_is_readable(ms: MemorySpace):
-    rows = ms.sql_query(
-        "SELECT content FROM hist.conversation_history ORDER BY seq",
+    space = MemorySpace(
+        history_db_path=str(tmp_path / "history.db"),
+        session_id="s1",
+        agent_id="ag1",
     )
-    assert rows[0]["content"] == "tanks rolled in"
+    try:
+        assert space.search("secret", all_agents=True) == []
+        assert space.sessions(all_agents=True) == []
+        assert space.agents() == []
+        assert space.session("s1", all_agents=True) == []
+        assert space.expand(0, 1_000_000) == []
+    finally:
+        space.close()
+
+
+def test_history_rows_are_readable_by_kind(ms: MemorySpace):
+    rows = ms.session("s1")
+    assert [row["content"] for row in rows] == ["tanks rolled in"]
 
 
 # -- recall scope semantics --------------------------------------------------
@@ -125,11 +123,14 @@ def test_search_default_is_this_agent_cross_session(ms: MemorySpace):
     assert "tanks of another agent" not in contents
 
 
-def test_search_uses_seq_as_stable_bm25_tie_breaker(tmp_path: Path):
+def test_search_order_is_stable_and_newest_first(tmp_path: Path):
+    """With no relevance ranking, results are ordered by recency, and the same
+    query returns the same order (so a paging loop can rely on it).
+    """
     h = HistoryStore(tmp_path / "history.db")
-    expected_seqs = []
+    appended = []
     for index in range(3):
-        expected_seqs.append(
+        appended.append(
             h.append(
                 session_id="archive",
                 agent_id="ag1",
@@ -141,6 +142,7 @@ def test_search_uses_seq_as_stable_bm25_tie_breaker(tmp_path: Path):
                 ),
             ),
         )
+    expected_seqs = list(reversed(appended))
     h.close()
     space = MemorySpace(
         history_db_path=str(tmp_path / "history.db"),
@@ -254,10 +256,23 @@ def test_search_excludes_the_active_turn(tmp_path: Path):
             "tanks moved in another session",
         }
         hits = space.search("tanks", k=10)
-        assert {r["content"] for r in hits} == {
-            "tanks question from earlier",
-            "tanks moved in another session",
-        }
+        contents = {r["content"] for r in hits}
+        # The active turn (seq 3+ in s1) is excluded; the older s1 turn and the
+        # other session are both still recallable.
+        assert "tanks question retried" not in contents
+        assert "tanks quote from last recall" not in contents
+        assert "tanks moved in another session" in contents
+        # The representative row for the deduplicated older turn is the newest
+        # matching row in it, and both of its rows are reported as matched.
+        old_hit = next(r for r in hits if r["session_id"] == "s1")
+        assert old_hit["content"] == "tanks were parked at base"
+        assert old_hit["matched_seqs"] == [
+            row["seq"]
+            for row in space.expand(
+                old_hit["turn_start_seq"],
+                old_hit["turn_end_seq"],
+            )
+        ]
         old_turn = next(
             row["turn"] for row in hits if row["session_id"] == "s1"
         )
@@ -272,7 +287,9 @@ def test_search_excludes_the_active_turn(tmp_path: Path):
         )
         assert {r["content"] for r in legacy_hits} == legacy_expected
         # The LIKE fallback applies the same exclusion.
-        like = space._search_like("tanks", [("agent_id", "ag1")], None, 10)
+        like = space._search_like_rows(
+            "tanks", [("agent_id", "ag1")], None, 10,
+        )
         got = {r["content"] for r in like if r["kind"] != "_notice"}
         assert got == legacy_expected
     finally:
@@ -714,6 +731,9 @@ def test_search_marks_partial_when_raw_hit_cap_hides_turns(tmp_path: Path):
             content="first question",
         ),
     )
+    # Every matching row belongs to ONE turn, so paging can never reach the
+    # second distinct turn before the raw-hit cap stops it. That is what makes
+    # the partial notice fire — a single huge turn cannot fill ``k`` turns.
     for index in range(20):
         history.append(
             session_id="archive",
@@ -725,26 +745,6 @@ def test_search_marks_partial_when_raw_hit_cap_hides_turns(tmp_path: Path):
                 content=f"needle {index}",
             ),
         )
-    history.append(
-        session_id="archive",
-        agent_id="ag1",
-        dedup_key="second-user",
-        entry=LogEntry(
-            kind="context_msg",
-            role="user",
-            content="second question",
-        ),
-    )
-    history.append(
-        session_id="archive",
-        agent_id="ag1",
-        dedup_key="second-hit",
-        entry=LogEntry(
-            kind="model_turn",
-            role="assistant",
-            content="needle " + ("lower ranked filler " * 40),
-        ),
-    )
     history.close()
     space = MemorySpace(
         history_db_path=tmp_path / "history.db",
@@ -991,10 +991,10 @@ def test_active_turn_floor_is_computed_once_per_instance(
     ms: MemorySpace,
     monkeypatch,
 ):
-    """The MAX(seq) scan behind the active-turn exclusion is memoized: a
-    single search consults the floor twice (FTS path + LIKE fallback) and the
-    read-only history can't change under the instance, so it must run at most
-    once — the cost that accrues on large histories in the recall subprocess.
+    """The MAX(seq) scan behind the active-turn exclusion is memoized: one
+    search consults the floor from several call sites, and the history is
+    append-only, so it must run at most once per instance — the cost that
+    accrues on large histories.
     """
     calls = {"n": 0}
     real = ms._compute_active_turn_floor
@@ -1007,7 +1007,7 @@ def test_active_turn_floor_is_computed_once_per_instance(
 
     # Consult it across every path that would otherwise re-query.
     ms.search("tanks", k=5)
-    ms._search_like("tanks", [("agent_id", "ag1")], None, 5)
+    ms._search_like_rows("tanks", [("agent_id", "ag1")], None, 5)
     ms._active_turn_floor()
 
     assert calls["n"] == 1
@@ -1066,17 +1066,6 @@ def test_search_rows_carry_session_id(ms: MemorySpace):
     rows = {r["content"]: r for r in ms.search("tanks", all_agents=True)}
     assert rows["tanks rolled in"]["session_id"] == "s1"
     assert rows["tanks regrouped later"]["session_id"] == "s2"
-
-
-def test_fts_match_query_passes_boolean_operators():
-    # Bare UPPERCASE AND/OR/NOT are FTS5 operators (so the model can cast a
-    # wide net); every other token is a quoted literal; a plain query is AND.
-    assert fts_match_query("tank OR aquarium") == '"tank" OR "aquarium"'
-    assert fts_match_query("plain words") == '"plain" "words"'
-    # lowercase 'or' is a search term, not an operator
-    assert fts_match_query("salt or pepper") == '"salt" "or" "pepper"'
-    # punctuation operators are still neutralised
-    assert fts_match_query("F-15") == '"F" "15"'
 
 
 def test_search_or_widens_beyond_a_single_term(tmp_path: Path):
@@ -1208,7 +1197,6 @@ def test_search_filters_by_created_at_calendar_dates(tmp_path: Path):
             created_from="2024-11-05",
             created_to="2024-11-06",
         )
-        space._fts_ok = False
         like = space.search("tasks", created_on="2024-11-05")
     finally:
         space.close()
@@ -1259,7 +1247,6 @@ def test_date_only_search_keeps_null_content_rows(tmp_path: Path):
         session_id="current",
         agent_id="ag1",
     )
-    space._fts_ok = False
     try:
         matching_rows = space.search(
             "",
@@ -1354,14 +1341,14 @@ def test_search_accepts_date_max_without_overflow(
 
 
 def test_row_cap_truncates_with_marker(history_db: Path):
+    # No session/agent scope, so ``expand`` spans every row in the workspace
+    # (the old test queried the whole table) and the cap actually bites.
     space = MemorySpace(
         history_db_path=str(history_db),
-        session_id="s1",
-        agent_id="ag1",
         row_cap=2,
     )
     try:
-        rows = space.sql_query("SELECT seq FROM hist.conversation_history")
+        rows = space.expand(0, 1_000_000)
         assert rows[-1].get("_truncated") is True
         assert len([r for r in rows if "_truncated" not in r]) == 2
     finally:
@@ -1373,9 +1360,8 @@ def _hits(rows: list[dict]) -> set:
     return {r["content"] for r in rows if r["kind"] != "_notice"}
 
 
-def test_like_fallback_respects_scope(ms: MemorySpace):
-    """Force the no-FTS path; scope + explicit targeting still hold."""
-    ms._fts_ok = False
+def test_search_respects_scope(ms: MemorySpace):
+    """Scope + explicit targeting hold on the literal-term search path."""
     contents = _hits(ms.search("tanks"))
     assert "tanks of another agent" not in contents
     assert "tanks rolled in" in contents
@@ -1384,9 +1370,8 @@ def test_like_fallback_respects_scope(ms: MemorySpace):
     assert pinned == {"tanks of another agent"}
 
 
-def test_like_fallback_preserves_uppercase_or(ms: MemorySpace):
+def test_search_preserves_uppercase_or(ms: MemorySpace):
     """The public OR contract also holds when FTS5 is unavailable."""
-    ms._fts_ok = False
 
     assert _hits(ms.search("rolled OR regrouped")) == {
         "tanks rolled in",
@@ -1394,22 +1379,9 @@ def test_like_fallback_preserves_uppercase_or(ms: MemorySpace):
     }
 
 
-def test_like_fallback_emits_degradation_notice(ms: MemorySpace):
-    """Without FTS5 the model must be told search degraded to a LIKE scan, so
-    it stops using OR/boolean grammar that silently matches nothing."""
-    ms._fts_ok = False
+def test_search_emits_no_degradation_notice(ms: MemorySpace):
+    """A successful search carries no notice row."""
     rows = ms.search("tanks")
-    assert rows[0]["kind"] == "_notice"
-    assert "FTS5" in rows[0]["content"]
-    # The notice shares the row schema, so a content-iterating loop is safe.
-    assert set(rows[0].keys()) >= {"seq", "kind", "role", "content"}
-
-
-def test_no_notice_when_fts_available(ms: MemorySpace):
-    """The notice is FTS-unavailable-only — a normal FTS build never sees it,
-    even when a query degrades to LIKE for lack of word tokens."""
-    # All-punctuation query falls back to LIKE, but FTS5 *is* available here.
-    rows = ms.search("!!!")
     assert all(r["kind"] != "_notice" for r in rows)
 
 
@@ -1578,12 +1550,6 @@ def test_agents_is_workspace_wide(ms: MemorySpace):
     assert rows["ag1"]["sessions"] == 2  # s1 + s2
 
 
-def test_sanitize_suffix():
-    assert sanitize_suffix(None) == "scratch"
-    assert sanitize_suffix("a-b.c/d") == "a_b_c_d"
-    assert sanitize_suffix("ok_123") == "ok_123"
-
-
 # -- SQL values are bound, not f-string-concatenated ------------------------
 
 
@@ -1643,7 +1609,6 @@ def test_recall_values_with_sql_metacharacters_are_bound(tmp_path: Path):
         ]
         # LIKE fallback path takes the same bound (col, value) filters.
         # (Drop the leading FTS-unavailable notice row the LIKE path adds.)
-        space._fts_ok = False
         rows = space.search("briefing", agent_id=quoted_agent)
         assert [r["content"] for r in rows if r["kind"] != "_notice"] == [
             "briefing for the quoted session",

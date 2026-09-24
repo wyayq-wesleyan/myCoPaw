@@ -2084,14 +2084,14 @@ async def test_compress_does_not_evict_when_persist_fails(
     store: HistoryStore,
     monkeypatch,
 ):
-    import sqlite3
+    from qwenpaw.platform_store import PlatformStoreUnavailable
 
     ctx = [user("task"), assistant("step", headline="s"), assistant("more")]
     mgr = make_manager(store)
     agent = FakeAgent(ctx, tokens=200)
 
     def boom(*a, **k):
-        raise sqlite3.OperationalError("disk full")
+        raise PlatformStoreUnavailable("disk full")
 
     monkeypatch.setattr(store, "append", boom)
     await mgr.compress(agent)
@@ -2102,13 +2102,13 @@ async def test_compress_does_not_evict_when_persist_fails(
 
 
 def test_on_save_swallows_write_failure(store: HistoryStore, monkeypatch):
-    import sqlite3
+    from qwenpaw.platform_store import PlatformStoreUnavailable
 
     mgr = make_manager(store)
     agent = FakeAgent([user("hi")])
 
     def boom(*a, **k):
-        raise sqlite3.OperationalError("io error")
+        raise PlatformStoreUnavailable("io error")
 
     monkeypatch.setattr(store, "append", boom)
     mgr.on_save(agent, None)  # must not raise

@@ -3,9 +3,9 @@
 
 The default agent behavior is AgentScope-native compression; injecting a
 :class:`ContextManager` replaces it. The only built-in alternative today is the
-*scroll* strategy (durable ``history.db`` + an in-context eviction index + a
-sandboxed ``recall_history_python`` recall REPL), selected via
-``LightContextConfig.strategy == "scroll"``.
+*scroll* strategy (durable conversation history in the platform PostgreSQL store
++ an in-context eviction index + a structured ``recall_history`` recall tool),
+selected via ``LightContextConfig.strategy == "scroll"``.
 
 :func:`build_scroll_components` is the single entry point the builder calls; it
 returns ``None`` for any non-scroll strategy, so the feature is fully opt-in.
@@ -60,6 +60,10 @@ def scroll_unsandboxed_allowed(scroll_config: Any) -> bool:
 # dedupe keeps a long-lived server from re-warning on every agent build.
 _DB_SIZE_WARN_BYTES = 1 * 1024**3  # 1 GiB
 _DB_SIZE_WARNED: set[str] = set()
+# Workspaces already told about the switch this process. Process-level (not
+# file-level) because the store is in PostgreSQL now: there is no created file
+# whose presence could suppress a repeat on later boots.
+_FIRST_RUN_WARNED: set[str] = set()
 
 
 @dataclass
@@ -67,21 +71,27 @@ class ScrollComponents:
     """The pieces the builder wires when the scroll strategy is active."""
 
     context_manager: Any  # ScrollContextManager (delegated agent hooks)
-    repl_tool: Any  # raw recall_history_python fn w/ a ``_tool_descriptor``
     recall_tool: Any  # raw structured recall_history fn (in-process, no
     # sandbox) — the front door for expand/search/recall_tool lookups
 
 
 def _warn_first_run(db_path: Path) -> None:
-    """Emit the one-time scroll first-run notice for a workspace.
+    """Emit the scroll switch-over notice once per process for a workspace.
 
-    Logged (not raised) so it never blocks startup. Fires only when
-    ``history.db`` does not yet exist, i.e. the first time scroll wires in
-    this workspace — the file's presence suppresses it on every later run.
+    Logged (not raised) so it never blocks startup. The durable store lives in
+    the platform PostgreSQL database, so there is no per-workspace file whose
+    creation marks the first run — a process-level set keeps the notice to one
+    per workspace per boot instead of repeating on every agent build. The path
+    is named anyway because it is still the workspace handle callers use (and
+    where a pre-migration ``history.db`` may remain).
     """
+    key = str(db_path)
+    if key in _FIRST_RUN_WARNED:
+        return
+    _FIRST_RUN_WARNED.add(key)
     logger.warning(
-        "scroll is now the DEFAULT context strategy. A durable history "
-        "store is being created at %s (this workspace had none). Conversation "
+        "scroll is now the DEFAULT context strategy; history is stored in the "
+        "platform PostgreSQL database (workspace handle: %s). Conversation "
         "turns evicted from the live window are persisted there and recalled "
         "on demand instead of being summarized in place. To restore the "
         "previous behavior, set running.light_context_config.strategy to "
@@ -167,25 +177,22 @@ def build_scroll_components(
         from .scroll.history import HistoryStore
         from .scroll.manager import ScrollContextManager
         from .scroll.recall_tool import RecallLoopGuard, make_recall_history
-        from .scroll.repl import make_recall_history_python
 
         sc = lcc.scroll_config
         trc = lcc.tool_result_pruning_config
         db_path = Path(workspace_dir) / sc.db_filename
-        # First-run notice: scroll is the default as of this release, so agents
-        # that never set ``strategy`` are switched to it silently. The first
-        # time we wire scroll in a workspace we create ``history.db`` there;
-        # warn once (the file's absence is the first-run signal — it never
-        # repeats) so the switch, the new on-disk file, and the rollback path
-        # are all discoverable.
-        if not db_path.exists():
-            _warn_first_run(db_path)
-        else:
-            # Existing store: nudge toward a retention window if it grew large.
+        # The store is PostgreSQL now, so there is no per-workspace file whose
+        # absence signals a first run. Warn once per process instead: scroll is
+        # the default as of this release, so an agent that never set
+        # ``strategy`` is switched silently, and the notice is what makes the
+        # switch and its rollback path discoverable.
+        _warn_first_run(db_path)
+        # A leftover legacy history.db is worth flagging: it may still hold
+        # pre-migration rows and its size is what the retention warning is about.
+        if db_path.exists():
             _warn_db_size(db_path)
         history = HistoryStore(db_path)
         recall_loop_guard = RecallLoopGuard()
-        scratch_root = str(Path(workspace_dir) / ".scroll")
 
         manager = ScrollContextManager(
             history=history,
@@ -199,18 +206,11 @@ def build_scroll_components(
             ),
             recall_loop_guard=recall_loop_guard,
         )
-        tool = make_recall_history_python(
-            history_db_path=str(history.path),
-            session_id=session_id,
-            agent_id=agent_id,
-            scratch_root=scratch_root,
-            timeout_s=sc.repl_timeout_s,
-            allow_unsandboxed=scroll_unsandboxed_allowed(sc),
-        )
         # Structured front door for the common recall ops (expand / search /
-        # recall_tool): in-process bound queries, no sandbox, no approval —
-        # so fold stubs and the eviction index stay readable even when the
-        # sandboxed REPL is unavailable.
+        # recall_tool): in-process bound queries against the platform store, no
+        # sandbox, no approval. This is the only recall path — PostgreSQL is
+        # shared across tenants and has no per-connection authorizer, so the
+        # arbitrary-SQL REPL that used to run alongside it is no longer offered.
         recall = make_recall_history(
             history_db_path=str(history.path),
             session_id=session_id,
@@ -220,7 +220,6 @@ def build_scroll_components(
         )
         return ScrollComponents(
             context_manager=manager,
-            repl_tool=tool,
             recall_tool=recall,
         )
     except Exception:  # noqa: BLE001 - any scroll failure degrades to native
