@@ -2366,6 +2366,25 @@ Scroll 上下文策略（现为默认）在窗口吃满时会**把中间那段�
   误吞、工具调用轮次仍保留调用名。回退验证：还原两处后 3 例精确失败。
 - `tests/unit/app` 失败清单与改动前逐项对比无新增失败。
 
+### 9.37 刷新后问题跑到回答下面：重建消息丢了时间戳
+
+**现象**：更新后，提问并收到回答，刷新页面，**问题显示在回答的下方**。
+
+**根因**：前端从 `metadata.timestamp` 读消息时间（`sessionApi.parseTimestamp`），
+而 `Msg.timestamp` 是 `created_at` 的别名。9.35 改为从 `history.db` 重建消息时，
+`_row_to_msg()` **既没设置 `Msg.created_at`，也没把行里的 `created_at` 写进
+`metadata.timestamp`**——重建出的每条消息都是"无时间"的，前端无法把一轮的提问与
+回答排在一起，于是刷新后顺序错乱。
+
+**修复**：`_row_to_msg()` 恢复时间——把行的 `created_at` 写入 `metadata.timestamp`
+（已有值不覆盖），并在有值时传给 `Msg(created_at=...)`（`Msg` 拒绝 `None`，故仅在
+有值时传）。`load_session_messages()` 的 SELECT 补上 `created_at` 列。
+
+**验证**：真实对话 → 刷新后 DOM 顺序为 user(09:16:27) 在上、assistant(09:17:11)
+在下，时间戳正确显示（截图确认）。新增 2 例单测（时间戳恢复、已有 timestamp 不被
+覆盖）。`tests/unit/app` + `tests/unit/agents/context` 共 1278 项通过，失败清单与
+改动前逐项对比无新增失败。
+
 ## 12. 知识服务部署
 
 ### 12.1 容器信息

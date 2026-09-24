@@ -41,11 +41,12 @@ INJECTION = (
 
 
 def _injection_msg() -> Msg:
+    """Exactly what ``react_agent`` appends: user role, tagged, no id."""
     return Msg(
         name="knowledge_auto_context",
         role="user",
         content=[TextBlock(type="text", text=INJECTION)],
-        metadata={},
+        metadata={"qwenpaw_tag": "knowledge_auto_context"},
     )
 
 
@@ -70,10 +71,15 @@ def _rebuild(msg: Msg) -> Msg:
     )
 
 
-def test_message_name_is_persisted() -> None:
-    """Without the name the rebuilt row is indistinguishable from a user turn."""
-    entry = msg_to_entries(_injection_msg())[0]
-    assert entry.name == "knowledge_auto_context"
+def test_injection_is_tagged_so_it_survives_persistence() -> None:
+    """The tag is what a rebuilt row keeps; the name is not persisted."""
+    msg = _injection_msg()
+    assert (
+        msg.metadata.get("qwenpaw_tag") == "knowledge_auto_context"
+    )
+    rebuilt = _rebuild(msg)
+    assert rebuilt is not None
+    assert _is_synthetic_user_message(rebuilt) is True
 
 
 def test_injection_is_hidden_after_persist_and_rebuild() -> None:

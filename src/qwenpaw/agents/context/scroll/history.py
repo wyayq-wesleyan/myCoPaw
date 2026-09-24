@@ -478,7 +478,8 @@ class HistoryStore:
             params.append(agent_id)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT seq, kind, role, name, content, blocks, metadata "
+                "SELECT seq, kind, role, name, content, blocks, metadata, "
+                "created_at "
                 "FROM conversation_history "
                 "WHERE " + " AND ".join(where) + " ORDER BY seq",
                 tuple(params),
@@ -940,13 +941,27 @@ def _row_to_msg(row: sqlite3.Row) -> Msg | None:
             return None
         content = [fallback]
     metadata = _loads(row["metadata"]) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    # The console reads a message's time from ``metadata.timestamp`` (see
+    # ``sessionApi.parseTimestamp``), and `Msg.timestamp` aliases
+    # ``created_at``. Without restoring it here, every rebuilt message had no
+    # time at all, so the frontend could not order a turn's request against its
+    # reply — after a refresh the question rendered *below* the answer.
+    created_at = row["created_at"] if "created_at" in row.keys() else None
+    if created_at and "timestamp" not in metadata:
+        metadata["timestamp"] = created_at
     try:
-        return Msg(
-            name=row["name"] or role,
-            role=role,
-            content=content,
-            metadata=metadata if isinstance(metadata, dict) else {},
-        )
+        # ``Msg.created_at`` rejects None, so it is passed only when present.
+        fields: dict[str, Any] = {
+            "name": row["name"] or role,
+            "role": role,
+            "content": content,
+            "metadata": metadata,
+        }
+        if created_at:
+            fields["created_at"] = created_at
+        return Msg(**fields)
     except Exception:  # noqa: BLE001 - one bad row must not break the read
         logger.debug(
             "scroll: could not rebuild history row seq=%s", row["seq"],

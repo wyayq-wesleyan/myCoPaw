@@ -35,6 +35,7 @@ from .utils.image_freezing import freeze_local_images_async
 from ..modes.coding import CodingModeMixin
 from ..utils.io_utils import run_sync_io
 from ..constant import (
+    KNOWLEDGE_AUTO_CONTEXT_MESSAGE_TAG,
     LOOP_CONTINUATION_MESSAGE_TAG,
     MEDIA_UNSUPPORTED_PLACEHOLDER,
     QWENPAW_MESSAGE_TAG_KEY,
@@ -1208,7 +1209,23 @@ class QwenPawAgent(CodingModeMixin, Agent):
             )
             # AgentScope providers expect dynamic context entries to use the
             # user role (the runtime uses the same convention for injections).
-            self.state.context.append(Msg(name="knowledge_auto_context", role="user", content=[TextBlock(type="text", text=text)]))
+            #
+            # Tag it: this is not user transcript, and the console must not show
+            # it as a bubble. The message *name* cannot carry that information
+            # across a reload because the durable store does not persist names,
+            # whereas this metadata key is persisted and restored.
+            self.state.context.append(
+                Msg(
+                    name="knowledge_auto_context",
+                    role="user",
+                    content=[TextBlock(type="text", text=text)],
+                    metadata={
+                        QWENPAW_MESSAGE_TAG_KEY: (
+                            KNOWLEDGE_AUTO_CONTEXT_MESSAGE_TAG
+                        ),
+                    },
+                ),
+            )
         except Exception:
             logger.debug("Automatic knowledge retrieval failed", exc_info=True)
 

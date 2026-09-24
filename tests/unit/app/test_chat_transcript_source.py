@@ -227,3 +227,76 @@ def test_normal_sized_tool_results_are_untouched() -> None:
     assert msg is not None
     results = [b for b in msg.content if getattr(b, "type", None) == "tool_result"]
     assert results[0].output[0].text == "short output"
+
+
+# --------------------------------------------------------- message timestamps
+
+
+def test_rebuilt_rows_carry_their_timestamp(tmp_path) -> None:
+    """A rebuilt message must keep its time.
+
+    The console reads a message's time from ``metadata.timestamp`` and
+    ``Msg.timestamp`` aliases ``created_at``. Dropping both meant every rebuilt
+    message had no time, so a turn's request and its reply could not be ordered
+    against each other and the question re-appeared *below* the answer after a
+    page refresh.
+    """
+    store = HistoryStore(tmp_path / "history.db")
+    try:
+        conn = store._conn
+        for role, kind, when in (
+            ("user", "context_msg", "2026-09-24T09:16:27.211129"),
+            ("assistant", "model_turn", "2026-09-24T09:17:11.652462"),
+        ):
+            conn.execute(
+                "INSERT INTO conversation_history "
+                "(session_id, agent_id, kind, role, name, content, blocks, "
+                " metadata, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    "s1", "a1", kind, role, role, role,
+                    f'[{{"type": "text", "text": "{role}"}}]',
+                    "{}", when,
+                ),
+            )
+        conn.commit()
+
+        messages = store.load_session_messages("s1", "a1")
+
+        assert len(messages) == 2
+        assert messages[0].created_at == "2026-09-24T09:16:27.211129"
+        assert messages[1].created_at == "2026-09-24T09:17:11.652462"
+        # Ordered by seq, so the question precedes its answer.
+        assert messages[0].role == "user"
+        assert messages[1].role == "assistant"
+        for msg in messages:
+            assert (msg.metadata or {}).get("timestamp"), (
+                "metadata.timestamp drives the console's clock"
+            )
+    finally:
+        store.close()
+
+
+def test_existing_metadata_timestamp_wins(tmp_path) -> None:
+    """A stored timestamp must not be overwritten by the row's created_at."""
+    store = HistoryStore(tmp_path / "history.db")
+    try:
+        store._conn.execute(
+            "INSERT INTO conversation_history "
+            "(session_id, agent_id, kind, role, name, content, blocks, "
+            " metadata, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "s1", "a1", "context_msg", "user", "user", "hi",
+                '[{"type": "text", "text": "hi"}]',
+                '{"timestamp": "2020-01-01T00:00:00"}',
+                "2026-09-24T09:16:27.211129",
+            ),
+        )
+        store._conn.commit()
+
+        msg = store.load_session_messages("s1", "a1")[0]
+
+        assert msg.metadata["timestamp"] == "2020-01-01T00:00:00"
+    finally:
+        store.close()

@@ -88,6 +88,11 @@ _VISUAL_PLACEHOLDER_NAMES = frozenset(
     {"visual_context", "visual_history", "knowledge_auto_context"},
 )
 
+# Opens every automatic knowledge-context injection. Must stay in step with the
+# string built in ``agents/react_agent.py``; used as a structural fallback so
+# rows that predate the persisted ``name`` column are still recognised.
+_KNOWLEDGE_AUTO_CONTEXT_PREFIX = "以下内容来自当前账户可访问的知识空间"
+
 
 def _is_synthetic_user_message(msg: Msg) -> bool:
     """Return whether *msg* is a runtime-injected user-role message.
@@ -98,17 +103,28 @@ def _is_synthetic_user_message(msg: Msg) -> bool:
     user messages. None of them is user transcript — rendering them as
     user cards made the original instruction appear rewritten after a
     session switch.
+
+    The knowledge auto-context injection is matched structurally too, because
+    a *rebuilt* row cannot rely on its name: the injection carries no metadata
+    tag, and rows written before the ``name`` column was populated rebuild with
+    ``name == "user"``, so the name check silently stopped hiding it and the
+    retrieved knowledge block was rendered as if the user had typed it.
     """
     if msg.role != "user":
         return False
     if msg.name in _VISUAL_PLACEHOLDER_NAMES:
         return True
     metadata = getattr(msg, "metadata", None)
-    return (
+    if (
         isinstance(metadata, dict)
         and metadata.get(QWENPAW_MESSAGE_TAG_KEY)
         in SYNTHETIC_USER_MESSAGE_TAGS
-    )
+    ):
+        return True
+    # Only a leading header counts, so a user discussing or quoting the phrase
+    # mid-message stays visible.
+    text = (msg.get_text_content() or "").lstrip()
+    return text.startswith(_KNOWLEDGE_AUTO_CONTEXT_PREFIX)
 
 
 def parse_legacy_memory_state(
