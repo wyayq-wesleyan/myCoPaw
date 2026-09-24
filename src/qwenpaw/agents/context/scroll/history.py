@@ -496,7 +496,12 @@ class HistoryStore:
                 # its message's ``created_at`` (the serializer stamps them all
                 # from the same Msg), so the within-turn order — tool call
                 # before its result — is still the write order.
-                " ORDER BY created_at, seq",
+                #
+                # ``created_at IS NULL`` is sorted on first so a row with no
+                # timestamp falls *last* (keeping its seq relative to other
+                # undated rows) instead of jumping to the head of the
+                # conversation, which is where SQLite puts NULLs by default.
+                " ORDER BY (created_at IS NULL), created_at, seq",
                 tuple(params),
             ).fetchall()
 

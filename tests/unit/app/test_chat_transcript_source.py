@@ -381,3 +381,43 @@ def test_same_timestamp_rows_keep_write_order(tmp_path) -> None:
         assert [m.get_text_content() for m in messages] == ["first", "second"]
     finally:
         store.close()
+
+
+def test_undated_rows_fall_last_not_first(tmp_path) -> None:
+    """A row with no timestamp must not jump to the top of the transcript.
+
+    SQLite sorts NULL first, so ordering on ``created_at`` alone pushed any
+    undated row (legacy data, a partially written turn) ahead of the whole
+    conversation. ``created_at IS NULL`` is sorted on first so those rows trail
+    instead, keeping their relative write order.
+    """
+    store = HistoryStore(tmp_path / "history.db")
+    try:
+        conn = store._conn
+        rows = [
+            ("user", "dated-question", "2026-09-24T09:00:00", "a"),
+            ("assistant", "dated-answer", "2026-09-24T09:01:00", "b"),
+            ("assistant", "undated-old", None, "c"),
+        ]
+        for role, text, when, key in rows:
+            conn.execute(
+                "INSERT INTO conversation_history "
+                "(session_id, agent_id, kind, role, name, content, blocks, "
+                " metadata, created_at, dedup_key) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "s1", "a1", "context_msg", role, role, text,
+                    f'[{{"type": "text", "text": "{text}"}}]', "{}", when, key,
+                ),
+            )
+        conn.commit()
+
+        messages = store.load_session_messages("s1", "a1")
+
+        assert [m.get_text_content() for m in messages] == [
+            "dated-question",
+            "dated-answer",
+            "undated-old",
+        ], "an undated row must not be placed before the dated conversation"
+    finally:
+        store.close()
