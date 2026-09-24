@@ -83,8 +83,49 @@ function getInitialSelectedAgent(): string {
   return "default";
 }
 
-export const useAgentStore = create<AgentStore>()(
-  persist(
+/**
+ * Switch to an owned agent that actually holds conversations.
+ *
+ * The chosen agent is remembered in localStorage, so it is per-browser: opening
+ * the console in a different browser (or after clearing site data) had no
+ * preference and fell back to the literal "default" agent, which showed an empty
+ * session list even though the account's conversations were intact under another
+ * agent. This asks the server which agents have history and adopts one.
+ *
+ * Deliberately conservative — it only acts when the current choice has NO
+ * conversations at all, so it can never override a user who is looking at an
+ * agent they picked on purpose, and it writes the preference so the answer is
+ * remembered in this browser too.
+ */
+async function adoptAgentWithHistory(): Promise<void> {
+  const store = useAgentStore.getState();
+  try {
+    const { counts } = await agentsApi.countChatsByAgent();
+    const currentCount = counts[store.selectedAgent] ?? 0;
+    if (currentCount > 0) return;
+
+    const withHistory = Object.entries(counts)
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1]);
+    if (withHistory.length === 0) return;
+
+    const [bestAgentId] = withHistory[0];
+    const known = store.agents.some((agent) => agent.id === bestAgentId);
+    if (!known) return;
+
+    useAgentStore.setState({ selectedAgent: bestAgentId });
+    try {
+      localStorage.setItem(lastUsedAgentKey(), bestAgentId);
+    } catch {
+      /* ignore */
+    }
+    menuRegistry.refresh();
+  } catch {
+    // Never block the console on this convenience lookup.
+  }
+}
+
+export const useAgentStore = create<AgentStore>()(  persist(
     (set, get) => ({
       selectedAgent: getInitialSelectedAgent(),
       agents: [],
@@ -142,6 +183,8 @@ export const useAgentStore = create<AgentStore>()(
         } finally {
           agentRefreshPromise = null;
         }
+        // Then correct a browser-local default that points at the wrong agent.
+        void adoptAgentWithHistory();
       },
 
       addAgent: (agent) =>

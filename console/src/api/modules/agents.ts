@@ -47,6 +47,17 @@ export const agentsApi = {
   // List all agents
   listAgents: () => request<AgentListResponse>("/agents"),
 
+  /**
+   * Conversation count per owned agent.
+   *
+   * The last chosen agent lives in localStorage, which a different browser does
+   * not have — so a fresh browser fell back to the literal "default" agent and
+   * showed an empty session list while the account's conversations sat under
+   * another agent. This lets the UI start on an agent that has history.
+   */
+  countChatsByAgent: () =>
+    request<{ counts: Record<string, number> }>("/agents/with-chats"),
+
   // Get agent details
   getAgent: (agentId: string) =>
     request<AgentProfileConfig>(`/agents/${agentId}`),

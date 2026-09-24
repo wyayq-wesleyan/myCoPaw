@@ -40,7 +40,7 @@ from ...agents.skill_system import (
 from ...harnesses.registry import ProviderCatalogItem, get_provider
 from ..agent_startup import AgentStartupStatus
 from ..multi_agent_manager import MultiAgentManager
-from ...constant import WORKING_DIR
+from ...constant import CHATS_FILE, WORKING_DIR
 from ...utils.io_utils import run_sync_io
 from ..user_space import (
     get_request_username,
@@ -328,6 +328,47 @@ def _read_profile_description(workspace_dir: str) -> str:
     except Exception:  # noqa: E722
         return ""
 
+
+@router.get(
+    "/with-chats",
+    summary="List the caller's agents with their conversation counts",
+    description=(
+        "Used to pick a starting agent on a fresh browser. The console keeps "
+        "the last chosen agent in localStorage, which a different browser does "
+        "not have, so it used to fall back to the literal ``default`` agent and "
+        "show an empty session list even though the account had conversations "
+        "under another agent. This reports which owned agents actually hold "
+        "conversations so the UI can start on one of them."
+    ),
+)
+async def list_agents_with_chats(request: Request) -> dict:
+    """Return ``{agent_id: conversation_count}`` for the caller's agents."""
+    config = load_config()
+    username = get_request_username(request)
+    counts: dict[str, int] = {}
+    for agent_id in user_agent_ids(config, username):
+        profile = config.agents.profiles.get(agent_id)
+        workspace_dir = getattr(profile, "workspace_dir", None)
+        if not workspace_dir:
+            counts[agent_id] = 0
+            continue
+        chats_path = Path(workspace_dir) / CHATS_FILE
+        if not chats_path.is_file():
+            counts[agent_id] = 0
+            continue
+        try:
+            data = json.loads(chats_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):  # noqa: BLE001 - a bad file means none
+            logger.debug(
+                "Could not read chats for agent %s", agent_id, exc_info=True,
+            )
+            counts[agent_id] = 0
+            continue
+        items = data.get("chats") if isinstance(data, dict) else data
+        if isinstance(items, dict):
+            items = list(items.values())
+        counts[agent_id] = len(items) if isinstance(items, list) else 0
+    return {"counts": counts}
 
 @router.get(
     "",

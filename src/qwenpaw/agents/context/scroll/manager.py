@@ -17,6 +17,7 @@ two delegated hooks.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -61,6 +62,37 @@ _OUTPUT_RESERVE_RATIO = 0.05
 _MAX_OUTPUT_RESERVE_TOKENS = 4096
 _SUMMARY_UPDATE_TIMEOUT_SECONDS = 60.0
 _OVERFLOW_FORCE_TRIGGER_RATIO = 1e-6
+
+
+def stable_message_key(msg: Any) -> str:
+    """Identity for a message that survives a process restart.
+
+    ``Msg`` normally carries an id, which is the dedup key. The fallback used to
+    be ``str(id(msg))`` — a CPython memory address. That is stable within one
+    process but not across restarts, so the same message was persisted again
+    under a new key after every reload and the transcript showed it twice (the
+    console rendered a question, its answer, then the question again). Deriving
+    the fallback from the message's own content keeps the key identical.
+
+    ``tool_call_id`` is included because two messages can share role, name and
+    text while being distinct tool turns.
+    """
+    existing = getattr(msg, "id", None)
+    if existing:
+        return str(existing)
+    blocks = getattr(msg, "content", None) or []
+    rendered: list[str] = []
+    for block in blocks:
+        getter = getattr(block, "model_dump", None)
+        payload = getter() if callable(getter) else block
+        rendered.append(repr(payload))
+    signature = "\x1f".join(rendered)
+    created = getattr(msg, "created_at", "") or ""
+    return "msg-" + hashlib.sha256(
+        f"{getattr(msg, 'role', '')}\x1f{getattr(msg, 'name', '')}\x1f"
+        f"{created}\x1f{signature}".encode("utf-8"),
+    ).hexdigest()[:32]
+
 _SummaryRecords = tuple[
     list[tuple[int, str]],
     list[tuple[int, str]],
@@ -1723,7 +1755,7 @@ class ScrollContextManager:
             )
             if msg is None:
                 continue
-            mid = getattr(msg, "id", None) or str(id(msg))
+            mid = stable_message_key(msg)
             if mid in self._synthetic_ids:
                 continue
             anon_pos = 0  # stable index for results lacking a tool_call_id

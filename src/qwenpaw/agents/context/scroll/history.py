@@ -506,10 +506,38 @@ class HistoryStore:
             ).fetchall()
 
         messages: list[Msg] = []
+        seen: set[tuple] = set()
         for row in rows:
             msg = _row_to_msg(row)
-            if msg is not None:
-                messages.append(msg)
+            if msg is None:
+                continue
+            # Collapse rows that describe the same logical event.
+            #
+            # ``append`` dedupes on ``(session_id, dedup_key)`` with
+            # ``ON CONFLICT DO NOTHING``, so a row is only protected while its
+            # key stays identical. It does not: ``_persist_new`` falls back to
+            # ``str(id(msg))`` when a message carries no id, and the session-sync
+            # pass derives the key from the file — so a re-persist or a restart
+            # can write the same message again under a different key, and a
+            # ``NULL`` key never conflicts at all. Replaying every row then
+            # showed a question twice with its answer in between.
+            #
+            # Identity is (role, name, created_at, text): all rows of one Msg
+            # share its ``created_at``, and a user genuinely asking the same
+            # thing again gets a new timestamp, so real repetition survives.
+            key = (
+                row["role"],
+                row["name"],
+                row["created_at"] if "created_at" in row.keys() else None,
+                msg.get_text_content() or "",
+            )
+            if key in seen:
+                logger.debug(
+                    "scroll: dropped a duplicate history row seq=%s", row["seq"],
+                )
+                continue
+            seen.add(key)
+            messages.append(msg)
         return messages
 
     def claim_session(self, session_id: str, agent_id: str | None) -> int:
@@ -978,6 +1006,11 @@ def _row_to_msg(row: sqlite3.Row) -> Msg | None:
             "role": role,
             "content": content,
             "metadata": metadata,
+            # A stable id per row. ``Msg`` would otherwise mint a fresh random
+            # uuid on every read, so the same message looked like a different
+            # one each time the transcript was fetched (and the console keys
+            # its cards by id).
+            "id": f"hist-{row['seq']}",
         }
         if created_at:
             fields["created_at"] = created_at
