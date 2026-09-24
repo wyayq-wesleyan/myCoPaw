@@ -300,3 +300,84 @@ def test_existing_metadata_timestamp_wins(tmp_path) -> None:
         assert msg.metadata["timestamp"] == "2020-01-01T00:00:00"
     finally:
         store.close()
+
+
+def test_transcript_is_ordered_by_time_not_write_order(tmp_path) -> None:
+    """A turn written later but happening earlier must still sort first.
+
+    ``seq`` is the *write* order and it can disagree with the conversation's
+    order — a resumed/retried turn, or rows imported by the session-sync pass,
+    can land after a turn that chronologically follows it. Sorting by ``seq``
+    therefore rendered a question *below* its answer once the transcript came
+    from the durable store (the live window never showed this).
+    """
+    store = HistoryStore(tmp_path / "history.db")
+    try:
+        conn = store._conn
+        # Write them out of order on purpose: the assistant row gets the lower
+        # seq even though it happened later in time.
+        conn.execute(
+            "INSERT INTO conversation_history "
+            "(session_id, agent_id, kind, role, name, content, blocks, "
+            " metadata, created_at, dedup_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "s1", "a1", "model_turn", "assistant", "assistant", "答案",
+                '[{"type": "text", "text": "答案"}]', "{}",
+                "2026-09-24T09:26:52", "u2",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO conversation_history "
+            "(session_id, agent_id, kind, role, name, content, blocks, "
+            " metadata, created_at, dedup_key) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "s1", "a1", "context_msg", "user", "user", "问题",
+                '[{"type": "text", "text": "问题"}]', "{}",
+                "2026-09-24T09:25:59", "u1",
+            ),
+        )
+        conn.commit()
+
+        messages = store.load_session_messages("s1", "a1")
+
+        assert [m.role for m in messages] == ["user", "assistant"], (
+            "transcript must follow time, not the order rows were written"
+        )
+    finally:
+        store.close()
+
+
+def test_same_timestamp_rows_keep_write_order(tmp_path) -> None:
+    """Ties break on seq, so a turn's internal order is preserved.
+
+    Every row of one turn shares its message's ``created_at``; ``seq`` must
+    therefore still decide the order *within* a turn (tool call before result).
+    """
+    store = HistoryStore(tmp_path / "history.db")
+    try:
+        conn = store._conn
+        same = "2026-09-24T09:26:52"
+        for role, text, key in (
+            ("assistant", "first", "a"),
+            ("assistant", "second", "b"),
+        ):
+            conn.execute(
+                "INSERT INTO conversation_history "
+                "(session_id, agent_id, kind, role, name, content, blocks, "
+                " metadata, created_at, dedup_key) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "s1", "a1", "model_turn", role, role, text,
+                    f'[{{"type": "text", "text": "{text}"}}]', "{}",
+                    same, key,
+                ),
+            )
+        conn.commit()
+
+        messages = store.load_session_messages("s1", "a1")
+
+        assert [m.get_text_content() for m in messages] == ["first", "second"]
+    finally:
+        store.close()

@@ -481,7 +481,22 @@ class HistoryStore:
                 "SELECT seq, kind, role, name, content, blocks, metadata, "
                 "created_at "
                 "FROM conversation_history "
-                "WHERE " + " AND ".join(where) + " ORDER BY seq",
+                "WHERE " + " AND ".join(where) +
+                # Order by the time the turn happened, NOT by ``seq``.
+                #
+                # ``seq`` is the *write* order, and it does not always match
+                # the conversation's order: a turn can be persisted later than
+                # the turn that follows it (a resumed/retried turn, or rows
+                # imported by the session-sync pass), which made the console
+                # render a question *below* its answer after a refresh. The
+                # live context window was unaffected, which is why this only
+                # appeared once the transcript came from the durable store.
+                #
+                # ``seq`` remains the tie-break: every row of one turn shares
+                # its message's ``created_at`` (the serializer stamps them all
+                # from the same Msg), so the within-turn order — tool call
+                # before its result — is still the write order.
+                " ORDER BY created_at, seq",
                 tuple(params),
             ).fetchall()
 
