@@ -143,11 +143,47 @@ IMPORT_STATE_MIGRATIONS: list[Migration] = [
     ),
 ]
 
+# --- token usage ----------------------------------------------------------
+#
+# Replaces the global ``token_usage.json``. That file was one shared document for
+# every account, rewritten in full on each flush: concurrent writers could lose
+# each other's increments, and the per-account breakdown lived as a nested dict
+# that could only be read by loading everything. One row per
+# (date, provider, model, account) is directly queryable and increments
+# atomically.
+#
+# ``user_id = ''`` means "unattributed" — usage recorded before the account
+# dimension existed. It is deliberately a real key rather than NULL so the
+# primary key's uniqueness applies to it (NULLs would not conflict).
+TOKEN_USAGE_MIGRATIONS: list[Migration] = [
+    Migration(
+        "202609240004",
+        "token_usage",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS "platform".token_usage (
+                used_on            TEXT NOT NULL,
+                provider_id        TEXT NOT NULL DEFAULT '',
+                model_name         TEXT NOT NULL,
+                user_id            TEXT NOT NULL DEFAULT '',
+                prompt_tokens      BIGINT NOT NULL DEFAULT 0,
+                completion_tokens  BIGINT NOT NULL DEFAULT 0,
+                call_count         BIGINT NOT NULL DEFAULT 0,
+                PRIMARY KEY (used_on, provider_id, model_name, user_id)
+            )
+            """,
+            'CREATE INDEX IF NOT EXISTS token_usage_user ON "platform".token_usage (user_id, used_on)',
+            'CREATE INDEX IF NOT EXISTS token_usage_date ON "platform".token_usage (used_on)',
+        ),
+    ),
+]
+
 # Everything the platform store owns, applied in one ordered pass at startup.
 ALL_MIGRATIONS: list[Migration] = [
     *HISTORY_MIGRATIONS,
     *AUDIT_MIGRATIONS,
     *IMPORT_STATE_MIGRATIONS,
+    *TOKEN_USAGE_MIGRATIONS,
 ]
 
 __all__ = [
@@ -155,4 +191,5 @@ __all__ = [
     "AUDIT_MIGRATIONS",
     "HISTORY_MIGRATIONS",
     "IMPORT_STATE_MIGRATIONS",
+    "TOKEN_USAGE_MIGRATIONS",
 ]

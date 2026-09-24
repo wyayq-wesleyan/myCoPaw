@@ -228,6 +228,9 @@ BUILTIN_QA_AGENT_SKILL_NAMES: tuple[str, ...] = (
 # every startup, so users can re-enable this id if they want.
 LEGACY_QA_AGENT_ID = "CoPaw_QA_Agent_0.1beta1"
 
+# Legacy handle for the token usage file. Usage is stored in the platform
+# PostgreSQL database now; this name is still used to locate a pre-upgrade file
+# during the one-time import, and as the buffer's identity.
 TOKEN_USAGE_FILE = EnvVarLoader.get_str(
     "QWENPAW_TOKEN_USAGE_FILE",
     "token_usage.json",

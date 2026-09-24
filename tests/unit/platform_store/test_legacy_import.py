@@ -12,6 +12,7 @@ migration against the real PostgreSQL store.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import uuid
 
@@ -371,3 +372,120 @@ def test_legacy_audit_rows_are_imported_once(tmp_path):
             conn.commit()
         finally:
             put_conn(conn)
+
+
+@requires_platform_db
+def test_legacy_token_usage_is_imported_and_adds_up(tmp_path):
+    """The usage JSON's numbers must land exactly, account breakdown included.
+
+    The import is additive rather than max-based, so a deployment that keeps
+    recording usage after the upgrade ends up with the historical totals plus
+    the new ones — not whichever figure happened to be larger.
+    """
+    import json
+
+    from qwenpaw.platform_store.legacy_import import import_legacy_token_usage
+    from qwenpaw.token_usage.storage import load_data, save_data_sync
+
+    path = tmp_path / "token_usage.json"
+    path.write_text(
+        json.dumps(
+            {
+                "2026-03-01": {
+                    "openai:legacy-tu-probe": {
+                        "provider_id": "openai",
+                        "model_name": "legacy-tu-probe",
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 200,
+                        "call_count": 4,
+                        "by_user": {
+                            "alice": {
+                                "prompt_tokens": 700,
+                                "completion_tokens": 150,
+                                "call_count": 3,
+                            },
+                            "bob": {
+                                "prompt_tokens": 300,
+                                "completion_tokens": 50,
+                                "call_count": 1,
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    def _cleanup():
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM platform.token_usage "
+                    "WHERE model_name = 'legacy-tu-probe'",
+                )
+                cur.execute(
+                    "DELETE FROM platform.legacy_import_state "
+                    "WHERE source_path = %s",
+                    (str(path),),
+                )
+            conn.commit()
+        finally:
+            put_conn(conn)
+
+    _cleanup()
+    try:
+        first = import_legacy_token_usage(path)
+        assert first.error is None
+        assert first.rows == 3  # alice + bob + unattributed(0)
+
+        # Idempotent by checksum, and re-importing would double anyway, so the
+        # skip is what protects the totals.
+        assert import_legacy_token_usage(path).skipped is True
+
+        document = asyncio.run(load_data())
+        entry = document["2026-03-01"]["openai:legacy-tu-probe"]
+        assert entry["prompt_tokens"] == 1000
+        assert entry["completion_tokens"] == 200
+        assert entry["call_count"] == 4
+        assert entry["by_user"]["alice"]["prompt_tokens"] == 700
+        assert entry["by_user"]["bob"]["prompt_tokens"] == 300
+
+        # New usage recorded after the upgrade adds to the imported totals.
+        assert save_data_sync(
+            None,
+            {
+                "2026-03-01": {
+                    "openai:legacy-tu-probe": {
+                        "provider_id": "openai",
+                        "model_name": "legacy-tu-probe",
+                        "prompt_tokens": 1010,
+                        "completion_tokens": 205,
+                        "call_count": 5,
+                        "by_user": {
+                            "alice": {
+                                "prompt_tokens": 710,
+                                "completion_tokens": 155,
+                                "call_count": 4,
+                            },
+                            "bob": {
+                                "prompt_tokens": 300,
+                                "completion_tokens": 50,
+                                "call_count": 1,
+                            },
+                        },
+                    },
+                },
+            },
+        ) is True
+
+        after = asyncio.run(load_data())["2026-03-01"][
+            "openai:legacy-tu-probe"
+        ]
+        # The larger, newer snapshot wins the maxima — the imported total is not
+        # clobbered back down.
+        assert after["prompt_tokens"] == 1010
+        assert after["call_count"] == 5
+    finally:
+        _cleanup()

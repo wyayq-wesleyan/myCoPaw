@@ -118,6 +118,8 @@ class TokenUsageManager:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
+        # The path is retained as the buffer's identity only: usage is stored
+        # in the platform PostgreSQL database, not in this file.
         path: Path = (WORKING_DIR / TOKEN_USAGE_FILE).expanduser()
         self._buffer = TokenUsageBuffer(path)
         self._flush_interval = 10  # default

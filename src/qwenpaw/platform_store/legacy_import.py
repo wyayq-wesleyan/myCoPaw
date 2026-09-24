@@ -26,6 +26,7 @@ has verifiably succeeded, and leaving them costs nothing but disk.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ logger = logging.getLogger(__name__)
 # one directory can hold both a history file and (at the root) an audit file.
 KIND_HISTORY = "history_sqlite"
 KIND_AUDIT = "audit_sqlite"
+KIND_TOKEN_USAGE = "token_usage_json"
 
 # Status values. ``done`` is what makes a later boot skip the file.
 STATUS_DONE = "done"
@@ -354,6 +356,69 @@ def import_legacy_audit(sqlite_path: Path) -> ImportResult:
     return result
 
 
+def import_legacy_token_usage(json_path: Path) -> ImportResult:
+    """Copy the legacy ``token_usage.json`` into PostgreSQL.
+
+    The stored rows are *added* to whatever is already present (see
+    ``token_usage.storage.upsert_rows``) rather than taking maxima: the file is a
+    historical record, so its numbers must combine with usage recorded since the
+    upgrade instead of competing with it.
+
+    Atomic per file, like the audit import: the rows and the bookkeeping record
+    commit together, so an interruption leaves it retryable rather than
+    half-copied and marked done.
+    """
+    result = ImportResult(source=str(json_path), kind=KIND_TOKEN_USAGE)
+    checksum = _checksum(json_path)
+
+    conn = get_conn()
+    try:
+        prior_checksum, prior_status = _state(
+            conn, str(json_path), KIND_TOKEN_USAGE,
+        )
+        if prior_status == STATUS_DONE and prior_checksum == checksum:
+            result.skipped = True
+            return result
+    finally:
+        put_conn(conn)
+
+    from ..token_usage.storage import iter_rows, upsert_rows
+
+    try:
+        raw = json_path.read_text(encoding="utf-8")
+        document = json.loads(raw) if raw.strip() else {}
+    except (OSError, ValueError) as exc:
+        result.error = f"{type(exc).__name__}: {exc}"
+        return result
+    if not isinstance(document, dict):
+        result.error = "unexpected document shape (expected an object)"
+        return result
+
+    # Flatten to rows, then write them additively inside one transaction so the
+    # bookkeeping cannot claim success on a partial copy.
+    written = upsert_rows(list(iter_rows(document)))
+    result.rows = written
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            _record_state(
+                cur,
+                str(json_path),
+                KIND_TOKEN_USAGE,
+                checksum=checksum,
+                row_count=written,
+                status=STATUS_DONE,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        put_conn(conn)
+    return result
+
+
 def _legacy_history_paths() -> list[Path]:
     """Every existing legacy ``history.db``, one per scroll-enabled workspace.
 
@@ -393,6 +458,20 @@ def _legacy_audit_path() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _legacy_token_usage_path() -> Path | None:
+    """The legacy global ``token_usage.json``, if this deployment still has one."""
+    try:
+        from ..constant import TOKEN_USAGE_FILE, WORKING_DIR
+
+        candidate = Path(WORKING_DIR) / TOKEN_USAGE_FILE
+    except Exception:  # noqa: BLE001 - no working dir means nothing to migrate
+        logger.debug(
+            "legacy-import: token usage path unavailable", exc_info=True,
+        )
+        return None
+    return candidate if candidate.is_file() else None
+
+
 def run_legacy_import() -> ImportReport:
     """Import every legacy SQLite source into the platform store.
 
@@ -410,8 +489,9 @@ def run_legacy_import() -> ImportReport:
 
     history_paths = _legacy_history_paths()
     audit_path = _legacy_audit_path()
-    if not history_paths and audit_path is None:
-        logger.debug("legacy-import: no legacy SQLite files found")
+    token_usage_path = _legacy_token_usage_path()
+    if not history_paths and audit_path is None and token_usage_path is None:
+        logger.debug("legacy-import: no legacy files found")
         return report
 
     from ..agents.context.scroll.history import HistoryStore
@@ -449,6 +529,28 @@ def run_legacy_import() -> ImportReport:
                 ),
             )
 
+    if token_usage_path is not None:
+        try:
+            report.results.append(import_legacy_token_usage(token_usage_path))
+        except Exception as exc:  # noqa: BLE001 - isolate the usage file
+            logger.warning(
+                "legacy-import: token usage import failed for %s: %s",
+                token_usage_path,
+                exc,
+            )
+            _record_failure(
+                str(token_usage_path),
+                KIND_TOKEN_USAGE,
+                f"{type(exc).__name__}: {exc}",
+            )
+            report.results.append(
+                ImportResult(
+                    source=str(token_usage_path),
+                    kind=KIND_TOKEN_USAGE,
+                    error=str(exc),
+                ),
+            )
+
     logger.info("%s", report.summary())
     return report
 
@@ -458,7 +560,9 @@ __all__ = [
     "ImportResult",
     "KIND_AUDIT",
     "KIND_HISTORY",
+    "KIND_TOKEN_USAGE",
     "import_legacy_audit",
     "import_legacy_history",
+    "import_legacy_token_usage",
     "run_legacy_import",
 ]

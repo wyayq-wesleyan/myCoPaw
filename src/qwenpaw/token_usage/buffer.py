@@ -36,7 +36,7 @@ class _UsageEvent(NamedTuple):
 
 
 class TokenUsageBuffer:
-    """Async producer-consumer buffer that periodically flushes to disk."""
+    """Async producer-consumer buffer that periodically flushes to the store."""
 
     def __init__(
         self,
@@ -155,7 +155,7 @@ class TokenUsageBuffer:
                     break
 
     async def _flush_once(self, force: bool = False) -> None:
-        """Write ``_disk_cache`` to disk if dirty."""
+        """Persist ``_disk_cache`` if dirty."""
         if not self._cache_loaded:
             # The cache was never seeded, so no event can have reached
             # ``_disk_cache`` and it still holds the initial empty dict.
@@ -171,10 +171,10 @@ class TokenUsageBuffer:
             # Keep dirty so a later periodic flush retries the write.
             self._dirty = True
             return
-        logger.debug("token_usage: flushed cache to disk")
+        logger.debug("token_usage: flushed cache to the store")
 
     async def _flush_loop(self) -> None:
-        """Periodically flush the cache to disk."""
+        """Periodically flush the cache."""
         try:
             while not self._stopped:
                 await asyncio.sleep(self._flush_interval)
@@ -188,12 +188,12 @@ class TokenUsageBuffer:
             pass
 
     async def _seed_cache(self) -> None:
-        """Load existing data from disk into ``_disk_cache`` (once)."""
+        """Load stored data into ``_disk_cache`` (once)."""
         if self._cache_loaded:
             return
         self._disk_cache = await load_data(self._path)
         self._cache_loaded = True
-        logger.debug("token_usage: cache seeded from disk")
+        logger.debug("token_usage: cache seeded from the store")
 
 
 def _apply_event(cache: dict, ev: _UsageEvent) -> None:

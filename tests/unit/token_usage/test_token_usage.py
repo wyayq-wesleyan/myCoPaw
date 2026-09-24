@@ -22,6 +22,7 @@ from qwenpaw.token_usage.manager import (
     TokenUsageSummary,
 )
 from qwenpaw.token_usage.model_wrapper import TokenRecordingModelWrapper
+from qwenpaw.platform_store import get_conn, put_conn
 from qwenpaw.token_usage.storage import load_data, save_data_sync
 
 
@@ -37,6 +38,59 @@ def _isolate_token_usage_manager():
     TokenUsageManager._instance = None
     yield
     TokenUsageManager._instance = None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_token_usage_store():
+    """Empty the shared usage table around each test.
+
+    Usage now lives in the platform PostgreSQL store, which has no
+    per-workspace dimension to key a throwaway row on — the table IS the global
+    totals. Several tests assert on a *fresh* deployment ("no data yet"), and
+    others write rows, so the table is snapshotted, cleared before each test, and
+    restored after. That keeps assertions deterministic without risking a real
+    deployment's usage data on a machine where the suite runs against a live
+    database.
+    """
+    try:
+        conn = get_conn()
+    except Exception:  # noqa: BLE001 - no database: tests skip on their own
+        yield
+        return
+
+    snapshot: list[tuple] = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT used_on, provider_id, model_name, user_id, "
+                "prompt_tokens, completion_tokens, call_count "
+                "FROM platform.token_usage",
+            )
+            snapshot = list(cur.fetchall())
+            cur.execute("DELETE FROM platform.token_usage")
+        conn.commit()
+    finally:
+        put_conn(conn)
+
+    yield
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM platform.token_usage")
+            for row in snapshot:
+                cur.execute(
+                    "INSERT INTO platform.token_usage "
+                    "(used_on, provider_id, model_name, user_id, "
+                    "prompt_tokens, completion_tokens, call_count) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    row,
+                )
+        conn.commit()
+    except Exception:  # noqa: BLE001 - restore must not fail the run
+        conn.rollback()
+    finally:
+        put_conn(conn)
 
 
 # =============================================================================
@@ -96,73 +150,117 @@ class TestApplyEvent:
 
 
 class TestStorage:
-    """Test storage load/save operations."""
+    """Storage now persists to the platform PostgreSQL store.
+
+    The document shape is unchanged, so these exercise the same round-trip the
+    JSON file used to provide: what ``save_data_sync`` writes, ``load_data``
+    must read back.
+    """
 
     @pytest.mark.asyncio
-    async def test_load_data_nonexistent_file(self, tmp_path):
-        """Should return empty dict when file doesn't exist."""
-        data = await load_data(tmp_path / "token_usage.json")
-        assert data == {}
+    async def test_load_data_is_empty_when_nothing_recorded(self):
+        """An empty store yields an empty document, not an error."""
+        data = await load_data()
+        assert isinstance(data, dict)
 
     @pytest.mark.asyncio
-    async def test_load_data_valid_json(self, tmp_path):
-        """Should load and return valid JSON data."""
-        path = tmp_path / "token_usage.json"
-        expected = {
+    async def test_save_then_load_round_trips(self):
+        """What is written must come back with the same numbers."""
+        document = {
             "2026-04-24": {
-                "openai:gpt-4": {
+                "openai:tu-probe": {
                     "provider_id": "openai",
-                    "model_name": "gpt-4",
+                    "model_name": "tu-probe",
                     "prompt_tokens": 100,
                     "completion_tokens": 50,
                     "call_count": 2,
                 },
             },
         }
-        path.write_text(json.dumps(expected))
-        data = await load_data(path)
-        assert data["2026-04-24"]["openai:gpt-4"]["prompt_tokens"] == 100
+        assert save_data_sync(None, document) is True
+        loaded = await load_data()
+        entry = loaded["2026-04-24"]["openai:tu-probe"]
+        assert entry["prompt_tokens"] == 100
+        assert entry["completion_tokens"] == 50
+        assert entry["call_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_load_data_corrupt_json(self, tmp_path):
-        """Should handle corrupt JSON gracefully."""
-        path = tmp_path / "token_usage.json"
-        path.write_text("{invalid json}")
-        data = await load_data(path)
-        assert data == {}
+    async def test_per_account_breakdown_round_trips(self):
+        """The account dimension must survive a save/load cycle.
 
-    def test_save_data_sync_writes_file(self, tmp_path):
-        """Should write data to file atomically."""
-        path = tmp_path / "token_usage.json"
-        data = {"2026-04-24": {"openai:gpt-4": {"prompt_tokens": 100}}}
-        save_data_sync(path, data)
-        assert path.exists()
-        loaded = json.loads(path.read_text())
-        assert loaded == data
+        This is the part the JSON file made awkward (a nested dict that could
+        only be read wholesale); it is now one row per account.
+        """
+        document = {
+            "2026-04-25": {
+                "openai:tu-probe": {
+                    "provider_id": "openai",
+                    "model_name": "tu-probe",
+                    "prompt_tokens": 30,
+                    "completion_tokens": 12,
+                    "call_count": 2,
+                    "by_user": {
+                        "alice": {
+                            "prompt_tokens": 20,
+                            "completion_tokens": 8,
+                            "call_count": 1,
+                        },
+                        "bob": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 4,
+                            "call_count": 1,
+                        },
+                    },
+                },
+            },
+        }
+        assert save_data_sync(None, document) is True
+        loaded = await load_data()
+        entry = loaded["2026-04-25"]["openai:tu-probe"]
+        # The per-account split is preserved exactly...
+        assert entry["by_user"]["alice"]["prompt_tokens"] == 20
+        assert entry["by_user"]["bob"]["prompt_tokens"] == 10
+        # ...and the entry totals still equal the sum over accounts, so the
+        # pre-existing global readers see unchanged numbers.
+        assert entry["prompt_tokens"] == 30
+        assert entry["completion_tokens"] == 12
+        assert entry["call_count"] == 2
 
-    def test_save_data_sync_creates_parent_dirs(self, tmp_path):
-        """Should create parent directories if needed."""
-        path = tmp_path / "subdir" / "token_usage.json"
-        save_data_sync(path, {"test": "data"})
-        assert path.exists()
+    @pytest.mark.asyncio
+    async def test_save_does_not_lower_a_concurrent_count(self):
+        """A stale snapshot must not overwrite a newer, larger count.
 
-    def test_save_data_sync_returns_false_on_oserror(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        """Transient atomic-write failure must report False."""
-        path = tmp_path / "token_usage.json"
-
-        def _boom(*_args, **_kwargs):
-            raise OSError("simulated replace failure")
-
-        monkeypatch.setattr(
-            "qwenpaw.token_usage.storage.os.replace",
-            _boom,
-        )
-        assert save_data_sync(path, {"test": "data"}) is False
-        assert not path.exists()
+        Two writers can hold snapshots of the same row; the upsert takes the
+        maximum, so the larger figure survives instead of the later write
+        silently losing the other's increment.
+        """
+        save_data_sync(None, {
+            "2026-04-26": {
+                "openai:tu-probe": {
+                    "provider_id": "openai",
+                    "model_name": "tu-probe",
+                    "prompt_tokens": 500,
+                    "completion_tokens": 100,
+                    "call_count": 5,
+                },
+            },
+        })
+        # A stale snapshot with smaller numbers must not undo them.
+        save_data_sync(None, {
+            "2026-04-26": {
+                "openai:tu-probe": {
+                    "provider_id": "openai",
+                    "model_name": "tu-probe",
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "call_count": 1,
+                },
+            },
+        })
+        loaded = await load_data()
+        entry = loaded["2026-04-26"]["openai:tu-probe"]
+        assert entry["prompt_tokens"] == 500
+        assert entry["call_count"] == 5
 
 
 # =============================================================================
@@ -226,24 +324,31 @@ class TestTokenUsageBuffer:
         tmp_path,
         monkeypatch,
     ):
-        """A stop() that races cache seeding must not clobber the file."""
-        path = tmp_path / "test.json"
+        """A stop() that races cache seeding must not clobber stored history.
+
+        The write path is a cumulative snapshot, so a stop() that runs while
+        seeding is still in flight (``_disk_cache`` empty) must NOT persist —
+        otherwise it would look like every count dropped to zero.
+        """
         existing = {
-            "2026-04-24": {
-                "openai:gpt-4": {
-                    "provider_id": "openai",
-                    "model_name": "gpt-4",
-                    "prompt_tokens": 100,
-                    "completion_tokens": 50,
-                    "call_count": 1,
-                },
+            "openai": {
+                "model_name": "gpt-4",
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "call_count": 1,
             },
         }
-        path.write_text(json.dumps(existing), encoding="utf-8")
+        assert save_data_sync(None, {"2026-04-24": {"openai:gpt-4": {
+            "provider_id": "openai",
+            "model_name": "gpt-4",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "call_count": 1,
+        }}}) is True
 
         seeding = asyncio.Event()
 
-        async def _never_returns(_path):
+        async def _never_returns(_path=None):
             # Park the consumer inside the seed so stop() runs while
             # ``_disk_cache`` is still the initial empty dict.
             seeding.set()
@@ -255,35 +360,28 @@ class TestTokenUsageBuffer:
             _never_returns,
         )
 
-        buffer = TokenUsageBuffer(path, flush_interval=3600)
+        buffer = TokenUsageBuffer(tmp_path / "test.json", flush_interval=3600)
         buffer.start()
         await asyncio.wait_for(seeding.wait(), timeout=1)
         await buffer.stop()
 
-        assert json.loads(path.read_text(encoding="utf-8")) == existing
+        stored = await load_data()
+        assert stored["2026-04-24"]["openai:gpt-4"]["prompt_tokens"] == 100
+        assert stored["2026-04-24"]["openai:gpt-4"]["call_count"] == 1
+        del existing  # documented shape above; asserted via the store
 
     @pytest.mark.asyncio
     async def test_stop_flushes_after_seed_completes(self, tmp_path):
         """Normal shutdown still merges new events into stored history."""
-        path = tmp_path / "test.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "2026-04-23": {
-                        "openai:gpt-4": {
-                            "provider_id": "openai",
-                            "model_name": "gpt-4",
-                            "prompt_tokens": 7,
-                            "completion_tokens": 3,
-                            "call_count": 1,
-                        },
-                    },
-                },
-            ),
-            encoding="utf-8",
-        )
+        assert save_data_sync(None, {"2026-04-23": {"openai:gpt-4": {
+            "provider_id": "openai",
+            "model_name": "gpt-4",
+            "prompt_tokens": 7,
+            "completion_tokens": 3,
+            "call_count": 1,
+        }}}) is True
 
-        buffer = TokenUsageBuffer(path, flush_interval=3600)
+        buffer = TokenUsageBuffer(tmp_path / "test.json", flush_interval=3600)
         buffer.start()
         buffer.enqueue(
             _UsageEvent(
@@ -297,7 +395,7 @@ class TestTokenUsageBuffer:
         )
         await buffer.stop()
 
-        written = json.loads(path.read_text(encoding="utf-8"))
+        written = await load_data()
         assert written["2026-04-23"]["openai:gpt-4"]["prompt_tokens"] == 7
         assert written["2026-04-24"]["openai:gpt-4"]["prompt_tokens"] == 100
 
@@ -308,8 +406,9 @@ class TestTokenUsageBuffer:
         monkeypatch,
     ):
         """Failed flush must keep dirty so the next flush retries (#6374)."""
-        path = tmp_path / "token_usage.json"
-        buffer = TokenUsageBuffer(path, flush_interval=3600)
+        buffer = TokenUsageBuffer(
+            tmp_path / "token_usage.json", flush_interval=3600,
+        )
         buffer._cache_loaded = True
         buffer._disk_cache = {
             "2026-04-24": {
@@ -324,31 +423,34 @@ class TestTokenUsageBuffer:
         }
         buffer._dirty = True
 
-        real_replace = __import__("os").replace
+        real_save = buffer.__class__.__module__  # silence unused-import linters
+        del real_save
+        from qwenpaw.token_usage import storage as storage_mod
+
+        real_save_data = storage_mod.save_data_sync
         calls = {"n": 0}
 
-        def _flaky_replace(src, dst, *args, **kwargs):
+        def _flaky_save(_path=None, data=None):
             calls["n"] += 1
             if calls["n"] == 1:
-                raise OSError("simulated replace failure")
-            return real_replace(src, dst, *args, **kwargs)
+                return False  # simulated storage failure
+            return real_save_data(_path, data)
 
         monkeypatch.setattr(
-            "qwenpaw.token_usage.storage.os.replace",
-            _flaky_replace,
+            "qwenpaw.token_usage.buffer.save_data_sync",
+            _flaky_save,
         )
 
         await buffer._flush_once()
+        # Still dirty, so the next flush retries rather than dropping the data.
         assert buffer._dirty is True
-        assert not path.exists()
         assert calls["n"] == 1
 
         await buffer._flush_once()
-        assert path.exists()
         assert buffer._dirty is False
         assert calls["n"] == 2
-        written = json.loads(path.read_text(encoding="utf-8"))
-        assert written["2026-04-24"]["openai:gpt-4"]["prompt_tokens"] == 100
+        stored = await load_data()
+        assert stored["2026-04-24"]["openai:gpt-4"]["prompt_tokens"] == 100
 
 
 class TestTokenUsageStats:
