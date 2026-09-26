@@ -1,6 +1,9 @@
 services:
   knowledge-postgres:
-    image: "postgres:17-alpine"
+    # pgvector 官方镜像（Debian 版 PG 17 + vector 扩展），与生产一致。
+    # postgres:17-alpine 既不含该扩展也无法安装。数据在 ./postgres-data
+    # （bind mount），换镜像不丢；glibc/musl 不同，升级前先 pg_dumpall 备份。
+    image: "${KNOWLEDGE_POSTGRES_IMAGE:-pgvector/pgvector:pg17}"
     container_name: huizhi-knowledge-postgres
     restart: unless-stopped
     mem_limit: "${KNOWLEDGE_POSTGRES_MEMORY_LIMIT:-32g}"

@@ -1,0 +1,67 @@
+# PG 17 + pgvector + Apache AGE，用于验证智能体直连图数据库做图运算。
+#
+# 基线选 pgvector/pgvector:pg17（Debian 12 / glibc），与生产一致；AGE 需源码编译。
+#
+# 两个必须知道的点（实测得出）：
+#  1. 用 `PG17` 分支，不要用 master。master 尚不支持 PG17，编译会在
+#     cypher_utils.c 的 index_beginscan 上报错（PG17 改了该函数签名）。
+#     PG17 分支的 age.control 版本是 1.7.0。
+#  2. 容器启动时必须带 `-c shared_preload_libraries=age`。否则非超级用户
+#     role 执行 Cypher 会报 “access to library \"age\" is not allowed”
+#     （LOAD 需要超级用户），`unhandled cypher(cstring) function call`。
+#     预加载后非超级用户可直接查询，且 schema 权限能真正拦住跨图访问。
+FROM pgvector/pgvector:pg17
+
+ARG AGE_REF=PG17
+ARG DEBIAN_FRONTEND=noninteractive
+
+# 国内 apt 源（构建环境外网不稳），并按 AGENTS.md 约定不留下 apt 缓存。
+RUN set -eux; \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    for i in 1 2 3; do \
+      apt-get update && break || sleep 5; \
+    done; \
+    for i in 1 2 3; do \
+      apt-get install -y --no-install-recommends \
+        build-essential flex bison \
+        postgresql-server-dev-17 \
+        libreadline-dev zlib1g-dev \
+        ca-certificates curl && break || sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+
+# AGE 源码：codeload 在本环境可达（github.com 主站不可达）。
+RUN set -eux; \
+    mkdir -p /usr/src/age; \
+    curl -sSL --retry 3 --retry-delay 5 --max-time 300 \
+      -o /tmp/age.tar.gz \
+      "https://codeload.github.com/apache/age/tar.gz/refs/heads/${AGE_REF}"; \
+    tar -xzf /tmp/age.tar.gz -C /usr/src/age --strip-components=1; \
+    rm -f /tmp/age.tar.gz
+
+# AGE 的 Makefile 显式要求 PG_CONFIG 指向目标 PG；--install 装进镜像。
+RUN set -eux; \
+    cd /usr/src/age; \
+    make PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config -j"$(nproc)"; \
+    make PG_CONFIG=/usr/lib/postgresql/17/bin/pg_config install; \
+    rm -rf /usr/src/age
+
+# 构建期自检：扩展文件必须落地，否则镜像算失败。
+RUN set -eux; \
+    ls -l /usr/lib/postgresql/17/lib/age.so; \
+    ls -l /usr/share/postgresql/17/extension/age.control; \
+    grep default_version /usr/share/postgresql/17/extension/age.control; \
+    grep -q '^shared_preload_libraries' /usr/share/postgresql/postgresql.conf.sample 2>/dev/null || true
+
+# 预加载 AGE：非超级用户（按账号建的 role）必须走这条路，否则 LOAD 被拒。
+# 追加在镜像的 postgresql.conf 里，避免依赖每个 compose 记得传 -c 参数。
+RUN set -eux; \
+    conf="/usr/share/postgresql/17/postgresql.conf.sample"; \
+    if ! grep -q "shared_preload_libraries = 'age'" "$conf" 2>/dev/null; then \
+      printf "\n# Added by Dockerfile.pg-age: AGE requires preloading for non-superuser use\nshared_preload_libraries = 'age'\n" >> "$conf"; \
+    fi; \
+    tail -3 "$conf"
+
+# 注意：官方镜像以 PGDATA 初始化新库，postgresql.conf.sample 只在首次初始化
+# 时被复制。对已有数据目录（bind mount）需要显式传
+# `-c shared_preload_libraries=age`，或手工往 $PGDATA/postgresql.conf 追加一行。
