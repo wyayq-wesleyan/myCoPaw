@@ -132,12 +132,35 @@ async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
                 spaces_response = await client.get(f"{url}/v1/spaces", headers=_headers(username))
                 spaces_response.raise_for_status()
                 spaces = spaces_response.json()
+                # Path scoping: the account owns these spaces, but this agent may
+                # only read the ones whose path it was granted (an unbound space
+                # is public and lives in the account root). Filtering here — rather
+                # than letting the model pick — is the enforcement point; a space
+                # the agent was not granted must not even be searchable.
+                from .path_scope import visible_space_ids
+
+                allowed_ids = set(
+                    visible_space_ids(
+                        username,
+                        [str(item.get("id") or "") for item in spaces],
+                    ),
+                )
                 matched = [
                     item for item in spaces
-                    if not space_name or space_name.strip().lower() in str(item.get("name") or "").lower()
+                    if str(item.get("id") or "") in allowed_ids
+                    and (
+                        not space_name
+                        or space_name.strip().lower()
+                        in str(item.get("name") or "").lower()
+                    )
                 ]
                 if not matched:
-                    text = "当前账户下没有可检索的知识空间。"
+                    text = (
+                        "当前智能体没有可检索的知识空间。"
+                        "请在知识空间中为该智能体挂载对应的路径。"
+                        if not allowed_ids
+                        else "当前账户下没有匹配的知识空间。"
+                    )
                 else:
                     results: list[tuple[str, dict[str, Any]]] = []
                     for space in matched:
