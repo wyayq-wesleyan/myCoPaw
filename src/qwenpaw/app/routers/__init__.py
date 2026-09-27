@@ -36,6 +36,7 @@ from .pawapps import router as pawapps_router
 from .harnesses import router as harnesses_router
 from .checkpoints import router as checkpoints_router
 from .knowledge import router as knowledge_router
+from .paths import router as paths_router
 from ...data_tables.config_api import router as data_source_router
 from ...data_tables.table_api import router as data_tables_router
 from ...data_tables.import_api import router as data_import_router
@@ -76,6 +77,7 @@ router.include_router(pawapps_router)
 router.include_router(harnesses_router)
 router.include_router(checkpoints_router)
 router.include_router(knowledge_router)
+router.include_router(paths_router)
 router.include_router(data_source_router)
 router.include_router(data_tables_router)
 router.include_router(data_import_router)

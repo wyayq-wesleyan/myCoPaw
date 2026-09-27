@@ -425,13 +425,22 @@ def test_root_path_cannot_be_deleted(owner):
 
 
 @requires_platform_db
-def test_deleting_a_path_removes_its_agent_bindings(owner):
-    """CASCADE 清理绑定，不留孤儿记录。"""
+def test_a_path_with_agents_attached_is_not_deletable(owner):
+    """还挂着智能体的路径不算空，不允许删。
+
+    删路径会 CASCADE 掉它的授权，所以"仍被智能体挂载"必须算作有内容 ——
+    否则一次删除会静默撤销该智能体对材料的访问，而使用者完全不知道为什么
+    检索开始失效。
+    """
     P.ensure_root_path(owner)
     case = P.create_path(owner, "案件")
     P.bind_agent(f"{owner}-ag", case)
-    assert P.agents_for_path(case) == [f"{owner}-ag"]
 
+    with pytest.raises(P.PathScopeError, match="还有内容"):
+        P.delete_path(case)
+
+    # 解绑后才允许删；CASCADE 不留孤儿记录。
+    P.unbind_agent(f"{owner}-ag", case)
     P.delete_path(case)
     assert P.agents_for_path(case) == []
     assert case not in P.agent_path_ids(f"{owner}-ag")

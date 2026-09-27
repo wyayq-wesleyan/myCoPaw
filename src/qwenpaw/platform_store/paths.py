@@ -331,18 +331,25 @@ def move_path(path_id: str, new_parent_id: str | None) -> None:
 
 
 def path_is_empty(path_id: str) -> bool:
-    """Whether a path holds no resources (children are not resources)."""
-    rows = _query(
-        'SELECT 1 FROM "platform".resource_bindings WHERE path_id = %s LIMIT 1',
-        (path_id,),
-    )
-    if rows:
-        return False
-    children = _query(
-        'SELECT 1 FROM "platform".paths WHERE parent_id = %s LIMIT 1',
-        (path_id,),
-    )
-    return not children
+    """Whether a path can be deleted: no resources, no children, no agents.
+
+    Agent grants count as content. Deleting a path cascades its grants away, so a
+    path that is still attached to an agent is not "empty" — otherwise removing it
+    would silently revoke that agent's access to material it was reading, and the
+    operator would have no clue why retrieval stopped working.
+    """
+    for table, column in (
+        ("resource_bindings", "path_id"),
+        ("paths", "parent_id"),
+        ("agent_path_bindings", "path_id"),
+    ):
+        rows = _query(
+            f'SELECT 1 FROM "platform".{table} WHERE {column} = %s LIMIT 1',  # noqa: S608 - literals
+            (path_id,),
+        )
+        if rows:
+            return False
+    return True
 
 
 def delete_path(path_id: str) -> None:
@@ -361,7 +368,8 @@ def delete_path(path_id: str) -> None:
         raise PathScopeError("根路径不能删除。")
     if not path_is_empty(path_id):
         raise PathScopeError(
-            "路径下还有内容（文档、数据表或子路径），请先移走再删除。",
+            "路径下还有内容（文档、数据表、子路径或已挂载的智能体），"
+            "请先移走再删除。",
         )
     _execute('DELETE FROM "platform".paths WHERE id = %s', (path_id,))
 
