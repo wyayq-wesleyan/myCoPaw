@@ -74,16 +74,32 @@ def _run(coro):
 # --- 身份 -------------------------------------------------------------------
 
 
-@requires_platform_db
-def test_missing_identity_is_rejected(account):
-    """身份不明时必须拒绝，而不是退化成某个账号。
+def test_missing_identity_is_rejected_when_auth_is_enabled(monkeypatch):
+    """鉴权启用时，身份不明必须 401，而不是退化成某个账号。
 
     退化到 admin 尤其危险：任何身份解析失败的请求都会拿到管理员的路径树。
     """
+    monkeypatch.setattr(api, "_auth_enabled", lambda: True)
     req = _Req(None)
     with pytest.raises(HTTPException) as excinfo:
         _run(api.list_paths(req))
     assert excinfo.value.status_code == 401
+
+
+@requires_platform_db
+def test_missing_identity_uses_the_single_account_when_auth_is_disabled():
+    """鉴权未启用时（单账号部署）不返回 401，而是用本部署自己的账号。
+
+    返回 401 在这里比无用更糟：前端的 401 拦截器会清空会话并跳转登录页，而这类
+    部署根本没有登录页 —— 于是路径树一加载就把用户踢出应用。这正是浏览器实测
+    发现的问题。用具体账号名（而非空串）是必需的：路径按 owner 存储，空的 owner
+    只会得到空树，表现为功能坏掉。
+    """
+    req = _Req(None)
+    result = _run(api.list_paths(req))
+    assert "tree" in result
+    # 必须解析到一个真实存在的根路径，而不是空树。
+    assert result["tree"], "单账号部署下应能看到该账号的根路径"
 
 
 # --- 树 ---------------------------------------------------------------------
