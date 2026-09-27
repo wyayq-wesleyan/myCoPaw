@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -221,29 +221,6 @@ class Edge:
     source: str
     target: str
     weight: float = 1.0
-
-
-@dataclass
-class GraphResult:
-    """一次图分析的归一化结果。
-
-    不同算法的载荷不同，用 ``kind`` 区分，避免调用方去猜字段含义。
-    所有列表都已按意义排好序并截断，调用方直接渲染即可。
-    """
-
-    kind: str
-    node_count: int = 0
-    edge_count: int = 0
-    # kind == "components": 每个元素是成员列表（已按大小降序）
-    groups: list[list[str]] = field(default_factory=list)
-    # kind == "ranking": (节点, 分值) 已降序
-    ranking: list[tuple[str, float]] = field(default_factory=list)
-    # kind == "path": 途径节点与长度
-    path: list[str] = field(default_factory=list)
-    path_length: int | None = None
-    # 结果被截断的说明（例如组数/排名超出 top_n）
-    truncated: bool = False
-    note: str = ""
 
 
 def _coerce_node(value: Any) -> str:
@@ -879,7 +856,6 @@ __all__ = [
     "EXTREME_MAX_EDGES",
     "Edge",
     "GraphAnalysisError",
-    "GraphResult",
     "HEAVY_MAX_EDGES",
     "SUBGRAPH_MAX_NODES",
     "SUPPORTED_ALGORITHMS",

@@ -462,7 +462,7 @@ bash scripts/docker_export_image.sh huizhi-runtime:2.2.1-arm64
 
 **镜像维护的最小化原则**（正式环境已清空过一次镜像，务必遵守）：
 
-- 只保留 `huizhi-runtime:*`、`py312-base:*` 和运行时必需的 `postgres:17-alpine`；
+- 只保留 `huizhi-runtime:*`、`py312-base:*` 和运行时必需的 `pgvector/pgvector:pg17`；
   底座与全量镜像共享层，删底座 tag 并不释放空间，因此保留以便快速重建。
 - 构建后执行 `docker builder prune -af` 清理构建缓存（本项目一次构建可产生 30GB+ 缓存）。
 - 不要在容器里 `docker commit` 固化改动：所有服务共享一个镜像，从一个容器 commit 会
@@ -877,7 +877,7 @@ http://127.0.0.1:18088/api/version
   （`RETURNING *` / `jsonb_array_elements_text` / `COPY ... TO STDOUT` /
   `psycopg_pool.ConnectionPool`）
 - `knowledge-service/docker-compose.yml`：新增 `huizhi-knowledge-postgres` 服务
-  （`postgres:17-alpine`，`POSTGRES_PASSWORD=knowledge2026`）
+  （`pgvector/pgvector:pg17`，`POSTGRES_PASSWORD=knowledge2026`）
 - `knowledge-service/pyproject.toml`：依赖新增 `psycopg[binary,pool]>=3.2`
 
 **C. 检索质量：三个关键修复**

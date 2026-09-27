@@ -144,7 +144,7 @@ docker logs huizhi-v210-check --tail 100
 | `huizhi-knowledge-api` | `huizhi-runtime:2.2.1-arm64` | `18100` | REST API |
 | `huizhi-knowledge-worker` | `huizhi-runtime:2.2.1-arm64` | — | 异步文档处理 |
 | `huizhi-lightrag` | `huizhi-runtime:2.2.1-arm64` | `19621` | 知识图谱 |
-| `huizhi-knowledge-postgres` | `postgres:17-alpine` | `15432` | 数据库 |
+| `huizhi-knowledge-postgres` | `pgvector/pgvector:pg17` | `15432` | 数据库 |
 
 ### 4.2 容器内路径
 
