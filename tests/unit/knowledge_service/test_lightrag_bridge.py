@@ -301,3 +301,230 @@ def test_bridge_no_longer_uses_path_style_namespace():
         if not line.lstrip().startswith("#")
     ]
     assert not any("knowledge://" in line for line in code_lines)
+
+
+# --- 迁移（先删后建，幂等可续跑）-------------------------------------------
+
+
+def test_legacy_delete_targets_the_unscoped_doc_id(bridge):
+    """迁移第一步必须删掉「裸文件名」算出的旧 doc_id。
+
+    旧记录是 ``file_source = filename``，其 doc_id 为 ``md5(basename)``。
+    删错 id 的话，旧的无空间归属记录会一直留在图谱里（它对当前过滤不可见，
+    但会污染实体/关系抽取结果）。
+    """
+    calls: list[list[str]] = []
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def delete(self, url, headers=None, json=None):
+            calls.append(json["doc_ids"])
+            return _Resp()
+
+    br = bridge.LightRAGBridge(_settings())
+    import asyncio
+
+    from hashlib import md5
+
+    async def run():
+        import httpx
+
+        orig = httpx.AsyncClient
+        httpx.AsyncClient = lambda *a, **k: _Client()
+        try:
+            return await br.delete_legacy_document("报告.pdf")
+        finally:
+            httpx.AsyncClient = orig
+
+    assert asyncio.run(run()) is True
+    assert calls == [["doc-" + md5("报告.pdf".encode()).hexdigest()]]
+
+
+def test_legacy_delete_preserves_the_llm_cache(bridge):
+    """迁移删旧记录时不能清 LLM 缓存。
+
+    清掉的话，紧接着的重建就必须重新做实体抽取 —— 那是一次真实且昂贵的 LLM
+    调用；保留缓存才让迁移退化为「数据库重写」。
+    """
+    import asyncio
+    from hashlib import md5  # noqa: F401
+
+    payloads: list[dict] = []
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def delete(self, url, headers=None, json=None):
+            payloads.append(json)
+            return _Resp()
+
+    br = bridge.LightRAGBridge(_settings())
+    import httpx
+
+    async def run():
+        orig = httpx.AsyncClient
+        httpx.AsyncClient = lambda *a, **k: _Client()
+        try:
+            return await br.delete_legacy_document("报告.pdf")
+        finally:
+            httpx.AsyncClient = orig
+
+    assert asyncio.run(run()) is True
+    assert payloads[0]["delete_llm_cache"] is False
+
+
+def test_ordinary_delete_does_clear_the_llm_cache(bridge):
+    """真正删除文档时要清缓存，回收空间 —— 与迁移的取舍相反。"""
+    import asyncio
+
+    payloads: list[dict] = []
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def delete(self, url, headers=None, json=None):
+            payloads.append(json)
+            return _Resp()
+
+    br = bridge.LightRAGBridge(_settings())
+    import httpx
+
+    async def run():
+        orig = httpx.AsyncClient
+        httpx.AsyncClient = lambda *a, **k: _Client()
+        try:
+            return await br.delete_document("space-a", "d1", "报告.pdf")
+        finally:
+            httpx.AsyncClient = orig
+
+    assert asyncio.run(run()) is True
+    assert payloads[0]["delete_llm_cache"] is True
+
+
+def test_migration_skips_uncompleted_documents(bridge):
+    """只迁移已完成的文档 —— 处理中/失败的还没有分片可索引。"""
+    import asyncio
+    import types
+
+    indexed: list[str] = []
+
+    class _Store:
+        def list_documents_internal(self, space_id):
+            return [
+                {"id": "d1", "filename": "a.pdf", "status": "completed"},
+                {"id": "d2", "filename": "b.pdf", "status": "processing"},
+                {"id": "d3", "filename": "c.pdf", "status": "failed"},
+            ]
+
+        def get_document_evidence(self, document_id):
+            return [{"location": "正文", "content": "x"}]
+
+    br = bridge.LightRAGBridge(_settings())
+
+    async def fake_delete_legacy(source_name):
+        return True
+
+    async def fake_insert(**kwargs):
+        indexed.append(kwargs["document_id"])
+        return True
+
+    br.delete_legacy_document = fake_delete_legacy
+    br.insert = fake_insert
+
+    result = asyncio.run(br.migrate_legacy_documents(_Store(), "space-a"))
+    assert indexed == ["d1"], "只应迁移 completed 的文档"
+    assert result["migrated"] == 1
+    assert result["failed"] == 0
+
+
+def test_migration_isolates_one_failing_document(bridge):
+    """单个文档失败不能让整批迁移中断 —— 否则一个坏文档挡住全部历史数据。"""
+    import asyncio
+
+    class _Store:
+        def list_documents_internal(self, space_id):
+            return [
+                {"id": "d1", "filename": "a.pdf", "status": "completed"},
+                {"id": "d2", "filename": "boom.pdf", "status": "completed"},
+                {"id": "d3", "filename": "c.pdf", "status": "completed"},
+            ]
+
+        def get_document_evidence(self, document_id):
+            return [{"location": "正文", "content": "x"}]
+
+    br = bridge.LightRAGBridge(_settings())
+
+    async def fake_delete_legacy(source_name):
+        if source_name == "boom.pdf":
+            raise RuntimeError("simulated failure")
+        return True
+
+    async def fake_insert(**kwargs):
+        return kwargs["source_name"] != "boom.pdf"
+
+    br.delete_legacy_document = fake_delete_legacy
+    br.insert = fake_insert
+
+    result = asyncio.run(br.migrate_legacy_documents(_Store(), "space-a"))
+    assert result["migrated"] == 2
+    assert result["failed"] == 1
+    failed_ids = [
+        d["document_id"] for d in result["details"] if "result" in d
+        and not d["result"].startswith("migrated")
+    ]
+    assert "d2" in failed_ids
+
+
+def test_migration_endpoint_exists_and_is_scoped():
+    """迁移接口必须校验空间归属 —— 不能让一个账号迁移别人的空间。"""
+    source = (KNOWLEDGE_SERVICE / "app" / "main.py").read_text(encoding="utf-8")
+    assert "/v1/lightrag/migrate" in source
+    assert "space_exists" in source
+    # 迁移逻辑本身在 bridge 里，接口只做鉴权与转发。
+    assert "migrate_legacy_documents" in source
+
+
+def test_migration_reports_disabled_bridge(bridge):
+    """未配置 LightRAG 时迁移应明确报告未启用，而不是假装成功。"""
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings(lightrag_url=""))
+
+    class _Store:
+        def list_documents_internal(self, space_id):  # pragma: no cover
+            raise AssertionError("disabled bridge must not touch the store")
+
+    result = asyncio.run(br.migrate_legacy_documents(_Store(), "space-a"))
+    assert result["enabled"] is False
+    assert result["migrated"] == 0

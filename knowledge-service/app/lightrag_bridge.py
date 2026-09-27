@@ -288,12 +288,45 @@ class LightRAGBridge:
         doc_id = _lightrag_doc_id(
             _source_ref(space_id, document_id, source_name),
         )
+        # 文档被真正删除：连带清掉它的抽取缓存，回收空间。
+        return await self._delete_doc_id(doc_id, delete_llm_cache=True)
+
+    async def delete_legacy_document(self, source_name: str) -> bool:
+        """Delete the pre-upgrade graph record for one document.
+
+        Records written before the space-scoped naming used ``file_source =
+        filename``, so their document id is ``md5(basename)``. Those rows are
+        invisible to the current space filter (their ``file_path`` carries no
+        space) and must be removed before re-indexing: LightRAG dedupes on
+        ``content_hash``, so a re-insert without deleting first would be
+        rejected as a duplicate and leave the unscoped row in place forever.
+
+        Keeps the LLM cache on purpose: the caller is about to re-index the same
+        content, and a cache hit is what makes the migration cheap (it is a
+        database rewrite, not a fresh extraction).
+        """
+        if not self.enabled:
+            return False
+        return await self._delete_doc_id(
+            _lightrag_doc_id(source_name),
+            delete_llm_cache=False,
+        )
+
+    async def _delete_doc_id(
+        self,
+        doc_id: str,
+        *,
+        delete_llm_cache: bool,
+    ) -> bool:
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 response = await client.delete(
                     f"{self.settings.lightrag_url}/documents/delete_document",
                     headers=self._headers(),
-                    json={"doc_ids": [doc_id], "delete_llm_cache": True},
+                    json={
+                        "doc_ids": [doc_id],
+                        "delete_llm_cache": delete_llm_cache,
+                    },
                 )
                 if response.status_code == 409:
                     return True
@@ -301,12 +334,87 @@ class LightRAGBridge:
                 return True
         except Exception:
             logger.warning(
-                "lightrag: graph delete failed for space=%s doc=%s",
-                space_id,
-                document_id,
+                "lightrag: graph delete failed for doc_id=%s",
+                doc_id,
                 exc_info=True,
             )
             return False
+
+    async def migrate_legacy_documents(self, store, space_id: str) -> dict[str, Any]:
+        """把一个空间的历史图谱记录迁移到空间作用域命名。
+
+        升级前的来源标识是裸 ``filename``，LightRAG 存储下来后不含任何空间信息，
+        因此当前按空间前缀过滤时全部落选 —— 图谱证据等于没接。迁移做两件事：
+
+        1. 删掉旧 doc_id（``md5(filename)``）的图谱记录；
+        2. 用新的空间作用域来源标识重新索引。
+
+        **为什么必须先删。** LightRAG 按 ``content_hash`` 去重（见
+        ``pipeline.py`` 的 ``content_hash_to_doc_id``）：直接重新索引会被判为
+        重复、旧记录原样留下，迁移等于没做。
+
+        **代价可控。** 实体抽取的 prompt 里不含 ``file_path``（已验证无
+        ``{file_path}`` 占位符，file 路径只用于生成引用），所以重建时
+        **LLM 响应缓存会命中**，不产生新的抽取调用 —— 迁移只是数据库写入。
+
+        逐文档隔离失败：单个文档出错不影响其余，结果里逐条报告，便于断点重跑。
+        """
+        if not self.enabled:
+            return {"enabled": False, "migrated": 0, "failed": 0, "details": []}
+
+        docs = store.list_documents_internal(space_id)
+        migrated = 0
+        failed = 0
+        details: list[dict[str, str]] = []
+        for doc in docs:
+            if doc.get("status") != "completed":
+                continue
+            document_id = doc["id"]
+            source_name = doc.get("filename") or ""
+            if not source_name:
+                details.append(
+                    {"document_id": document_id, "result": "skipped: no filename"},
+                )
+                continue
+            try:
+                # 先删旧的无空间归属记录，再按新命名重建。
+                await self.delete_legacy_document(source_name)
+                chunks = store.get_document_evidence(document_id)
+                ok = await self.insert(
+                    space_id=space_id,
+                    document_id=document_id,
+                    source_name=source_name,
+                    chunks=chunks,
+                )
+            except Exception as exc:  # noqa: BLE001 - 逐条隔离
+                logger.warning(
+                    "lightrag: migration failed for doc=%s",
+                    document_id,
+                    exc_info=True,
+                )
+                ok = False
+                details.append(
+                    {
+                        "document_id": document_id,
+                        "result": f"error: {type(exc).__name__}",
+                    },
+                )
+            if ok:
+                migrated += 1
+                details.append({"document_id": document_id, "result": "migrated"})
+            else:
+                failed += 1
+                if not any(d["document_id"] == document_id for d in details):
+                    details.append(
+                        {"document_id": document_id, "result": "failed"},
+                    )
+        return {
+            "enabled": True,
+            "space_id": space_id,
+            "migrated": migrated,
+            "failed": failed,
+            "details": details,
+        }
 
     async def health(self) -> dict[str, Any]:
         if not self.enabled:

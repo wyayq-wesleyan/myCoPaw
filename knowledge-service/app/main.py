@@ -696,3 +696,21 @@ async def reindex_lightrag(body: ReindexRequest, scope: tuple[str, bool] = Depen
         raise HTTPException(status_code=503, detail="LightRAG is not configured (LIGHTRAG_URL not set)")
     result = await lightrag.reindex_space(store, body.space_id)
     return {"space_id": body.space_id, **result}
+
+
+@app.post("/v1/lightrag/migrate", dependencies=[Depends(require_api_key)])
+async def migrate_lightrag(body: ReindexRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    """把指定知识空间的历史图谱记录迁移到空间作用域命名。
+
+    升级前的来源标识是裸文件名，LightRAG 存储后不含空间信息，当前按空间过滤时
+    全部落选（图谱证据未接入）。本接口逐文档「先删旧记录、再按新命名重建」。
+
+    幂等，可重复调用：已完成迁移的文档重建时会命中 LLM 缓存与内容一致判定，
+    不会重复消耗抽取算力。逐文档隔离失败，失败的会出现在 details 里，可重跑。
+    """
+    owner_id, is_admin = scope
+    if not await asyncio.to_thread(store.space_exists, body.space_id, owner_id, is_admin):
+        raise HTTPException(status_code=404, detail="Knowledge space not found")
+    if not lightrag.enabled:
+        raise HTTPException(status_code=503, detail="LightRAG is not configured (LIGHTRAG_URL not set)")
+    return await lightrag.migrate_legacy_documents(store, body.space_id)
