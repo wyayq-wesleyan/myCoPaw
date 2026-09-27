@@ -18,10 +18,13 @@ logger = logging.getLogger(__name__)
 # PostgreSQL's default 100 connections even as accounts are added.
 _MAX_LIVE_POOLS = 16
 
-_target_pool: dict[str, ThreadedConnectionPool] = {}
-# Access order per database name, oldest first (LRU). Kept alongside the pool
-# map so idle pools can be reclaimed instead of accumulating one per account.
-_target_pool_order: list[str] = []
+# Keyed by ``(db_name, schema)``: a connection is permanently bound to one path's
+# search_path, so two paths can never share a pooled connection. ``schema`` is
+# ``""`` for the unscoped (metadata / import) pools.
+_target_pool: dict[tuple[str, str], ThreadedConnectionPool] = {}
+# Access order per key, oldest first (LRU). Kept alongside the pool map so idle
+# pools can be reclaimed instead of accumulating one per (account, path).
+_target_pool_order: list[tuple[str, str]] = []
 
 # Import jobs run in worker threads, so pool creation and LRU bookkeeping need
 # a real thread lock. Without it two jobs for the same account both miss the
@@ -96,14 +99,17 @@ def _system_db_config() -> dict:
     }
 
 
-def _reclaim_idle_pools(keep: str) -> None:
+def _reclaim_idle_pools(keep: tuple[str, str]) -> None:
     """Close least-recently-used pools until at most ``_MAX_LIVE_POOLS`` remain.
 
-    Every account gets its own database, so without a cap each account adds a
-    pool that is never released: 30 accounts x maxconn 5 plus the metadata pool
-    reaches ~160 connections, above PostgreSQL's default ``max_connections`` of
-    100, and the server starts refusing connections ("too many clients"). Pools
-    are cheap to recreate, so the idle ones are closed instead of kept forever.
+    Every account gets its own database — and now every path within an account
+    gets its own pool too (a connection is bound to one path's search_path), so
+    the count grows with accounts x paths. Without a cap they are never released:
+    30 accounts x maxconn 5 plus the metadata pool reaches ~160 connections, above
+    PostgreSQL's default ``max_connections`` of 100, and the server starts
+    refusing connections ("too many clients"). Pools are cheap to recreate (they
+    re-pin their search_path on creation), so idle ones are closed rather than
+    kept forever.
 
     Only pools with no checked-out connection are closed; a pool still serving a
     request is skipped, which keeps eviction safe while queries are in flight.
@@ -140,15 +146,74 @@ def close_all_target_pools() -> None:
     _target_pool_order.clear()
 
 
-def get_target_connection(db_name: str):
+def _normalize_search_path(schema) -> tuple[str, str]:
+    """Return ``(pool_key_fragment, search_path_sql)`` for a schema or list.
+
+    A list is joined into PostgreSQL's comma-separated ``search_path`` form, which
+    is how one connection sees several paths at once (an agent's cases first, the
+    shared ``public`` area last). An empty list is treated as *no* schema — the
+    caller asked for a path set and got nothing, which must not silently become
+    "unscoped access to everything".
+    """
+    if schema is None:
+        return "", ""
+    if isinstance(schema, str):
+        return schema, schema
+    names = [str(item) for item in schema if item]
+    if not names:
+        return "", ""
+    # ``options="-c search_path=..."`` is parsed by PostgreSQL's startup-option
+    # parser, where a space separates *options* — so a space inside the value
+    # makes the list invalid ("invalid value for parameter search_path"). The
+    # separator there must be a bare comma with no spaces. ``SET search_path``
+    # (used on checkout) accepts either form, so the same string is reused.
+    joined = ",".join(names)
+    return joined, joined
+
+
+def get_target_connection(db_name: str, schema=None):
+    """Check out a connection to an account database.
+
+    ``schema`` scopes the connection to one path's tables (path isolation): the
+    connection's ``search_path`` is pinned to it, so an unqualified table name can
+    only resolve within those paths. Accepts a single name or an ordered list (a
+    list lets one agent see its case *and* the shared public area, with the case
+    taking precedence). ``None`` keeps the default search path (legacy behaviour,
+    which the metadata and import paths use).
+
+    An empty list is refused by the caller's contract — see
+    ``path_scope.data_search_path`` returning ``None`` to mean "deny".
+
+    **The pool is keyed by ``(db_name, schema)``, not by database alone.** A
+    connection's ``search_path`` is session state — if pools were shared across
+    paths, a connection returned by one case could hand its schema to the next
+    borrower. Keying the pool by schema makes that impossible by construction
+    rather than by remembering to reset.
+    """
+    schema_key, search_path_sql = _normalize_search_path(schema)
+    key = (db_name, schema_key)
+    if schema is not None and not search_path_sql:
+        raise ValueError("拒绝在无 schema 的连接上执行数据查询（fail-closed）")
     with _pool_lock:
-        if db_name in _target_pool:
-            pool = _target_pool[db_name]
-            if db_name in _target_pool_order:
-                _target_pool_order.remove(db_name)
-            _target_pool_order.append(db_name)
+        if key in _target_pool:
+            pool = _target_pool[key]
+            if key in _target_pool_order:
+                _target_pool_order.remove(key)
+            _target_pool_order.append(key)
         else:
             cfg = _system_db_config()
+            connect_kwargs = {
+                "host": cfg["host"],
+                "port": cfg["port"],
+                "dbname": db_name,
+                "user": cfg["username"],
+                "password": cfg["password"],
+                "connect_timeout": 10,
+            }
+            if search_path_sql:
+                # Set at connection start rather than afterwards: there is then no
+                # window in which the wrong schema is active.
+                connect_kwargs["options"] = f"-c search_path={search_path_sql}"
             pool = ThreadedConnectionPool(
                 # minconn kept at 1 so a pool costs one connection while idle; the
                 # ceiling is deliberately small because concurrency per account is
@@ -156,24 +221,61 @@ def get_target_connection(db_name: str):
                 # total across accounts must stay under the server's limit.
                 1,
                 2,
-                host=cfg["host"],
-                port=cfg["port"],
-                dbname=db_name,
-                user=cfg["username"],
-                password=cfg["password"],
-                connect_timeout=10,
+                **connect_kwargs,
             )
-            _target_pool[db_name] = pool
-            _target_pool_order.append(db_name)
-            _reclaim_idle_pools(keep=db_name)
-        return pool.getconn()
+            _target_pool[key] = pool
+            _target_pool_order.append(key)
+            _reclaim_idle_pools(keep=key)
+        conn = pool.getconn()
+    if search_path_sql:
+        _pin_search_path(conn, search_path_sql)
+    return conn
 
 
-def put_target_connection(conn, db_name: str):
+def _pin_search_path(conn, schema: str) -> None:
+    """Re-assert ``search_path`` on every checkout.
+
+    A connection is long-lived, and ``SET`` is session state that survives a
+    transaction: if any statement (or a function it calls, e.g. ``set_config``)
+    changed ``search_path``, the next borrower of that connection would inherit
+    it. Re-asserting on checkout costs a trivial round-trip and removes the need
+    to trust that nothing did. Deliberately not ``SET LOCAL``: the setting must
+    hold for the whole checkout, not just one transaction.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SET search_path = {schema}")
+        conn.commit()
+    except Exception:  # noqa: BLE001 - discard rather than hand out an unscoped conn
+        logger.warning(
+            "Could not pin search_path to %s; discarding the connection", schema,
+        )
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+
+
+def put_target_connection(conn, db_name: str, schema=None):
+    """Return a connection. The key must match the one used to check it out.
+
+    Defaulting ``schema`` to ``None`` keeps existing callers (metadata and import
+    paths, which never scope to a schema) working unchanged, while a path-scoped
+    caller passes the same schema it checked out with.
+    """
+    schema_key, _ = _normalize_search_path(schema)
+    key = (db_name, schema_key)
     with _pool_lock:
-        pool = _target_pool.get(db_name)
+        pool = _target_pool.get(key)
     if pool is not None:
         pool.putconn(conn)
+    else:
+        # No matching pool (e.g. it was reclaimed): close rather than leak.
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def ensure_user_database(username: str) -> str:

@@ -182,7 +182,11 @@ def _put_conn(conn):
 
 
 def init_data_tables_schema():
-    """Create metadata tables in system PG17 if not exist."""
+    """Create metadata tables in system PG17 if not exist.
+
+    Also recovers rows orphaned by the pre-``tb_hzxzh_`` table rename; that step
+    is idempotent, so it costs nothing once the metadata is in place.
+    """
     global _schema_initialized
     if _schema_initialized:
         return
@@ -190,6 +194,7 @@ def init_data_tables_schema():
         if _schema_initialized:
             return
         _init_data_tables_schema()
+        migrate_legacy_registry_tables()
         _schema_initialized = True
 
 
@@ -273,6 +278,12 @@ def _init_data_tables_schema():
                 f"ALTER TABLE {SYSTEM_TABLE_REGISTRY} ADD COLUMN IF NOT EXISTS initialized BOOLEAN NOT NULL DEFAULT false",
                 f"ALTER TABLE {SYSTEM_TABLE_REGISTRY} ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''",
                 f"ALTER TABLE {SYSTEM_TABLE_REGISTRY} ADD COLUMN IF NOT EXISTS db_name TEXT NOT NULL DEFAULT ''",
+                # Path scoping: which path a table belongs to. ``''`` means unbound,
+                # which reads as "in the account's root path" (its public area) —
+                # see platform_store.paths.effective_path_of. Existing tables keep
+                # working unchanged, and isolating one is a single column update
+                # plus a schema move.
+                f"ALTER TABLE {SYSTEM_TABLE_REGISTRY} ADD COLUMN IF NOT EXISTS path_id TEXT NOT NULL DEFAULT ''",
                 f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
                 f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS file_path TEXT",
                 f"ALTER TABLE {SYSTEM_TABLE_IMPORT_JOB} ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
@@ -292,3 +303,212 @@ def _init_data_tables_schema():
         raise
     finally:
         _put_conn(conn)
+
+
+# --- path schemas ---------------------------------------------------------
+#
+# Path isolation for data tables is *physical*: each path's tables live in their
+# own PostgreSQL schema, and a connection is pinned to one schema's
+# ``search_path`` (see ``connection.get_target_connection``). An unqualified table
+# name therefore resolves only within the path's schema — a query cannot reach
+# another case's table even by name.
+#
+# The account's **root** path maps to the ``public`` schema, which is where every
+# existing table already lives. That choice makes the upgrade free: pre-existing
+# tables *are* the root/public area, so nothing has to be moved, and binding a
+# table to a child path is a schema move (one ``ALTER TABLE ... SET SCHEMA``)
+# rather than a data copy.
+
+# Must match ``agents.tools.path_scope.ROOT_SCHEMA``; asserted by a test.
+ROOT_SCHEMA = "public"
+
+
+def schema_for_path(path_id: str, is_root: bool) -> str:
+    """The schema holding one path's data tables.
+
+    Root → ``public`` (existing tables stay put). Any other path → a
+    UUID-derived name from :func:`platform_store.paths.data_schema_for`.
+    """
+    if is_root:
+        return ROOT_SCHEMA
+    from ..platform_store import paths
+
+    return paths.data_schema_for(path_id)
+
+
+def ensure_path_schema(db_name: str, schema: str) -> None:
+    """Create a path's schema in one account database if it is missing.
+
+    Uses a short-lived connection (not the pool) because the pool is keyed by
+    schema: creating a schema through a connection pinned to a not-yet-existing
+    schema would fail.
+    """
+    if schema == ROOT_SCHEMA:
+        return
+    from .connection import _system_db_config
+
+    cfg = _system_db_config()
+    conn = psycopg2.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        dbname=db_name,
+        user=cfg["username"],
+        password=cfg["password"],
+        connect_timeout=10,
+    )
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # ``schema`` is derived from a UUID (see data_schema_for) and only ever
+            # contains [a-z0-9_], so it cannot break out of the quotes.
+            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    finally:
+        conn.close()
+
+
+def move_table_to_schema(
+    db_name: str,
+    table_name: str,
+    from_schema: str,
+    to_schema: str,
+) -> None:
+    """Move one table between path schemas (``ALTER TABLE ... SET SCHEMA``).
+
+    A metadata-only operation in PostgreSQL: the table's data stays where it is
+    on disk, so moving even a large table is instant. That is what makes "把公共
+    路径下的表移到新路径" cheap.
+    """
+    if from_schema == to_schema:
+        return
+    ensure_path_schema(db_name, to_schema)
+    from .connection import _system_db_config
+
+    cfg = _system_db_config()
+    conn = psycopg2.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        dbname=db_name,
+        user=cfg["username"],
+        password=cfg["password"],
+        connect_timeout=10,
+    )
+    try:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute(
+                f'ALTER TABLE "{from_schema}"."{table_name}" '
+                f'SET SCHEMA "{to_schema}"',
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def list_tables_in_schema(db_name: str, schema: str) -> list[str]:
+    """User tables present in one path schema."""
+    from .connection import _system_db_config
+
+    cfg = _system_db_config()
+    conn = psycopg2.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        dbname=db_name,
+        user=cfg["username"],
+        password=cfg["password"],
+        connect_timeout=10,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = %s "
+                "ORDER BY tablename",
+                (schema,),
+            )
+            return [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# Legacy table names, from before the ``tb_hzxzh_`` prefix was introduced. The
+# rename shipped without a data migration, so on any deployment that had already
+# imported data the old rows were orphaned: the new (empty) tables are what the
+# code reads, so the data-analysis listing showed nothing even though the tables
+# themselves were still in the account databases.
+#
+# Copying is the fix, and it is deliberately conservative:
+#   * only rows missing from the new table are copied (matched by ``id``), so a
+#     deployment that registered some tables before the rename and some after
+#     ends up with both sets rather than one overwriting the other;
+#   * the old table is left in place — until the copy is verified it is the only
+#     remaining copy of that metadata;
+#   * a missing old table is not an error (fresh deployments never had one).
+_LEGACY_TABLE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("data_table_registry", SYSTEM_TABLE_REGISTRY),
+    ("data_import_job", SYSTEM_TABLE_IMPORT_JOB),
+    ("data_source_config", SYSTEM_TABLE_SOURCE_CONFIG),
+)
+
+
+def migrate_legacy_registry_tables() -> dict[str, int]:
+    """Copy rows out of the pre-rename tables. Returns ``{table: rows_copied}``.
+
+    Idempotent: re-running copies nothing once the rows are present. Failures are
+    logged and skipped per table — this runs on the schema-init path, so it must
+    not be able to prevent the data-analysis feature from starting.
+    """
+    copied: dict[str, int] = {}
+    conn = _get_conn()
+    try:
+        for old_name, new_name in _LEGACY_TABLE_ALIASES:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT to_regclass(%s) IS NOT NULL",
+                        (f"public.{old_name}",),
+                    )
+                    if not cur.fetchone()[0]:
+                        continue  # no legacy table on this deployment
+                    # Only the columns both tables share, so a schema that gained
+                    # columns (e.g. ``path_id``) does not break the copy.
+                    cur.execute(
+                        """
+                        SELECT string_agg(quote_ident(c.column_name), ', '
+                                          ORDER BY c.ordinal_position)
+                        FROM information_schema.columns c
+                        WHERE c.table_schema = 'public' AND c.table_name = %s
+                          AND EXISTS (
+                            SELECT 1 FROM information_schema.columns n
+                            WHERE n.table_schema = 'public' AND n.table_name = %s
+                              AND n.column_name = c.column_name
+                          )
+                        """,
+                        (old_name, new_name),
+                    )
+                    columns = cur.fetchone()[0]
+                    if not columns:
+                        continue
+                    cur.execute(
+                        f'INSERT INTO {new_name} ({columns}) '  # noqa: S608 - names are literals above
+                        f'SELECT {columns} FROM {old_name} '
+                        f"ON CONFLICT (id) DO NOTHING",
+                    )
+                    moved = cur.rowcount
+                conn.commit()
+                if moved:
+                    copied[old_name] = int(moved)
+                    logger.info(
+                        "data tables: recovered %d row(s) from legacy table %s",
+                        moved, old_name,
+                    )
+            except Exception as exc:  # noqa: BLE001 - isolate one table
+                conn.rollback()
+                logger.warning(
+                    "data tables: could not recover legacy table %s: %s",
+                    old_name, exc,
+                )
+    finally:
+        _put_conn(conn)
+    return copied

@@ -22,6 +22,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# The account's root path maps to the shared ``public`` schema — which is where
+# every pre-existing table lives, so the upgrade moves nothing. Kept in sync with
+# ``data_tables.store.ROOT_SCHEMA`` (imported lazily there to avoid a cycle).
+ROOT_SCHEMA = "public"
+
 
 def current_agent_id() -> str:
     """The agent executing this tool call, or ``""`` when unknown."""
@@ -92,17 +97,22 @@ def visible_space_ids(owner_username: str, space_ids: list[str]) -> list[str]:
     return visible
 
 
-def data_schema_for_agent(owner_username: str) -> str | None:
-    """The PostgreSQL schema holding this agent's data tables, or ``None``.
+def data_search_path(owner_username: str) -> list[str] | None:
+    """The ``search_path`` an agent's data queries should run under, or ``None``.
 
-    Unlike knowledge (many spaces filtered one by one), a data table is a plain
-    relation inside a schema, and the isolation is physical: the connection's
-    ``search_path`` points at one schema, so a query cannot name another path's
-    table at all. That means an agent must resolve to **exactly one** schema here.
+    Returned as an ordered list because an agent legitimately spans several paths
+    — the account's public (root) area plus the cases it is working on. PostgreSQL
+    resolves an unqualified table name against the first schema in
+    ``search_path`` that has it, so a list expresses "my case first, then the
+    shared material" directly, and no single-schema choice has to be made.
 
-    An agent granted several paths is therefore not yet supported: silently
-    picking one would hide the others' tables with no explanation. Returning
-    ``None`` plus a log line makes the situation explicit instead.
+    Order matters and is deliberate: **the agent's granted non-root paths come
+    first, ``public`` (root) last.** A case-specific table therefore shadows a
+    same-named table in the public area, which is the intuitive precedence —
+    material filed under a case is more specific than shared material.
+
+    ``None`` means "deny": either the identity is unknown, or the agent has no
+    grants at all. Callers must treat it as no access, never as "unscoped access".
     """
     agent_id = current_agent_id()
     if not agent_id:
@@ -110,33 +120,86 @@ def data_schema_for_agent(owner_username: str) -> str | None:
     try:
         from ...platform_store import paths
 
-        allowed = paths.agent_path_ids(agent_id)
-    except Exception:  # noqa: BLE001 - deny on store failure
+        granted = paths.agent_path_ids(agent_id)
+        if not granted:
+            # fail-closed: an agent with no grants sees no tables at all.
+            return None
+        schemas: list[str] = []
+        for path_id in granted:
+            node = paths.path_by_id(path_id)
+            if node is None:
+                continue
+            # Root maps to the shared ``public`` schema; every other path gets its
+            # own UUID-derived schema.
+            schemas.append(
+                ROOT_SCHEMA if node.get("is_root") else paths.data_schema_for(path_id)
+            )
+    except Exception:  # noqa: BLE001 - store failure must deny, not allow
         logger.warning(
             "path_scope: refusing data access — path store unavailable",
             exc_info=True,
         )
         return None
 
-    if not allowed:
-        # No grants at all: fail closed. (The root being "public" is expressed by
-        # the upgrade granting it to every agent, not by waving this check.)
+    if not schemas:
         return None
-    if len(allowed) == 1:
-        return paths.data_schema_for(allowed[0])
-    # Several paths granted: see the docstring — not silently resolved.
-    logger.warning(
-        "path_scope: agent %s is granted %d paths; data access needs exactly one "
-        "(granted=%s)",
-        agent_id,
-        len(allowed),
-        sorted(allowed),
-    )
-    return None
+    # De-duplicate while preserving order (an agent granted the same path twice is
+    # impossible via the primary key, but the root may also arrive as a child).
+    ordered = list(dict.fromkeys(schemas))
+    # ``public`` last so a case's table shadows a same-named public one. If the
+    # agent was granted only the root, this is simply ["public"].
+    if ROOT_SCHEMA in ordered and len(ordered) > 1:
+        ordered = [s for s in ordered if s != ROOT_SCHEMA] + [ROOT_SCHEMA]
+    return ordered
+
+
+def visible_data_path_ids(owner_username: str) -> set[str] | None:
+    """Path ids whose data tables this agent may list, or ``None`` to deny.
+
+    Used by the registry-driven listings (which read metadata from the system
+    database rather than the account database), so they show the same set the
+    query tool can actually reach — otherwise the list would advertise tables the
+    agent then cannot query, or hide ones it can.
+
+    A registry row with an empty ``path_id`` is an unbound (pre-existing) table;
+    callers normalise it to the root path id, matching
+    ``paths.effective_path_of``. ``None`` means deny (unknown identity or no
+    grants), and must not be read as "no filter".
+    """
+    agent_id = current_agent_id()
+    if not agent_id:
+        return None
+    try:
+        from ...platform_store import paths
+
+        granted = paths.agent_path_ids(agent_id)
+        if not granted:
+            return None
+        return set(granted)
+    except Exception:  # noqa: BLE001 - deny on store failure
+        logger.warning(
+            "path_scope: refusing data listing — path store unavailable",
+            exc_info=True,
+        )
+        return None
+
+
+def root_path_id(owner_username: str) -> str | None:
+    """The account's root path id, or ``None`` if it cannot be resolved."""
+    try:
+        from ...platform_store import paths
+
+        return paths.ensure_root_path(owner_username)
+    except Exception:  # noqa: BLE001
+        logger.warning("path_scope: could not resolve the root path", exc_info=True)
+        return None
 
 
 __all__ = [
+    "ROOT_SCHEMA",
     "current_agent_id",
-    "data_schema_for_agent",
+    "data_search_path",
+    "root_path_id",
+    "visible_data_path_ids",
     "visible_space_ids",
 ]

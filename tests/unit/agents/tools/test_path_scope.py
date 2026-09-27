@@ -217,37 +217,30 @@ def test_current_agent_id_never_raises(monkeypatch):
     assert path_scope.current_agent_id() == ""
 
 
-# --- 数据表 schema 解析 -----------------------------------------------------
+# --- 数据表 search_path 解析 ------------------------------------------------
 
 
 @requires_platform_db
-def test_data_schema_resolves_for_a_single_grant(scope):
-    """只授权一个路径时，解析出该路径的 schema。"""
+def test_data_search_path_is_public_only_for_a_root_grant(scope):
+    """只授予根路径时，search_path 就是 ``['public']``。
+
+    根路径映射到 ``public`` schema，这正是所有既有表所在之处 —— 所以升级
+    不需要搬任何表：老智能体绑了根就能照常访问原有表。
+    """
     owner, set_agent, ps = scope
     root = P.ensure_root_path(owner, "公共")
     P.bind_agent(f"{owner}-ag", root)
     set_agent(f"{owner}-ag")
 
-    assert ps.data_schema_for_agent(owner) == P.data_schema_for(root)
+    assert ps.data_search_path(owner) == ["public"]
 
 
 @requires_platform_db
-def test_data_schema_denies_without_grants(scope):
-    """没有授权时拒绝（fail-closed）—— 与知识侧一致。"""
-    owner, set_agent, ps = scope
-    P.ensure_root_path(owner, "公共")
-    set_agent(f"{owner}-ghost")
+def test_data_search_path_puts_the_case_before_public(scope):
+    """同时授予案件与根时，案件 schema 排在 ``public`` 之前。
 
-    assert ps.data_schema_for_agent(owner) is None
-
-
-@requires_platform_db
-def test_data_schema_refuses_to_guess_when_several_paths_granted(scope):
-    """授权多个路径时返回 None 并告警，而不是沉默地挑一个。
-
-    数据表隔离是物理的（一个连接一个 search_path），因此必须解析到恰好一个
-    schema。随便挑一个会让其它路径的表静默消失、且用户无从得知 —— 明确拒绝
-    比沉默地给出错误结果好。
+    顺序有意义：PostgreSQL 用 search_path 里第一个含该表的 schema 解析非限定表名，
+    因此案件专属表会遮蔽公共区同名表 —— 归档在案件下的材料比共享材料更具体。
     """
     owner, set_agent, ps = scope
     root = P.ensure_root_path(owner, "公共")
@@ -256,14 +249,98 @@ def test_data_schema_refuses_to_guess_when_several_paths_granted(scope):
         P.bind_agent(f"{owner}-ag", pid)
     set_agent(f"{owner}-ag")
 
-    assert ps.data_schema_for_agent(owner) is None
+    path = ps.data_search_path(owner)
+    assert path[-1] == "public", "public 必须排最后"
+    assert path[0] == P.data_schema_for(case)
+    assert len(path) == 2
 
 
 @requires_platform_db
-def test_data_schema_denies_when_identity_unknown(scope):
+def test_data_search_path_spans_several_cases(scope):
+    """授予多个案件时全部列出（不是只挑一个）。
+
+    早期实现遇到多路径会返回 None（因为当时假设"恰好一个 schema"），那会让
+    绑了案件之后的智能体完全无法访问数据表 —— 而每个智能体升级后本来就绑着
+    根路径，等于一绑就坏。
+    """
+    owner, set_agent, ps = scope
+    root = P.ensure_root_path(owner, "公共")
+    case1 = P.create_path(owner, "案件一")
+    case2 = P.create_path(owner, "案件二")
+    for pid in (root, case1, case2):
+        P.bind_agent(f"{owner}-ag", pid)
+    set_agent(f"{owner}-ag")
+
+    path = ps.data_search_path(owner)
+    assert set(path) == {
+        P.data_schema_for(case1), P.data_schema_for(case2), "public",
+    }
+    assert path[-1] == "public"
+
+
+@requires_platform_db
+def test_data_search_path_denies_without_grants(scope):
+    """没有授权时返回 None（fail-closed）。
+
+    ``None`` 必须被调用方读作「拒绝」，绝不能读作「不加限制」—— 后者等于把
+    所有案件的表全部暴露。
+    """
+    owner, set_agent, ps = scope
+    P.ensure_root_path(owner, "公共")
+    set_agent(f"{owner}-ghost")
+
+    assert ps.data_search_path(owner) is None
+
+
+@requires_platform_db
+def test_data_search_path_denies_when_identity_unknown(scope):
     owner, set_agent, ps = scope
     root = P.ensure_root_path(owner, "公共")
     P.bind_agent(f"{owner}-ag", root)
     set_agent("")
 
-    assert ps.data_schema_for_agent(owner) is None
+    assert ps.data_search_path(owner) is None
+
+
+@requires_platform_db
+def test_data_search_path_denies_when_store_is_unavailable(scope, monkeypatch):
+    """路径存储故障时拒绝，不放行。
+
+    放行意味着一次数据库抖动就同时失去所有路径隔离。
+    """
+    owner, set_agent, ps = scope
+    P.ensure_root_path(owner, "公共")
+    set_agent(f"{owner}-ag")
+
+    def boom(*_a, **_k):
+        raise RuntimeError("simulated outage")
+
+    monkeypatch.setattr(P, "agent_path_ids", boom)
+    assert ps.data_search_path(owner) is None
+
+
+@requires_platform_db
+def test_visible_data_path_ids_denies_without_grants(scope):
+    """列表用路径集合也必须 fail-closed。"""
+    owner, set_agent, ps = scope
+    P.ensure_root_path(owner, "公共")
+    set_agent(f"{owner}-ghost")
+    assert ps.visible_data_path_ids(owner) is None
+
+    root = P.ensure_root_path(owner, "公共")
+    P.bind_agent(f"{owner}-ag", root)
+    set_agent(f"{owner}-ag")
+    assert ps.visible_data_path_ids(owner) == {root}
+
+
+def test_root_schema_constant_matches_the_data_tables_layer():
+    """两处的 ROOT_SCHEMA 必须一致。
+
+    ``path_scope`` 用它拼 search_path，``data_tables.store`` 用它决定建表/移表
+    的目标 schema；两者不一致会让「根路径」在一边是 public、另一边是别的名字，
+    表现为表建好了却查不到。
+    """
+    from qwenpaw.agents.tools import path_scope
+    from qwenpaw.data_tables import store as data_store
+
+    assert path_scope.ROOT_SCHEMA == data_store.ROOT_SCHEMA == "public"

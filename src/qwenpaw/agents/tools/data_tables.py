@@ -75,6 +75,26 @@ def _ensure_limit(sql: str, max_rows: int = 100) -> str:
     return f"{sanitized} LIMIT {max_rows}"
 
 
+def _table_visible_to_agent(username: str, path_id: str | None) -> bool:
+    """Whether one registry row is reachable by the calling agent.
+
+    Shared by the listing and the detail tool so they cannot disagree (a table
+    the list shows must be describable, and one it hides must not). An empty
+    ``path_id`` is a pre-existing, unbound table — it belongs to the account root
+    and is visible only when the root is granted.
+    """
+    from .path_scope import root_path_id, visible_data_path_ids
+
+    allowed = visible_data_path_ids(username)
+    if allowed is None:
+        return False
+    allowed = set(allowed)
+    root = root_path_id(username)
+    if path_id:
+        return path_id in allowed
+    return bool(root) and root in allowed
+
+
 def _resolve_username() -> str:
     """Resolve the calling account via the shared account rule.
 
@@ -99,6 +119,30 @@ def list_data_tables() -> str:
     username = _resolve_username()
     from qwenpaw.data_tables.store import SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn
 
+    # Path scoping: list only what this agent may actually query. Reading the
+    # registry is cheaper than probing schemas, but it must apply the same rule —
+    # otherwise the list advertises another case's tables and the model wastes a
+    # call discovering it cannot read them.
+    from .path_scope import root_path_id, visible_data_path_ids
+
+    allowed_paths = visible_data_path_ids(username)
+    if allowed_paths is None:
+        return (
+            "当前智能体没有可访问的数据分析路径，请先在数据分析中为该智能体"
+            "挂载对应的路径。"
+        )
+    root_id = root_path_id(username)
+    # An unbound table (path_id = '') is a pre-existing one and therefore belongs
+    # to the root path. It is only visible when the root itself is granted — the
+    # same normalisation the query tool relies on, and adding "" unconditionally
+    # would expose public tables to an agent granted only a case.
+    # Unbound rows (path_id = '') are pre-existing tables and live in the root
+    # path, so they are listed only when the root itself is granted — the same
+    # rule ``_table_visible_to_agent`` applies for the detail view.
+    allowed_paths = set(allowed_paths)
+    if root_id and root_id in allowed_paths:
+        allowed_paths.add("")
+
     conn = _get_conn()
     try:
         import psycopg2.extras
@@ -106,12 +150,13 @@ def list_data_tables() -> str:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 f"""
-                SELECT table_name, description, columns, row_count, initialized
+                SELECT table_name, description, columns, row_count, initialized,
+                       path_id
                 FROM {SYSTEM_TABLE_REGISTRY}
-                WHERE owner_username = %s
+                WHERE owner_username = %s AND (path_id = ANY(%s))
                 ORDER BY created_at DESC
             """,
-                (username,),
+                (username, sorted(allowed_paths)),
             )
             rows = cur.fetchall()
             if not rows:
@@ -169,6 +214,12 @@ def describe_data_table(table_name: str) -> str:
             table = cur.fetchone()
             if not table:
                 return f"表 {table_name} 不存在。请先用 list_data_tables 查看可用表。"
+            # Path scoping, applied before any detail is returned: a table in
+            # another case must look "not found" rather than leak its DDL, columns
+            # and sample rows. Reusing the same predicate as the query tool keeps
+            # the two from disagreeing about what is reachable.
+            if not _table_visible_to_agent(username, table.get("path_id")):
+                return f"表 {table_name} 不存在。请先用 list_data_tables 查看可用表。"
     finally:
         _put_conn(conn)
 
@@ -209,7 +260,12 @@ def describe_data_table(table_name: str) -> str:
             continue
         col_details.append(f"- {cname}（{c['type']}）：{c.get('comment', '无说明')}")
 
-    hg_conn = get_target_connection(table["db_name"])
+    from .path_scope import data_search_path
+
+    search_path = data_search_path(username)
+    if search_path is None:
+        return "当前智能体没有可访问的数据分析路径。"
+    hg_conn = get_target_connection(table["db_name"], search_path)
     try:
         with hg_conn.cursor() as cur:
             cur.execute(f'SELECT * FROM "{table_name}" LIMIT 3')
@@ -222,7 +278,7 @@ def describe_data_table(table_name: str) -> str:
     except Exception as e:
         sample = f"（读取样例数据失败: {e}）"
     finally:
-        put_target_connection(hg_conn, table["db_name"])
+        put_target_connection(hg_conn, table["db_name"], search_path)
 
     return (
         f"## 表 {table_name}\n"
@@ -263,8 +319,22 @@ def query_data_table(sql: str) -> str:
         ensure_user_database,
     )
 
+    # Path scoping is enforced by the *connection*, not by inspecting the SQL.
+    # The connection's search_path lists only the paths this agent was granted, so
+    # a table belonging to another case does not resolve at all — it fails with
+    # "relation does not exist" rather than being filtered after the fact. That is
+    # what makes an arbitrary read-only query safe here.
+    from .path_scope import data_search_path
+
+    search_path = data_search_path(username)
+    if search_path is None:
+        return (
+            "当前智能体没有可访问的数据分析路径，请先在数据分析中为该智能体"
+            "挂载对应的路径。"
+        )
+
     db_name = ensure_user_database(username)
-    hg_conn = get_target_connection(db_name)
+    hg_conn = get_target_connection(db_name, search_path)
     try:
         with hg_conn.cursor() as cur:
             cur.execute("SET statement_timeout = '30s'")
@@ -284,7 +354,7 @@ def query_data_table(sql: str) -> str:
     except Exception as e:
         return f"查询执行失败: {str(e)}"
     finally:
-        put_target_connection(hg_conn, db_name)
+        put_target_connection(hg_conn, db_name, search_path)
 
 
 def _create_table_sync(username: str, description: str, display_name: str) -> dict:

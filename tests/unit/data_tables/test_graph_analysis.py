@@ -731,3 +731,57 @@ def test_every_declared_algorithm_is_actually_implemented():
     dispatch = inspect.getsource(tool._run_analysis)
     for name in ga.ALGORITHMS:
         assert f'"{name}"' in dispatch, f"{name} 在清单里但没有派发实现"
+
+
+# --- 表名重命名遗留数据的恢复（既有 bug，与路径隔离一并修）------------------
+
+
+def test_legacy_registry_recovery_is_idempotent_and_targeted():
+    """旧表名遗留数据必须能恢复，且重复执行不产生重复行。
+
+    背景：``tb_hzxzh_`` 前缀是在一次提交里引入的，当时只改了表名、没有搬迁
+    数据。任何已经导入过数据的部署，其注册信息都留在旧表里，而代码读新表 ——
+    表现为数据分析列表空空如也，但表其实还在账号库里（实测 admin 的 16 张表
+    就这样"消失"了）。
+
+    这里用静态断言钉住三件必须成立的事：只按 id 补缺失行、旧表保留、
+    旧表不存在时不报错。
+    """
+    import inspect
+
+    from qwenpaw.data_tables import store as data_store
+
+    source = inspect.getsource(data_store.migrate_legacy_registry_tables)
+    # 只补缺失行（不覆盖已有），并且是幂等的根基。
+    assert "ON CONFLICT (id) DO NOTHING" in source
+    # 不删除旧表 —— 校验通过前它是唯一副本。
+    assert "DROP TABLE" not in source.upper()
+    # 旧表不存在属正常（全新部署），不能报错。
+    assert "to_regclass" in source
+
+
+def test_legacy_recovery_runs_from_schema_init():
+    """恢复步骤必须挂在 schema 初始化上，否则部署升级后不会自动执行。"""
+    import inspect
+
+    from qwenpaw.data_tables import store as data_store
+
+    source = inspect.getsource(data_store.init_data_tables_schema)
+    assert "migrate_legacy_registry_tables()" in source
+
+
+def test_legacy_aliases_cover_the_tables_that_were_renamed():
+    """四张表里凡是被重命名的都要有对应关系。
+
+    只列一部分会让漏掉的那张继续"消失"，而且很难被发现（列表里少一行不如
+    整页空白显眼）。
+    """
+    from qwenpaw.data_tables import store as data_store
+
+    paired = dict(data_store._LEGACY_TABLE_ALIASES)
+    assert paired["data_table_registry"] == data_store.SYSTEM_TABLE_REGISTRY
+    assert paired["data_import_job"] == data_store.SYSTEM_TABLE_IMPORT_JOB
+    assert paired["data_source_config"] == data_store.SYSTEM_TABLE_SOURCE_CONFIG
+    # 新表名必须都带前缀，否则别名表写错了也不会有人发现。
+    for new_name in paired.values():
+        assert new_name.startswith("tb_hzxzh_")
