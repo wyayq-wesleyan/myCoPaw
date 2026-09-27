@@ -68,6 +68,7 @@ def create_table_record(
     description: str = "",
     columns: list[str] | None = None,
     column_types: list[str] | None = None,
+    path_id: str = "",
 ) -> dict[str, str]:
     """Create one account's table definition and return its id and table name.
 
@@ -134,11 +135,18 @@ def create_table_record(
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                INSERT INTO {SYSTEM_TABLE_REGISTRY} (owner_username, db_name, table_name, display_name, description, columns)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO {SYSTEM_TABLE_REGISTRY} (owner_username, db_name, table_name, display_name, description, columns, path_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """,
-                (username, db_name, table_name, display_name, description, json.dumps(cols)),
+                (
+                    username, db_name, table_name, display_name, description,
+                    json.dumps(cols),
+                    # Registered under the caller's chosen path; ``''`` keeps it in
+                    # the account's public (root) area. The physical table is
+                    # created later by the importer, in the schema this resolves to.
+                    str(path_id or ""),
+                ),
             )
             row_id = cur.fetchone()[0]
             conn.commit()

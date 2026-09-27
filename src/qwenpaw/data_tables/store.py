@@ -336,6 +336,40 @@ def schema_for_path(path_id: str, is_root: bool) -> str:
     return paths.data_schema_for(path_id)
 
 
+def schema_for_registry_row(row) -> str:
+    """The schema a registry row's physical table belongs in.
+
+    ``path_id`` empty means unbound — a table registered before path scoping
+    existed. Those live in the root path, which is ``public``: that is why the
+    upgrade moves nothing, and why every existing table keeps working untouched.
+
+    Accepts a mapping or ``psycopg2`` row (both support ``[]``). A path id that no
+    longer exists in ``paths`` (the path was deleted or never created on this
+    deployment) also resolves to the root rather than raising: a missing path table
+    must not make a stored table unreadable.
+    """
+    try:
+        path_id = row["path_id"]
+    except (KeyError, TypeError, IndexError):
+        return ROOT_SCHEMA
+    path_id = str(path_id or "").strip()
+    if not path_id:
+        return ROOT_SCHEMA
+    try:
+        from ..platform_store import paths
+
+        node = paths.path_by_id(path_id)
+    except Exception:  # noqa: BLE001 - unresolvable path falls back to the root
+        logger.warning(
+            "data tables: could not resolve path %s; using the root schema",
+            path_id, exc_info=True,
+        )
+        return ROOT_SCHEMA
+    if not node:
+        return ROOT_SCHEMA
+    return schema_for_path(path_id, bool(node.get("is_root")))
+
+
 def ensure_path_schema(db_name: str, schema: str) -> None:
     """Create a path's schema in one account database if it is missing.
 

@@ -31,6 +31,8 @@ from .store import (
     _get_conn,
     _put_conn,
     cleanup_staged_file,
+    ensure_path_schema,
+    schema_for_registry_row as _schema_for_registry_row,
 )
 
 logger = logging.getLogger(__name__)
@@ -449,13 +451,21 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
             put_sys_conn(conn)
 
         db_name = ensure_user_database(table["owner_username"]) if not db_name else db_name
-        hg_conn = get_target_connection(db_name)
+        # Path scoping: create the physical table inside the schema of the path it
+        # was registered under, so the data lands where the listing and the query
+        # tools expect it. An unbound row (path_id = '') is a pre-existing table
+        # and belongs to the account root, which is the ``public`` schema — the
+        # same normalisation used everywhere else, and why no pre-existing table
+        # has to move on upgrade.
+        table_schema = _schema_for_registry_row(table)
         try:
             # The table's schema is decided once, by whichever job gets here
             # first for an uninitialized table. Concurrent jobs would otherwise
             # each CREATE TABLE and all but one would fail on the duplicate
             # object error, so the check must be re-done *inside* the lock: the
             # value read before the lock is stale as soon as another job wins.
+            ensure_path_schema(db_name, table_schema)
+            hg_conn = get_target_connection(db_name, table_schema)
             with _init_lock_for(table_id):
                 persisted_schema = _load_persisted_schema(table_id)
                 if persisted_schema is None:
@@ -513,7 +523,7 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                     break
             status = "completed" if not insert_errors else ("partial" if success > 0 else "failed")
         finally:
-            put_target_connection(hg_conn, db_name)
+            put_target_connection(hg_conn, db_name, table_schema)
 
         conn = get_sys_conn()
         try:

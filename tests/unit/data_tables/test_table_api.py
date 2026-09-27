@@ -78,7 +78,11 @@ def test_create_table_record_accepts_no_columns(table_api_env):
     record = table_api.create_table_record("u1", description="2024 年销售明细")
 
     assert record == {"id": "7", "table_name": "tb_hzxzs_test_0001"}
-    assert _insert_params(table_api_env)[-1] == json.dumps([])
+    # ``path_id`` is the last bound parameter now; columns are second to last.
+    assert _insert_params(table_api_env)[-2] == json.dumps([])
+    # A caller that names no path registers the table in the account's public
+    # (root) area, which is what keeps the pre-path behaviour unchanged.
+    assert _insert_params(table_api_env)[-1] == ""
     assert table_api_env.committed is True
 
 
@@ -92,9 +96,22 @@ def test_create_table_record_trims_and_drops_blank_column_notes(table_api_env):
         columns=["  订单号  ", "   ", "金额"],
     )
 
-    notes = json.loads(_insert_params(table_api_env)[-1])
+    notes = json.loads(_insert_params(table_api_env)[-2])
     assert [note["comment"] for note in notes] == ["订单号", "金额"]
     assert all(note["column_name"] is None for note in notes)
+
+
+def test_create_table_record_registers_the_requested_path(table_api_env):
+    """点名路径时，注册行必须带上它。
+
+    物理表由导入器建在 ``path_id`` 解析出的 schema 里，所以这一步没传对，
+    表就会落进 public（公共区）—— 隔离静默失效。
+    """
+    table_api_env.results = [None, (9,)]
+
+    table_api.create_table_record("u1", description="案件一材料", path_id="path-x")
+
+    assert _insert_params(table_api_env)[-1] == "path-x"
 
 
 def test_create_table_record_scopes_the_database_to_the_caller(table_api_env):
