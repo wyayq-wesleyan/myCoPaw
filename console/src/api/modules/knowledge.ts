@@ -115,6 +115,8 @@ export const knowledgeApi = {
     created_before?: string;
     doc_ids?: string;
     status?: KnowledgeDocument["status"];
+    /** Narrow to documents filed under one path (see features/path-tree). */
+    path_id?: string;
     page?: number;
     page_size?: number;
   }) => {
@@ -124,6 +126,7 @@ export const knowledgeApi = {
     if (params?.created_before) query.set("created_before", params.created_before);
     if (params?.doc_ids) query.set("doc_ids", params.doc_ids);
     if (params?.status) query.set("status", params.status);
+    if (params?.path_id) query.set("path_id", params.path_id);
     if (params?.page) query.set("page", String(params.page));
     if (params?.page_size) query.set("page_size", String(params.page_size));
     const qs = query.toString();

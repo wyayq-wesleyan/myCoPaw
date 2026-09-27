@@ -30,6 +30,7 @@ import {
   SearchOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
+import PathTreePanel, { ALL_PATHS } from "../../features/path-tree/PathTreePanel";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import {
@@ -398,6 +399,10 @@ export default function KnowledgePage() {
   const [querying, setQuerying] = useState(false);
   const uploadBatchGuard = useRef(false);
 
+  // Path scope: which path's documents are shown. ALL_PATHS means "no filter",
+  // i.e. everything this account can see across its paths.
+  const [selectedPath, setSelectedPath] = useState<string>(ALL_PATHS);
+
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDocument, setPreviewDocument] = useState<KnowledgeDocument | null>(null);
 
@@ -409,13 +414,19 @@ export default function KnowledgePage() {
   const loadDocuments = async (params?: DocumentListFilters & {
     page?: number;
     page_size?: number;
+    path_id?: string;
   }) => {
     try {
+      // Resolve the path filter from the argument first, falling back to the
+      // current selection: paging and refresh must keep showing the same path the
+      // user is looking at, not silently widen back to everything.
+      const pathId = params?.path_id ?? selectedPath;
       const result = await knowledgeApi.listDocuments({
         ...appliedFilters,
         ...params,
         page: params?.page ?? page,
         page_size: params?.page_size ?? pageSize,
+        ...(pathId && pathId !== ALL_PATHS ? { path_id: pathId } : {}),
       });
       setDocuments(result.items);
       setDocumentTotal(result.total);
@@ -448,6 +459,21 @@ export default function KnowledgePage() {
   };
 
   useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Switching path re-queries from page 1: staying on the old page number could
+  // land past the end of a smaller filtered set and show an empty table.
+  // The first render is skipped because ``refresh()`` already loads page 1 —
+  // without the guard every mount would issue a duplicate request.
+  const pathEffectReady = useRef(false);
+  useEffect(() => {
+    if (!pathEffectReady.current) {
+      pathEffectReady.current = true;
+      return;
+    }
+    setPage(1);
+    void loadDocuments({ page: 1, path_id: selectedPath });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPath]);
 
   /* ── Polling for active jobs ───────────────────────────────── */
 
@@ -695,6 +721,21 @@ export default function KnowledgePage() {
         </Tooltip>
       </header>
 
+      <div className={styles.body}>
+        {/* Path tree: makes the account's case isolation visible. Read-only for
+            now — the point is to show which case material is filed under and who
+            can read it, before adding mutations. */}
+        <aside className={styles.sidebar}>
+          <div className={styles.sidebarTitle}>路径</div>
+          <PathTreePanel
+            value={selectedPath}
+            onChange={setSelectedPath}
+            countKind="document"
+            refreshKey={documentTotal}
+          />
+        </aside>
+
+        <div className={styles.content}>
       {/* ── Query Conditions ────────────────────────────────────── */}
       <div className={styles.queryBar}>
         <Row gutter={[12, 12]} align="middle">
@@ -834,6 +875,9 @@ export default function KnowledgePage() {
           }}
           size="middle"
         />
+      </div>
+
+        </div>
       </div>
 
       {/* ── Preview Drawer ──────────────────────────────────────── */}

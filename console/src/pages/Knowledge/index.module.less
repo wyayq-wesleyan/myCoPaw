@@ -142,3 +142,51 @@
     padding: 20px 16px 36px;
   }
 }
+
+/*
+ * Two columns: the path tree on the left, the document list on the right. The
+ * sidebar is a fixed width so long case names cannot squeeze the table, and the
+ * whole area inherits the page's max width so it stays centred on wide screens.
+ */
+.body {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.sidebar {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 160px);
+  overflow: auto;
+  padding: 10px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.sidebarTitle {
+  padding: 2px 8px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+/* minmax(0, 1fr) above plus this guard keeps the table from overflowing its
+   column when a cell holds a long filename. */
+.content {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: static;
+    max-height: 260px;
+  }
+}

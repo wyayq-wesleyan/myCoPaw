@@ -212,6 +212,18 @@ def list_tables(
     list.
     """
     username = get_request_username(request) or "admin"
+    # Invoked directly rather than through FastAPI, the ``Query(...)`` sentinels
+    # are the literal parameter defaults: they would be adapted into SQL and blow
+    # up on arithmetic. Resolve every one of them to a real value so the function
+    # is usable off the HTTP path too (tests and internal callers come through
+    # here, and the failure is a 503 that looks like a store problem rather than a
+    # calling convention one).
+    page = page if isinstance(page, int) else 1
+    page_size = page_size if isinstance(page_size, int) else 20
+    keyword = keyword if isinstance(keyword, str) else None
+    created_start = created_start if isinstance(created_start, str) else None
+    created_end = created_end if isinstance(created_end, str) else None
+    path_id = path_id if isinstance(path_id, str) else None
     path_filter: set[str] | None = None
     if path_id:
         from ..platform_store import paths as path_store
@@ -267,7 +279,11 @@ def list_tables(
                     # The path exists but holds nothing: return an empty page
                     # rather than skipping the filter.
                     return {"items": [], "total": 0, "page": page, "page_size": page_size}
-                conditions.append("id = ANY(%s)")
+                # The registry primary key is ``uuid`` while path bindings store
+                # their resource id as ``text``; comparing them directly makes
+                # PostgreSQL reject the query ("operator does not exist: uuid =
+                # text"). Cast the column side so the text ids can be matched.
+                conditions.append("id::text = ANY(%s)")
                 params.append(sorted(path_filter))
             where = " WHERE " + " AND ".join(conditions) if conditions else ""
             cur.execute(f"SELECT COUNT(*) as cnt FROM {SYSTEM_TABLE_REGISTRY}{where}", params)

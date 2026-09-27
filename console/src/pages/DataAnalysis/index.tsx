@@ -51,6 +51,7 @@ import type {
   DataImportJob,
   DataTableItem,
 } from "../../api/modules/dataAnalysis";
+import PathTreePanel, { ALL_PATHS } from "../../features/path-tree/PathTreePanel";
 import styles from "./index.module.less";
 
 const { RangePicker } = DatePicker;
@@ -71,6 +72,8 @@ export default function DataAnalysisPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [keyword, setKeyword] = useState("");
+  // Path scope: which path's tables are shown. ALL_PATHS means no filter.
+  const [selectedPath, setSelectedPath] = useState<string>(ALL_PATHS);
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
@@ -126,6 +129,9 @@ export default function DataAnalysisPage() {
     try {
       const params: Record<string, unknown> = { page, page_size: pageSize };
       if (keyword) params.keyword = keyword;
+      // Unknown/foreign paths come back as an empty page from the server, which
+      // is the intended fail-closed behaviour — never fall back to "全部".
+      if (selectedPath && selectedPath !== ALL_PATHS) params.path_id = selectedPath;
       if (dateRange?.[0]) params.created_start = dateRange[0].toISOString();
       if (dateRange?.[1]) params.created_end = dateRange[1].toISOString();
       const data = await listTables(params);
@@ -136,11 +142,24 @@ export default function DataAnalysisPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, keyword, dateRange]);
+  }, [page, pageSize, keyword, dateRange, selectedPath]);
 
   useEffect(() => {
     fetchTables();
   }, [fetchTables]);
+
+  // Switching path restarts paging: the previous page number could be past the
+  // end of a smaller filtered set. Skipped on first render (fetchTables above
+  // already loads page 1).
+  const pathEffectReady = useRef(false);
+  useEffect(() => {
+    if (!pathEffectReady.current) {
+      pathEffectReady.current = true;
+      return;
+    }
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPath]);
 
   useEffect(() => {
     if (!tables.some((table) => (table.pending_import_count || 0) > 0)) return;
@@ -499,6 +518,21 @@ export default function DataAnalysisPage() {
 
   return (
     <div className={styles.container}>
+      <div style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: 20, alignItems: "start" }}>
+        {/* Path tree: shows which case each table is filed under and which agents
+            can read it. Read-only for now. */}
+        <Card bordered={false} styles={{ body: { padding: "10px 6px" } }}>
+          <div style={{ padding: "2px 8px 8px", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em", color: "rgba(0,0,0,0.45)" }}>
+            路径
+          </div>
+          <PathTreePanel
+            value={selectedPath}
+            onChange={setSelectedPath}
+            countKind="table"
+            refreshKey={total}
+          />
+        </Card>
+        <div style={{ minWidth: 0 }}>
       <Card bordered={false}>
         <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
           <Col>
@@ -575,6 +609,8 @@ export default function DataAnalysisPage() {
           }}
         />
       </Card>
+        </div>
+      </div>
 
       {/* Create Wizard */}
       <Modal
