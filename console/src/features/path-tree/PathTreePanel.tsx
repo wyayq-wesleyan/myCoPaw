@@ -22,6 +22,13 @@ interface Props {
   refreshKey?: number;
   /** Whether to show which agents are granted each node. */
   showAgents?: boolean;
+  /**
+   * Render the tree as read-only. Set when the page cannot actually filter by
+   * path (e.g. the knowledge service is not configured), so clicking a node does
+   * not fire a request that is guaranteed to fail and surface an error toast.
+   * The structure stays visible — it is still the useful part.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -43,6 +50,7 @@ export default function PathTreePanel({
   countKind = "document",
   refreshKey = 0,
   showAgents = true,
+  disabled = false,
 }: Props) {
   const [tree, setTree] = useState<PathNode[]>([]);
   const [loading, setLoading] = useState(true);
@@ -109,6 +117,14 @@ export default function PathTreePanel({
   const countOf = (node: PathNode) =>
     countKind === "document" ? node.document_count || 0 : node.table_count || 0;
 
+  // A disabled tree keeps showing structure but must not pretend to be a filter:
+  // acting on a click it cannot honour is what produced a failing request and an
+  // error toast.
+  const select = (pathId: string) => {
+    if (disabled) return;
+    onChange(pathId);
+  };
+
   /**
    * A node is rendered flat (indented by depth) rather than with a collapsing
    * Tree: the hierarchy is shallow in practice, and always-expanded keeps the
@@ -123,13 +139,16 @@ export default function PathTreePanel({
     return (
       <div key={node.id}>
         <div
-          className={`${styles.row} ${selected ? styles.rowActive : ""}`}
+          className={`${styles.row} ${selected ? styles.rowActive : ""} ${
+            disabled ? styles.rowDisabled : ""
+          }`}
           style={{ paddingLeft: 8 + depth * 14 }}
-          onClick={() => onChange(node.id)}
-          role="button"
-          tabIndex={0}
+          onClick={() => select(node.id)}
+          role={disabled ? undefined : "button"}
+          tabIndex={disabled ? undefined : 0}
           onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") onChange(node.id);
+            if (disabled) return;
+            if (event.key === "Enter" || event.key === " ") select(node.id);
           }}
         >
           <span className={styles.icon}>
@@ -173,12 +192,15 @@ export default function PathTreePanel({
   return (
     <div className={styles.panel}>
       <div
-        className={`${styles.row} ${value === ALL_PATHS ? styles.rowActive : ""}`}
-        onClick={() => onChange(ALL_PATHS)}
-        role="button"
-        tabIndex={0}
+        className={`${styles.row} ${value === ALL_PATHS ? styles.rowActive : ""} ${
+          disabled ? styles.rowDisabled : ""
+        }`}
+        onClick={() => select(ALL_PATHS)}
+        role={disabled ? undefined : "button"}
+        tabIndex={disabled ? undefined : 0}
         onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") onChange(ALL_PATHS);
+          if (disabled) return;
+          if (event.key === "Enter" || event.key === " ") select(ALL_PATHS);
         }}
       >
         <span className={styles.icon}>

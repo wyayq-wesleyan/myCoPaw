@@ -83,3 +83,16 @@
   margin: 6px 8px;
   background: rgba(0, 0, 0, 0.06);
 }
+
+/*
+ * Read-only state: the structure is still worth showing (which paths exist and
+ * who can read them), but the rows must not look clickable — a click that cannot
+ * be honoured would fire a request that fails and pop an error.
+ */
+.rowDisabled {
+  cursor: default;
+}
+
+.rowDisabled:hover {
+  background: transparent;
+}

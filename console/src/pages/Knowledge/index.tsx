@@ -470,10 +470,14 @@ export default function KnowledgePage() {
       pathEffectReady.current = true;
       return;
     }
+    // Nothing to filter when the knowledge service is unavailable: the request
+    // could only fail, and the failure would surface as an error toast on every
+    // click. The tree is rendered read-only in that state.
+    if (configured !== true) return;
     setPage(1);
     void loadDocuments({ page: 1, path_id: selectedPath });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPath]);
+  }, [selectedPath, configured]);
 
   /* ── Polling for active jobs ───────────────────────────────── */
 
@@ -706,7 +710,12 @@ export default function KnowledgePage() {
         <div className={styles.body}>
           <aside className={styles.sidebar}>
             <div className={styles.sidebarTitle}>路径</div>
-            <PathTreePanel value={selectedPath} onChange={setSelectedPath} countKind="document" />
+            <PathTreePanel
+              value={selectedPath}
+              onChange={setSelectedPath}
+              countKind="document"
+              disabled
+            />
           </aside>
           <div className={styles.content}>
             <Typography.Paragraph type="secondary">
