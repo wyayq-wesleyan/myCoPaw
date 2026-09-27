@@ -32,6 +32,11 @@ from ...config import load_config
 
 logger = logging.getLogger(__name__)
 
+# The account a single-account deployment (auth disabled) is treated as. The
+# codebase already uses it as that default: its workspace is ``default`` and
+# unowned agents are assigned to it.
+_SINGLE_ACCOUNT = "admin"
+
 router = APIRouter(prefix="/paths", tags=["paths"])
 
 
@@ -64,18 +69,53 @@ class BindAgentRequest(BaseModel):
 
 
 def _username(request: Request) -> str:
+    """The account whose paths this request may see or change.
+
+    With authentication **enabled**, an unresolvable identity is a hard 401:
+    scoping the request to a guessed account would expose that account's paths.
+
+    With authentication **disabled** (single-account deployments), there is no
+    account dimension to resolve, so the deployment's own account is used. It must
+    be a concrete name rather than empty — paths are stored per owner, so an empty
+    owner would resolve to an empty tree and make the feature look broken. Note
+    this is deliberately *not* a 401: the console's 401 interceptor clears the
+    session and redirects to the login page, so answering 401 on a deployment that
+    has no login would eject the user from the app.
+    """
     username = get_request_username(request)
-    if not username:
-        # Without an identity there is no account to scope to, and defaulting to
-        # an account (admin in particular) would hand out its material.
+    if username:
+        return username
+    if _auth_enabled():
         raise HTTPException(status_code=401, detail="无法确定当前账号。")
-    return username
+    # No account dimension: this deployment's own account is what the paths belong
+    # to. Returning a concrete name (rather than "") matters because paths are
+    # stored per owner, so an empty owner would resolve to an empty tree and make
+    # the feature look broken on single-account installs.
+    return _SINGLE_ACCOUNT
+
+
+def _auth_enabled() -> bool:
+    """Whether this deployment separates accounts; unknown counts as enabled."""
+    try:
+        from ..auth import is_auth_enabled
+
+        return bool(is_auth_enabled())
+    except Exception:  # noqa: BLE001 - unreadable flag must not widen access
+        return True
+
+
+
 
 
 def _owned_agent_ids(username: str) -> set[str]:
-    """Agent ids this account owns — the only ones it may attach a path to."""
+    """Agent ids this account owns — the only ones it may attach a path to.
+
+    ``username`` empty means "no account dimension" (auth disabled); the shared
+    ``user_agent_ids`` already returns every profile in that case, which is the
+    convention the rest of the console follows.
+    """
     try:
-        return set(user_agent_ids(load_config(), username))
+        return set(user_agent_ids(load_config(), username or None))
     except Exception:  # noqa: BLE001 - config failure means no visible agents
         logger.warning("paths: could not resolve owned agents", exc_info=True)
         return set()
@@ -83,7 +123,9 @@ def _owned_agent_ids(username: str) -> set[str]:
 
 def _path_or_404(path_id: str, username: str) -> dict[str, Any]:
     node = path_store.path_by_id(path_id)
-    if node is None or node["owner_username"] != username:
+    if node is None:
+        raise HTTPException(status_code=404, detail="路径不存在。")
+    if username and node["owner_username"] != username:
         # Same response for "missing" and "someone else's": distinguishing them
         # would confirm the existence of another account's paths.
         raise HTTPException(status_code=404, detail="路径不存在。")

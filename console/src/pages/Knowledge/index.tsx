@@ -697,11 +697,23 @@ export default function KnowledgePage() {
   }
 
   if (configured === false) {
+    // The path tree still renders here: paths are a platform-level structure that
+    // exists whether or not the knowledge service is deployed, and hiding it would
+    // make the account's case layout invisible exactly when someone is trying to
+    // understand their setup.
     return (
       <section className={styles.page}>
-        <Typography.Paragraph type="secondary">
-          知识服务尚未启用。管理员需要先部署独立知识服务，并为汇智小助手配置 QWENPAW_KNOWLEDGE_URL 与 QWENPAW_KNOWLEDGE_API_KEY。
-        </Typography.Paragraph>
+        <div className={styles.body}>
+          <aside className={styles.sidebar}>
+            <div className={styles.sidebarTitle}>路径</div>
+            <PathTreePanel value={selectedPath} onChange={setSelectedPath} countKind="document" />
+          </aside>
+          <div className={styles.content}>
+            <Typography.Paragraph type="secondary">
+              知识服务尚未启用。管理员需要先部署独立知识服务，并为汇智小助手配置 QWENPAW_KNOWLEDGE_URL 与 QWENPAW_KNOWLEDGE_API_KEY。
+            </Typography.Paragraph>
+          </div>
+        </div>
       </section>
     );
   }

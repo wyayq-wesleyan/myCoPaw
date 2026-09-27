@@ -401,11 +401,29 @@ async def verify(request: Request):
 
 
 def _request_username(request: Request) -> str:
+    """The caller's account for handlers that need one.
+
+    With authentication enabled, a missing/invalid token is a 401 — this is the
+    auth module, so that is the correct answer for its own endpoints (``/me``,
+    ``/users``).
+
+    With authentication **disabled**, there is no token to present and no account
+    dimension to resolve, so the deployment's own account is returned. Raising 401
+    there is actively harmful: the console's 401 interceptor clears the session and
+    redirects to the login page, so any handler that needs an account name would
+    eject the user from an app that has no login at all. Callers that reach this
+    (the knowledge proxy runs through here) would break the whole page.
+
+    A caller that genuinely requires an authenticated *human* should use
+    ``require_admin_access``/``verify_token`` directly rather than this helper.
+    """
     token = request.headers.get("Authorization", "")
     username = verify_token(token[7:]) if token.startswith("Bearer ") else None
-    if username is None:
+    if username:
+        return username
+    if is_auth_enabled():
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return username
+    return "admin"
 
 
 @router.get("/me", response_model=CurrentUserResponse)
