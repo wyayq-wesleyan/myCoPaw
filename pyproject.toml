@@ -56,6 +56,12 @@ dependencies = [
     # the TUI compatibility shim for Textualize/textual#6643; remove both
     # after Textual ships and QwenPaw verifies the upstream fix.
     "textual>=8.2.8,<8.2.9",
+    # 图分析（data_tables/graph_analysis.py）。scipy/numpy/pandas 由基础镜像
+    # 显式安装，这里一并声明以免依赖隐式环境；networkx 此前只作为 LightRAG
+    # 的传递依赖存在 —— LightRAG 更换存储后端时它会消失，因此显式钉住。
+    "networkx>=3.2",
+    "scipy>=1.11",
+    "numpy>=1.26",
     "psutil>=6.0.0",
     "openai>=2.0.0,<=2.33.0",
     # anyio 4.13.0: _deliver_cancellation busy-loop / getpid storm (QwenPaw#2632)
