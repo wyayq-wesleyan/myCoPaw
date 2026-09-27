@@ -126,7 +126,40 @@ async def lifespan(_: FastAPI):
     # happens before this lifespan runs, so attach the file handler now to get
     # the request logs onto the host as well.
     attach_to_uvicorn(_log_file_handler)
-    yield
+    migration_task = _start_graph_migration()
+    try:
+        yield
+    finally:
+        if migration_task is not None and not migration_task.done():
+            migration_task.cancel()
+            try:
+                await migration_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+
+def _start_graph_migration() -> asyncio.Task | None:
+    """启动 LightRAG 图谱命名迁移（后台执行，不阻塞服务就绪）。
+
+    迁移要逐个文档重建图谱记录，可能持续数分钟。放在后台是因为：图谱是检索的
+    **增强项**，本地文档检索不依赖它 —— 为它拖慢健康检查、让编排层以为服务
+    起不来是不划算的。迁移期间图谱证据暂时缺失，与升级前的行为一致，不会更差。
+
+    任务本身不抛异常（见 ``migrate_all_if_needed``），所以这里不需要额外的
+    异常处理；但启动失败（例如事件循环没有可用的任务工厂）也不能影响服务。
+    """
+    if not lightrag.enabled:
+        # 未配置 LightRAG：没有图谱可迁，连任务都不必建。
+        logger.info("lightrag: not configured; skipping graph migration")
+        return None
+    try:
+        return asyncio.create_task(
+            lightrag.migrate_all_if_needed(store),
+            name="lightrag-graph-migration",
+        )
+    except Exception:  # noqa: BLE001 - 启动路径不允许失败
+        logger.warning("lightrag: could not start graph migration", exc_info=True)
+        return None
 
 
 app = FastAPI(title="汇智知识服务", version="0.1.4", lifespan=lifespan)

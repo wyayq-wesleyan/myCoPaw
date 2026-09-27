@@ -363,6 +363,20 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_all_spaces_internal(self) -> list[dict[str, Any]]:
+        """List every space across all owners, for trusted maintenance tasks.
+
+        Startup maintenance (the LightRAG naming migration) runs with no request
+        context, so it has no owner to scope by — the same reason
+        :meth:`list_documents_internal` exists. Never expose this over HTTP:
+        unlike the scoped ``list_spaces``, it is not filtered by owner.
+        """
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM spaces ORDER BY created_at",
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_document(self, document_id: str, owner_id: str, is_admin: bool = False) -> dict[str, Any] | None:
         with self._connect() as db:
             row = db.execute(

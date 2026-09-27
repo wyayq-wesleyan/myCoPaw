@@ -462,10 +462,54 @@ def test_migration_skips_uncompleted_documents(bridge):
     br.delete_legacy_document = fake_delete_legacy
     br.insert = fake_insert
 
-    result = asyncio.run(br.migrate_legacy_documents(_Store(), "space-a"))
-    assert indexed == ["d1"], "只应迁移 completed 的文档"
+    # 迁移清单由 plan_migration 决定（只含 completed 的文档）；这里显式传入，
+    # 避免依赖真实 LightRAG 列举。
+    pending = [
+        {"space_id": "space-a", "document_id": "d1", "filename": "a.pdf"},
+    ]
+    result = asyncio.run(
+        br.migrate_legacy_documents(_Store(), "space-a", pending=pending),
+    )
+    assert indexed == ["d1"], "只应迁移清单里的文档"
     assert result["migrated"] == 1
     assert result["failed"] == 0
+
+
+def test_migration_only_touches_pending_items_of_its_own_space(bridge):
+    """传入的 pending 跨空间共用时，只处理本空间的部分。
+
+    启动迁移会一次性算好所有空间的清单再逐个执行；若这里不过滤空间，第二个
+    空间会把第一个空间的文档也重建一遍。
+    """
+    import asyncio
+
+    indexed: list[str] = []
+
+    class _Store:
+        def get_document_evidence(self, document_id):
+            return [{"location": "正文", "content": "x"}]
+
+    br = bridge.LightRAGBridge(_settings())
+
+    async def ok_legacy(source_name):
+        return True
+
+    async def fake_insert(**kwargs):
+        indexed.append(f"{kwargs['space_id']}:{kwargs['document_id']}")
+        return True
+
+    br.delete_legacy_document = ok_legacy
+    br.insert = fake_insert
+
+    pending = [
+        {"space_id": "space-a", "document_id": "a1", "filename": "a.pdf"},
+        {"space_id": "space-b", "document_id": "b1", "filename": "b.pdf"},
+    ]
+    result = asyncio.run(
+        br.migrate_legacy_documents(_Store(), "space-a", pending=pending),
+    )
+    assert indexed == ["space-a:a1"]
+    assert result["migrated"] == 1
 
 
 def test_migration_isolates_one_failing_document(bridge):
@@ -496,7 +540,14 @@ def test_migration_isolates_one_failing_document(bridge):
     br.delete_legacy_document = fake_delete_legacy
     br.insert = fake_insert
 
-    result = asyncio.run(br.migrate_legacy_documents(_Store(), "space-a"))
+    pending = [
+        {"space_id": "space-a", "document_id": "d1", "filename": "a.pdf"},
+        {"space_id": "space-a", "document_id": "d2", "filename": "boom.pdf"},
+        {"space_id": "space-a", "document_id": "d3", "filename": "c.pdf"},
+    ]
+    result = asyncio.run(
+        br.migrate_legacy_documents(_Store(), "space-a", pending=pending),
+    )
     assert result["migrated"] == 2
     assert result["failed"] == 1
     failed_ids = [
@@ -528,3 +579,219 @@ def test_migration_reports_disabled_bridge(bridge):
     result = asyncio.run(br.migrate_legacy_documents(_Store(), "space-a"))
     assert result["enabled"] is False
     assert result["migrated"] == 0
+
+
+# --- 启动自动迁移：判定逻辑 -------------------------------------------------
+
+
+def _fake_store(spaces, docs_by_space, evidence=None):
+    """构造一个最小 store：列出全部空间、每个空间的文档、以及文档分片。"""
+    ev = evidence or {}
+
+    class _Store:
+        def list_all_spaces_internal(self):
+            return [{"id": s} for s in spaces]
+
+        def list_documents_internal(self, space_id):
+            return docs_by_space.get(space_id, [])
+
+        def get_document_evidence(self, document_id):
+            return ev.get(document_id, [{"location": "正文", "content": "x"}])
+
+    return _Store()
+
+
+def _completed(document_id, filename):
+    return {"id": document_id, "filename": filename, "status": "completed"}
+
+
+def test_plan_migration_flags_only_documents_missing_from_lightrag(bridge):
+    """判定依据是「期望的 doc_id 是否已在 LightRAG 里」。
+
+    已迁移的文档其新 doc_id 会出现在列举结果里，因此不会被重复迁移 —— 这让
+    判定天然幂等，而且不需要维护本地记账表（记账会与实际状态漂移）。
+    """
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings())
+    space = "space-a"
+    docs = [_completed("d1", "a.pdf"), _completed("d2", "b.pdf")]
+    store = _fake_store([space], {space: docs})
+
+    already = bridge._lightrag_doc_id(bridge._source_ref(space, "d1", "a.pdf"))
+
+    async def fake_fetch():
+        return {already}
+
+    br.fetch_indexed_doc_ids = fake_fetch
+    pending = asyncio.run(br.plan_migration(store))
+    assert pending == [
+        {"space_id": space, "document_id": "d2", "filename": "b.pdf"},
+    ]
+
+
+def test_plan_migration_returns_none_when_listing_fails(bridge):
+    """列举失败必须返回 None，而不是空列表。
+
+    空列表等于「全部已迁移」→ 永远不会迁移；也不该当成「全部待迁移」→ 每次
+    启动都全量重建。两者都错，所以用 None 表示「本轮无法判断」。
+    """
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings())
+
+    async def fake_fetch():
+        return None
+
+    br.fetch_indexed_doc_ids = fake_fetch
+    store = _fake_store(["s"], {"s": [_completed("d1", "a.pdf")]})
+    assert asyncio.run(br.plan_migration(store)) is None
+
+
+def test_plan_migration_ignores_uncompleted_documents(bridge):
+    """处理中/失败的文档不进迁移清单 —— 它们还没有分片可索引。"""
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings())
+    space = "s"
+    store = _fake_store(
+        [space],
+        {
+            space: [
+                _completed("d1", "a.pdf"),
+                {"id": "d2", "filename": "b.pdf", "status": "processing"},
+                {"id": "d3", "filename": "c.pdf", "status": "failed"},
+            ],
+        },
+    )
+
+    async def no_docs_indexed():
+        return set()
+
+    br.fetch_indexed_doc_ids = no_docs_indexed
+    pending = asyncio.run(br.plan_migration(store))
+    assert [p["document_id"] for p in pending] == ["d1"]
+
+
+def test_plan_migration_spans_every_space(bridge):
+    """必须遍历所有账号的空间 —— 启动时没有请求上下文，不能只处理一个账号。"""
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings())
+    store = _fake_store(
+        ["space-a", "space-b"],
+        {
+            "space-a": [_completed("a1", "x.pdf")],
+            "space-b": [_completed("b1", "y.pdf")],
+        },
+    )
+
+    async def no_docs_indexed():
+        return set()
+
+    br.fetch_indexed_doc_ids = no_docs_indexed
+    pending = asyncio.run(br.plan_migration(store))
+    assert {p["space_id"] for p in pending} == {"space-a", "space-b"}
+    assert len(pending) == 2
+
+
+def test_migrate_all_skips_when_nothing_pending(bridge):
+    """无需迁移时不做任何写入，只报告 up-to-date。"""
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings())
+    store = _fake_store(["s"], {"s": [_completed("d1", "a.pdf")]})
+
+    indexed = bridge._lightrag_doc_id(bridge._source_ref("s", "d1", "a.pdf"))
+
+    async def already():
+        return {indexed}
+
+    br.fetch_indexed_doc_ids = already
+
+    async def must_not_insert(**kwargs):  # pragma: no cover
+        raise AssertionError("no writes expected when nothing is pending")
+
+    br.insert = must_not_insert
+    result = asyncio.run(br.migrate_all_if_needed(store))
+    assert result["needed"] is False
+    assert result["migrated"] == 0
+
+
+def test_migrate_all_executes_when_pending(bridge):
+    """有待迁移项时自动执行，并报告数量。"""
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings())
+    store = _fake_store(["s"], {"s": [_completed("d1", "a.pdf")]})
+
+    async def none_indexed():
+        return set()
+
+    br.fetch_indexed_doc_ids = none_indexed
+
+    async def fake_delete_legacy(source_name):
+        return True
+
+    async def fake_insert(**kwargs):
+        return True
+
+    br.delete_legacy_document = fake_delete_legacy
+    br.insert = fake_insert
+
+    result = asyncio.run(br.migrate_all_if_needed(store))
+    assert result["needed"] is True
+    assert result["migrated"] == 1
+    assert result["failed"] == 0
+
+
+def test_migrate_all_is_inert_when_lightrag_is_not_configured(bridge):
+    """未配置 LightRAG 时不该建任务、也不该碰 store。"""
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings(lightrag_url=""))
+
+    class _Store:
+        def list_all_spaces_internal(self):  # pragma: no cover
+            raise AssertionError("must not touch the store when disabled")
+
+    result = asyncio.run(br.migrate_all_if_needed(_Store()))
+    assert result == {"enabled": False, "needed": False}
+
+
+def test_migrate_all_never_raises_on_planning_failure(bridge):
+    """启动路径上任何失败都只能降级为日志 —— 不能把服务拉不起来。"""
+    import asyncio
+
+    br = bridge.LightRAGBridge(_settings())
+
+    async def boom():
+        raise RuntimeError("simulated planning failure")
+
+    br.plan_migration = boom
+    result = asyncio.run(br.migrate_all_if_needed(object()))
+    assert result["enabled"] is True
+    assert result["needed"] is None
+
+
+def test_startup_runs_migration_in_the_background():
+    """迁移必须挂在 lifespan 上，且是后台任务。
+
+    同步等待会让健康检查在数分钟内失败，编排层可能判定启动失败；而图谱只是
+    检索增强项，完全可以在服务就绪后再补。
+    """
+    source = (KNOWLEDGE_SERVICE / "app" / "main.py").read_text(encoding="utf-8")
+    assert "_start_graph_migration" in source
+    assert "asyncio.create_task" in source
+    assert "migrate_all_if_needed" in source
+    # 必须在 lifespan 里被调用。
+    lifespan_body = source.split("@asynccontextmanager", 1)[1].split("app = FastAPI", 1)[0]
+    assert "_start_graph_migration()" in lifespan_body
+    # 不该用 await 直接等 —— 那就是同步阻塞。
+    assert "await _start_graph_migration" not in source
+
+
+def test_startup_cancels_migration_task_on_shutdown():
+    """关停时要取消未完成的迁移，避免留下悬挂任务。"""
+    source = (KNOWLEDGE_SERVICE / "app" / "main.py").read_text(encoding="utf-8")
+    assert "migration_task.cancel()" in source

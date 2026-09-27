@@ -86,10 +86,13 @@ def test_pagerank_prefers_the_hub_over_peripheral_leaf():
 
 
 def test_unknown_ranking_method_is_rejected():
-    """未知口径要报可读错误，而不是静默返回空。"""
+    """未知口径要报可读错误，而不是静默返回空。
+
+    静默返回空会被误读成「数据里没有关系」，比报错更糟。
+    """
     graph = ga.build_graph(ga.normalize_edges([("A", "B")]))
     with pytest.raises(ga.GraphAnalysisError, match="不支持的关联度口径"):
-        ga.rank_nodes(graph, method="betweenness")
+        ga.rank_nodes(graph, method="definitely_not_a_method")
 
 
 # --- 社区发现 ---------------------------------------------------------------
@@ -137,7 +140,10 @@ def test_louvain_is_deterministic():
 
 def test_louvain_refuses_oversized_input_with_actionable_message():
     """超限要明确拒绝并给出替代方案，而不是跑几分钟后 OOM。"""
-    rows = [(f"n{i}", f"n{i + 1}") for i in range(ga.LOUVAIN_MAX_EDGES + 10)]
+    rows = [
+        (f"n{i}", f"n{i + 1}")
+        for i in range(ga.HEAVY_MAX_EDGES + 10)
+    ]
     graph = ga.build_graph(ga.normalize_edges(rows))
     with pytest.raises(ga.GraphAnalysisError, match="connected_components"):
         ga.louvain_communities(graph)
@@ -377,3 +383,351 @@ def test_tool_requires_the_edge_endpoints():
     # 可选参数应有默认值，模型可以不传。
     for name in ("weight_column", "source", "target", "where"):
         assert params[name].default is None, name
+
+
+# --- 扩充的算法（每个都对照已知答案）---------------------------------------
+
+
+def _two_rings_bridged():
+    """两个 4 人圈，由唯一一条边相连。
+
+    这个形状对多个算法都有确定的答案，适合逐项校验：
+    圈内两两互连（团），跨圈只有一条桥，两个圈交接处的节点是割点。
+    """
+    rows = []
+    for group in ("X", "Y"):
+        for a in range(1, 5):
+            for b in range(a + 1, 5):
+                rows.append((f"{group}{a}", f"{group}{b}"))
+    rows.append(("X1", "Y1"))  # 唯一的桥
+    return ga.build_graph(ga.normalize_edges(rows))
+
+
+def test_clustering_coefficient_is_one_inside_a_clique():
+    """团内每个节点的聚集系数都是 1（联系人之间两两认识）。
+
+    这正是它识别小圈子成员的依据；若算法退化成全图平均值就失去意义。
+    """
+    graph = _two_rings_bridged()
+    ranked = dict(ga.clustering_coefficient(graph))
+    for node in ("X2", "X3", "X4"):
+        assert ranked[node] == pytest.approx(1.0), node
+    # X1 连到 Y1，那个联系人不在 X 圈内，所以系数小于 1。
+    assert ranked["X1"] < 1.0
+
+
+def test_clustering_excludes_nodes_without_enough_contacts():
+    """度数为 0/1 的节点系数无意义，应被剔除。
+
+    否则一个只有一条关系的节点会以系数 0 排进列表，看起来像「孤立者」，
+    实际只是样本不足。
+    """
+    graph = ga.build_graph(ga.normalize_edges([("A", "B"), ("C", "D"), ("D", "E")]))
+    ranked = dict(ga.clustering_coefficient(graph))
+    assert "A" not in ranked  # 度数 1
+    assert "C" not in ranked  # 度数 1
+
+
+def test_core_numbers_identify_the_dense_core():
+    """k-core 层级：团内节点层级应高于桥接节点。
+
+    桥接节点虽然连接两个圈，但它所在的子结构没有圈内紧密。
+    """
+    graph = _two_rings_bridged()
+    ranked = dict(ga.core_numbers(graph))
+    assert ranked["X2"] >= ranked["X1"]
+
+
+def test_articulation_points_find_the_bridge_endpoints():
+    """割点必须是桥的两端 —— 去掉它们，两个圈就断开。
+
+    这是「关键联络人」的判定依据，对侦查（谁把两个团伙连起来）直接有用。
+    """
+    graph = _two_rings_bridged()
+    points = ga.key_nodes(graph, kind="articulation_points")
+    assert points == ["X1", "Y1"]
+
+
+def test_bridges_find_the_single_connecting_edge():
+    """桥只有一条，且正是两个圈之间那条边。"""
+    graph = _two_rings_bridged()
+    assert ga.key_nodes(graph, kind="bridges") == ["X1|Y1"]
+
+
+def test_key_nodes_has_no_false_positives_in_a_clique():
+    """完全图里没有割点，也没有桥 —— 不存在「去掉就分裂」的点或边。
+
+    这条防的是「把所有节点都报成关键点」这种看似有用实则误导的输出。
+    """
+    rows = [(f"N{a}", f"N{b}") for a in range(1, 6) for b in range(a + 1, 6)]
+    graph = ga.build_graph(ga.normalize_edges(rows))
+    assert ga.key_nodes(graph, kind="articulation_points") == []
+    assert ga.key_nodes(graph, kind="bridges") == []
+
+
+def test_all_simple_paths_enumerates_distinct_routes():
+    """A 到 D 有三条不重复路径（经 B、经 C、经 B→C）。"""
+    graph = ga.build_graph(
+        ga.normalize_edges(
+            [("A", "B"), ("B", "D"), ("A", "C"), ("C", "D"), ("B", "C")],
+        ),
+    )
+    paths = ga.all_simple_paths(graph, "A", "D")
+    as_sets = {tuple(p) for p in paths}
+    assert ("A", "B", "D") in as_sets
+    assert ("A", "C", "D") in as_sets
+    assert ("A", "B", "C", "D") in as_sets
+    # 短路径优先。
+    assert paths[0] == ["A", "B", "D"] or paths[0] == ["A", "C", "D"]
+
+
+def test_all_simple_paths_respects_the_limit():
+    """路径数是指数级的，必须有上限 —— 否则大图上会耗尽内存。"""
+    rows = [(f"n{i}", f"n{i + 1}") for i in range(6)]
+    rows += [(f"n{i}", f"n{i + 2}") for i in range(4)]
+    graph = ga.build_graph(ga.normalize_edges(rows))
+    paths = ga.all_simple_paths(graph, "n0", "n5", limit=2)
+    assert len(paths) <= 2
+
+
+def test_all_simple_paths_unreachable_is_readable():
+    graph = ga.build_graph(ga.normalize_edges([("A", "B"), ("C", "D")]))
+    with pytest.raises(ga.GraphAnalysisError, match="没有可达路径"):
+        ga.all_simple_paths(graph, "A", "C")
+
+
+def test_label_propagation_recovers_the_two_rings():
+    """标签传播应把两个圈分开（与 Louvain 的结论一致）。"""
+    graph = _two_rings_bridged()
+    communities = [set(c) for c in ga.label_propagation_communities(graph)]
+    assert {frozenset({f"X{i}" for i in range(1, 5)}), frozenset({f"Y{i}" for i in range(1, 5)})} == {
+        frozenset(c) for c in communities
+    }
+
+
+def test_k_components_is_stricter_than_connected_components():
+    """k-连通比连通分量严格：两个圈由一条桥相连时，它把两个圈分开而不是并成一群。
+
+    这正是它的价值 —— 「仅仅能连上」不等于「结构紧密」。连通分量只能给出
+    「1 个 8 人群体」，k-连通给出「2 个 4 人圈」。
+    """
+    graph = _two_rings_bridged()
+    assert ga.connected_components(graph) == [
+        ["X1", "X2", "X3", "X4", "Y1", "Y2", "Y3", "Y4"],
+    ]
+    assert ga.k_components(graph, k=3) == [
+        ["X1", "X2", "X3", "X4"],
+        ["Y1", "Y2", "Y3", "Y4"],
+    ]
+
+
+def test_k_components_reports_only_the_deepest_level():
+    """只返回最深层级，不把更宽松的层级混进来。
+
+    ``k_components`` 会返回 level 1..k，而低层级是高层的严格超集（level 1
+    就是整个连通分量）。混在一起会把整块图当成 k-连通群组报出来，退化成
+    连通分量，反而盖住真正紧密的小群组。
+    """
+    graph = _two_rings_bridged()
+    groups = ga.k_components(graph, k=3)
+    assert all(len(group) == 4 for group in groups), "不该出现覆盖全图的群组"
+
+
+def test_predict_links_ranks_common_neighbours_highest():
+    """共同联系人越多，分值越高。"""
+    # A-B-C 链 + D 同时连 A 与 C：D 与 B 有一个很强的共同邻居关系。
+    graph = ga.build_graph(
+        ga.normalize_edges(
+            [("A", "B"), ("B", "C"), ("D", "A"), ("D", "C"), ("D", "B")],
+        ),
+    )
+    # D 与 A/C 已直连，因此候选里不该再出现它们。
+    results = ga.predict_links(graph, method="jaccard", limit=10)
+    pairs = {(u, v) for u, v, _s in results}
+    assert ("A", "C") in pairs, "A 与 C 有共同联系人 B、D，应被预测"
+    assert ("A", "B") not in pairs, "已直连的不该出现在预测里"
+
+
+def test_predict_links_rejects_unknown_method():
+    graph = ga.build_graph(ga.normalize_edges([("A", "B"), ("B", "C")]))
+    with pytest.raises(ga.GraphAnalysisError, match="不支持的预测口径"):
+        ga.predict_links(graph, method="nope")
+
+
+def test_find_cliques_returns_the_full_clique():
+    """团必须是互相两两直连的完整集合。"""
+    graph = _two_rings_bridged()
+    cliques = ga.find_cliques(graph, center="X2", radius=2, min_size=4)
+    biggest = max(cliques, key=len)
+    assert len(biggest) == 4
+    assert biggest == ["X1", "X2", "X3", "X4"]
+
+
+def test_find_cliques_respects_min_size():
+    """小于 min_size 的团不返回，避免噪声淹没结论。"""
+    graph = ga.build_graph(ga.normalize_edges([("A", "B"), ("B", "C")]))
+    # 只有一条链，没有任何 3 团。
+    assert ga.find_cliques(graph, center="B", radius=2, min_size=3) == []
+
+
+def test_find_cycles_finds_a_triangle():
+    """三点闭环应被找到，且闭合展示。"""
+    graph = ga.build_graph(
+        ga.normalize_edges([("A", "B"), ("B", "C"), ("C", "A")]),
+    )
+    cycles = ga.find_cycles(graph, center="A", radius=2, max_length=3)
+    assert [sorted(c) for c in cycles] == [["A", "B", "C"]]
+
+
+def test_cliques_and_cycles_require_a_real_center():
+    """中心节点不存在时要给可读错误，而不是空结果。
+
+    空结果会被误读成「这个人身边没有紧密团体」。
+    """
+    graph = ga.build_graph(ga.normalize_edges([("A", "B")]))
+    with pytest.raises(ga.GraphAnalysisError, match="不在关系数据中"):
+        ga.find_cliques(graph, center="ZZZ")
+    with pytest.raises(ga.GraphAnalysisError, match="不在关系数据中"):
+        ga.find_cycles(graph, center="ZZZ")
+
+
+def test_eigenvector_centrality_ranks_the_hub_first():
+    graph = ga.build_graph(
+        ga.normalize_edges([("HUB", "L1"), ("HUB", "L2"), ("HUB", "L3")]),
+    )
+    ranked = dict(ga.rank_nodes(graph, method="eigenvector", top_n=10))
+    assert ranked["HUB"] == max(ranked.values())
+
+
+def test_betweenness_is_sampled_and_marks_the_bridge():
+    """介数中心性必须采样（精确版在十万级关系上要十几分钟）。
+
+    这里验证采样后仍能识别桥接节点 —— 这正是介数的用途。
+    """
+    graph = _two_rings_bridged()
+    ranked = dict(ga.rank_nodes(graph, method="betweenness", top_n=10))
+    assert ranked["X1"] > ranked["X2"], "桥接点的中介作用应高于圈内成员"
+
+
+# --- 成本分级 ---------------------------------------------------------------
+
+
+def test_every_algorithm_declares_a_cost_tier():
+    """每个算法都必须声明成本档位。
+
+    没有档位就意味着没有规模上限：介数中心性精确版在十万级关系上要 15 分钟，
+    漏掉分级会让用户点一下就把服务挂住。
+    """
+    for name, cost in ga.ALGORITHMS.items():
+        assert cost.tier in ("light", "heavy", "extreme"), name
+        assert cost.description, name
+        if cost.tier != "light":
+            assert cost.max_edges is not None, f"{name} 是重算法却没有上限"
+
+
+def test_light_algorithms_have_no_scale_cap():
+    """轻量算法必须能在任意规模上跑通 —— 给它们加上限会挡住正常用法。"""
+    big = ga.build_graph(
+        ga.normalize_edges([(f"n{i}", f"n{i + 1}") for i in range(1000)]),
+    )
+    for name in ("connected_components", "pagerank", "degree_centrality", "core_number"):
+        ga.check_scale(name, big)  # 不抛异常
+
+
+def test_extreme_algorithms_are_capped_much_lower_than_heavy():
+    """极重算法的上限必须显著低于重算法，否则分级失去意义。"""
+    assert (
+        ga.ALGORITHMS["betweenness_centrality"].max_edges
+        < ga.ALGORITHMS["louvain"].max_edges
+    )
+    assert (
+        ga.ALGORITHMS["closeness_centrality"].max_edges
+        < ga.ALGORITHMS["label_propagation"].max_edges
+    )
+
+
+def test_scale_check_message_names_a_faster_alternative():
+    """超限信息必须给出可执行的替代方案，而不是只说「太大了」。"""
+    graph = ga.build_graph(
+        ga.normalize_edges(
+            [(f"n{i}", f"n{i + 1}") for i in range(ga.EXTREME_MAX_EDGES + 10)],
+        ),
+    )
+    with pytest.raises(ga.GraphAnalysisError) as excinfo:
+        ga.check_scale("betweenness_centrality", graph)
+    message = str(excinfo.value)
+    assert "pagerank" in message
+    assert "where" in message
+
+
+def test_unknown_algorithm_is_rejected_with_the_full_list():
+    graph = ga.build_graph(ga.normalize_edges([("A", "B")]))
+    with pytest.raises(ga.GraphAnalysisError) as excinfo:
+        ga.check_scale("does_not_exist", graph)
+    assert "connected_components" in str(excinfo.value)
+
+
+def test_subgraph_enumeration_caps_the_neighbourhood():
+    """团/环枚举必须限制邻域规模 —— 全图枚举不收敛。
+
+    造一个明显超过 SUBGRAPH_MAX_NODES 的图，radius 足够大以覆盖全图。
+    """
+    size = ga.SUBGRAPH_MAX_NODES + 100
+    graph = ga.build_graph(
+        ga.normalize_edges([(f"n{i}", f"n{i + 1}") for i in range(size)]),
+    )
+    with pytest.raises(ga.GraphAnalysisError, match="枚举上限"):
+        ga.find_cliques(graph, center="n0", radius=size)
+
+
+def test_group_connectivity_reports_the_true_value_not_the_requested_k():
+    """连通度必须由图的实际形状决定，不能照抄请求的 k。
+
+    ``nx.k_components`` 会把图能达到的最高层级**重复填充**到所有更高的请求
+    层级上：8 人完全图请求 k=5 与 k=7 返回一样，但真实连通度是 7。照抄 k 会
+    低估紧密程度 —— 对「这个团伙有多难拆散」这种判断是实质性误导。
+    """
+    clique = ga.build_graph(
+        ga.normalize_edges(
+            [(f"N{a}", f"N{b}") for a in range(1, 7) for b in range(a + 1, 7)],
+        ),
+    )
+    groups = [sorted(clique.nodes())]
+    # 6 人完全图：去掉 5 个成员才会拆散。
+    assert ga.group_connectivity(clique, groups) == [5]
+
+
+def test_group_connectivity_of_a_chain_is_one():
+    """链式结构的连通度是 1（去掉任意一个中间人就会断）。"""
+    graph = ga.build_graph(
+        ga.normalize_edges([("A", "B"), ("B", "C"), ("C", "D")]),
+    )
+    assert ga.group_connectivity(graph, [["A", "B", "C", "D"]]) == [1]
+
+
+def test_group_connectivity_handles_oversized_groups_without_failing():
+    """过大的群组记为 0（未知），不阻塞其余结果。
+
+    节点连通度是超线性的；一个大群组算不出来时不该让整次分析失败。
+    """
+    size = ga.SUBGRAPH_MAX_NODES + 10
+    graph = ga.build_graph(
+        ga.normalize_edges([(f"n{i}", f"n{i + 1}") for i in range(size)]),
+    )
+    big_group = [f"n{i}" for i in range(size + 1)]
+    assert ga.group_connectivity(graph, [big_group]) == [0]
+
+
+def test_every_declared_algorithm_is_actually_implemented():
+    """清单里的每个算法都要能在工具层被派发。
+
+    清单与实现分处两个模块，容易只加清单不加实现 —— 那样模型会调到一个
+    声称存在但实际不工作的算法。
+    """
+    import inspect
+
+    from qwenpaw.agents.tools import graph_analysis as tool
+
+    dispatch = inspect.getsource(tool._run_analysis)
+    for name in ga.ALGORITHMS:
+        assert f'"{name}"' in dispatch, f"{name} 在清单里但没有派发实现"

@@ -340,7 +340,113 @@ class LightRAGBridge:
             )
             return False
 
-    async def migrate_legacy_documents(self, store, space_id: str) -> dict[str, Any]:
+    async def fetch_indexed_doc_ids(self) -> set[str] | None:
+        """列出 LightRAG 当前已索引的 doc id；列举失败时返回 ``None``。
+
+        用于判断「哪些文档还没迁移」—— 已迁移的文档其新 doc_id 会出现在这里。
+        返回 ``None`` 而不是空集合是刻意的：**列举失败与「一个都没有」必须区分**。
+        把失败当成「全都没有」会导致每次启动都全量重建，虽有缓存兜底但会拖慢
+        启动；所以失败时调用方应放弃本轮迁移，等下次启动再试。
+        """
+        if not self.enabled:
+            return None
+        ids: set[str] = set()
+        page = 1
+        # 页大小上限 200；给一个页数上限，避免异常时无限翻页。
+        page_size = 200
+        max_pages = 200
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                while page <= max_pages:
+                    response = await client.post(
+                        f"{self.settings.lightrag_url}/documents/paginated",
+                        headers=self._headers(),
+                        json={
+                            "page": page,
+                            "page_size": page_size,
+                            "sort_field": "id",
+                            "sort_direction": "asc",
+                        },
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    documents = payload.get("documents") or []
+                    for doc in documents:
+                        doc_id = doc.get("id")
+                        if doc_id:
+                            ids.add(str(doc_id))
+                    if len(documents) < page_size:
+                        break
+                    page += 1
+                else:
+                    logger.warning(
+                        "lightrag: document listing hit the page cap (%d); "
+                        "treating the result as incomplete",
+                        max_pages,
+                    )
+                    return None
+        except Exception:
+            logger.warning(
+                "lightrag: could not list indexed documents; skipping this "
+                "migration pass (will retry on a later start)",
+                exc_info=True,
+            )
+            return None
+        return ids
+
+    def _expected_doc_ids(self, store, space_id: str) -> dict[str, tuple[str, str]]:
+        """某空间里「按新命名应当存在」的 doc_id → (document_id, filename)。
+
+        只包含已完成文档 —— 处理中/失败的还没有分片可索引。
+        """
+        expected: dict[str, tuple[str, str]] = {}
+        for doc in store.list_documents_internal(space_id):
+            if doc.get("status") != "completed":
+                continue
+            filename = doc.get("filename") or ""
+            if not filename:
+                continue
+            document_id = doc["id"]
+            doc_id = _lightrag_doc_id(_source_ref(space_id, document_id, filename))
+            expected[doc_id] = (document_id, filename)
+        return expected
+
+    async def plan_migration(self, store) -> list[dict[str, Any]] | None:
+        """判断哪些文档需要迁移。返回 ``None`` 表示本轮无法判断。
+
+        判定依据是**期望的 doc_id 是否已在 LightRAG 中**，而不是依赖任何本地
+        记账表：这样判断天然幂等、可自愈（从未成功索引过的文档也会被补上），
+        而且不需要新增状态表、不会出现「记账说迁移过、实际没有」的漂移。
+
+        代价是每个空间一次完整文档列举 —— 几十到几百条，启动时一次调用可接受。
+        """
+        indexed = await self.fetch_indexed_doc_ids()
+        if indexed is None:
+            return None
+        pending: list[dict[str, Any]] = []
+        for space in store.list_all_spaces_internal():
+            space_id = space["id"]
+            for doc_id, (document_id, filename) in self._expected_doc_ids(
+                store, space_id,
+            ).items():
+                if doc_id in indexed:
+                    continue
+                pending.append(
+                    {
+                        "space_id": space_id,
+                        "document_id": document_id,
+                        "filename": filename,
+                    },
+                )
+        return pending
+
+    async def migrate_legacy_documents(
+        self,
+        store,
+        space_id: str,
+        *,
+        pending: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """把一个空间的历史图谱记录迁移到空间作用域命名。
 
         升级前的来源标识是裸 ``filename``，LightRAG 存储下来后不含任何空间信息，
@@ -357,25 +463,45 @@ class LightRAGBridge:
         ``{file_path}`` 占位符，file 路径只用于生成引用），所以重建时
         **LLM 响应缓存会命中**，不产生新的抽取调用 —— 迁移只是数据库写入。
 
+        ``pending`` 可由 :meth:`plan_migration` 预先算好并跨空间复用（避免每个
+        空间重复列举一次 LightRAG）；不传则在本空间内自行判定。
+
         逐文档隔离失败：单个文档出错不影响其余，结果里逐条报告，便于断点重跑。
         """
         if not self.enabled:
             return {"enabled": False, "migrated": 0, "failed": 0, "details": []}
 
-        docs = store.list_documents_internal(space_id)
+        if pending is None:
+            indexed = await self.fetch_indexed_doc_ids()
+            if indexed is None:
+                return {
+                    "enabled": True,
+                    "space_id": space_id,
+                    "migrated": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "details": [],
+                    "reason": "could not list indexed documents",
+                }
+            targets = [
+                {
+                    "document_id": document_id,
+                    "filename": filename,
+                }
+                for doc_id, (document_id, filename) in self._expected_doc_ids(
+                    store, space_id,
+                ).items()
+                if doc_id not in indexed
+            ]
+        else:
+            targets = [item for item in pending if item["space_id"] == space_id]
+
         migrated = 0
         failed = 0
         details: list[dict[str, str]] = []
-        for doc in docs:
-            if doc.get("status") != "completed":
-                continue
-            document_id = doc["id"]
-            source_name = doc.get("filename") or ""
-            if not source_name:
-                details.append(
-                    {"document_id": document_id, "result": "skipped: no filename"},
-                )
-                continue
+        for item in targets:
+            document_id = item["document_id"]
+            source_name = item["filename"]
             try:
                 # 先删旧的无空间归属记录，再按新命名重建。
                 await self.delete_legacy_document(source_name)
@@ -413,7 +539,79 @@ class LightRAGBridge:
             "space_id": space_id,
             "migrated": migrated,
             "failed": failed,
+            "skipped": 0,
             "details": details,
+        }
+
+    async def migrate_all_if_needed(self, store) -> dict[str, Any]:
+        """启动时的入口：判断是否需要迁移，需要就自动执行。
+
+        - LightRAG 未配置 → 直接跳过（无图谱可迁）。
+        - 无法列举已索引文档（网络/服务异常）→ 放弃本轮，下次启动重试，
+          **不**误判为「全部需要迁移」。
+        - 无需迁移 → 只记一行日志，不做任何写入。
+        - 需要迁移 → 逐空间执行，单空间失败不影响其余。
+
+        本方法不抛异常：它跑在启动路径上，任何失败都只能降级为日志。
+        """
+        if not self.enabled:
+            return {"enabled": False, "needed": False}
+
+        try:
+            pending = await self.plan_migration(store)
+        except Exception:  # noqa: BLE001 - 启动路径不允许抛出
+            logger.warning("lightrag: migration planning failed", exc_info=True)
+            return {"enabled": True, "needed": None, "error": "planning failed"}
+
+        if pending is None:
+            return {"enabled": True, "needed": None, "error": "listing failed"}
+        if not pending:
+            logger.info("lightrag: graph naming is up to date; nothing to migrate")
+            return {"enabled": True, "needed": False, "migrated": 0, "failed": 0}
+
+        # 按空间归并，避免每个空间重复列举一次 LightRAG。
+        by_space: dict[str, list[dict[str, Any]]] = {}
+        for item in pending:
+            by_space.setdefault(item["space_id"], []).append(item)
+
+        logger.warning(
+            "lightrag: migrating %d document(s) in %d space(s) to the "
+            "space-scoped naming — this one-time upgrade makes the previously "
+            "unreachable graph evidence visible to retrieval",
+            len(pending),
+            len(by_space),
+        )
+
+        total_migrated = 0
+        total_failed = 0
+        per_space: list[dict[str, Any]] = []
+        for space_id, items in by_space.items():
+            try:
+                result = await self.migrate_legacy_documents(
+                    store, space_id, pending=items,
+                )
+            except Exception:  # noqa: BLE001 - 逐空间隔离
+                logger.warning(
+                    "lightrag: migration failed for space %s",
+                    space_id,
+                    exc_info=True,
+                )
+                result = {"migrated": 0, "failed": len(items)}
+            total_migrated += int(result.get("migrated", 0))
+            total_failed += int(result.get("failed", 0))
+            per_space.append({"space_id": space_id, **result})
+
+        logger.warning(
+            "lightrag: migration finished — %d migrated, %d failed",
+            total_migrated,
+            total_failed,
+        )
+        return {
+            "enabled": True,
+            "needed": True,
+            "migrated": total_migrated,
+            "failed": total_failed,
+            "spaces": per_space,
         }
 
     async def health(self) -> dict[str, Any]:
