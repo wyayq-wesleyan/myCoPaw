@@ -21,6 +21,8 @@ sharing one connection pool.
 from __future__ import annotations
 
 from .config import PLATFORM_SCHEMA, PlatformDbConfig, load_platform_db_config
+from . import paths
+from .path_migration import PathMigrationReport, migrate_into_path_scoping
 from .legacy_import import ImportReport, ImportResult, run_legacy_import
 from .pool import (
     PlatformStoreUnavailable,
@@ -47,6 +49,9 @@ __all__ = [
     "is_available",
     "last_error",
     "load_platform_db_config",
+    "PathMigrationReport",
+    "migrate_into_path_scoping",
+    "paths",
     "put_conn",
     "reset_pool",
     "run_legacy_import",

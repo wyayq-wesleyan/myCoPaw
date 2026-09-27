@@ -178,12 +178,92 @@ TOKEN_USAGE_MIGRATIONS: list[Migration] = [
     ),
 ]
 
+# --- path scoping ---------------------------------------------------------
+#
+# A user's knowledge and data resources used to be one flat bucket per account.
+# Case work needs a second isolation dimension *inside* an account: separate
+# cases must not see each other's material, while shared background knowledge
+# is visible to several of them. A "path" is that container — a node in a tree
+# that both a knowledge space and a data table can belong to, and that an agent
+# is granted access to.
+#
+# Three tables, deliberately minimal:
+#
+# * ``paths`` — the tree. ``parent_id`` is self-referencing so nesting is
+#   arbitrary (cases grouped by year, etc.). ``is_root`` marks the single
+#   per-account root, which is what the account's pre-existing default space
+#   migrates into; a partial unique index keeps exactly one per owner.
+#   ``NULLS NOT DISTINCT`` makes the same-name check apply at the root too —
+#   without it two roots could both be called "案件" because NULL parent_id
+#   values are normally considered distinct.
+#
+# * ``resource_bindings`` — which path a resource belongs to. The primary key
+#   is ``(resource_kind, resource_id)`` on purpose: **a resource belongs to
+#   exactly one path**. Allowing a document to sit in several paths would mean
+#   editing it in one case silently changes another, which is the opposite of
+#   the isolation this exists to provide.
+#
+# * ``agent_path_bindings`` — which paths an agent may read. Empty means
+#   nothing is visible (fail-closed); the upgrade binds every existing agent
+#   to its account's existing paths so behaviour is unchanged on day one.
+#
+# ``ON DELETE CASCADE`` from both child tables to ``paths`` keeps a deleted
+# path from leaving orphaned bindings behind. Deletion is further restricted in
+# application code to empty paths only.
+PATH_SCOPE_MIGRATIONS: list[Migration] = [
+    Migration(
+        "202609270001",
+        "path_scoping",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS "platform".paths (
+                id              TEXT PRIMARY KEY,
+                owner_username  TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                parent_id       TEXT REFERENCES "platform".paths (id) ON DELETE CASCADE,
+                is_root         BOOLEAN NOT NULL DEFAULT false,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE NULLS NOT DISTINCT (owner_username, parent_id, name)
+            )
+            """,
+            # Exactly one root per account: that is the account's default
+            # container, and the anchor the upgrade migrates existing data into.
+            'CREATE UNIQUE INDEX IF NOT EXISTS paths_one_root_per_owner '
+            'ON "platform".paths (owner_username) WHERE is_root',
+            'CREATE INDEX IF NOT EXISTS paths_owner ON "platform".paths (owner_username)',
+            'CREATE INDEX IF NOT EXISTS paths_parent ON "platform".paths (parent_id)',
+            """
+            CREATE TABLE IF NOT EXISTS "platform".resource_bindings (
+                path_id        TEXT NOT NULL REFERENCES "platform".paths (id) ON DELETE CASCADE,
+                resource_kind  TEXT NOT NULL,
+                resource_id    TEXT NOT NULL,
+                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (resource_kind, resource_id)
+            )
+            """,
+            'CREATE INDEX IF NOT EXISTS resource_bindings_path '
+            'ON "platform".resource_bindings (path_id)',
+            """
+            CREATE TABLE IF NOT EXISTS "platform".agent_path_bindings (
+                agent_id    TEXT NOT NULL,
+                path_id     TEXT NOT NULL REFERENCES "platform".paths (id) ON DELETE CASCADE,
+                granted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (agent_id, path_id)
+            )
+            """,
+            'CREATE INDEX IF NOT EXISTS agent_path_bindings_agent '
+            'ON "platform".agent_path_bindings (agent_id)',
+        ),
+    ),
+]
+
 # Everything the platform store owns, applied in one ordered pass at startup.
 ALL_MIGRATIONS: list[Migration] = [
     *HISTORY_MIGRATIONS,
     *AUDIT_MIGRATIONS,
     *IMPORT_STATE_MIGRATIONS,
     *TOKEN_USAGE_MIGRATIONS,
+    *PATH_SCOPE_MIGRATIONS,
 ]
 
 __all__ = [
@@ -191,5 +271,6 @@ __all__ = [
     "AUDIT_MIGRATIONS",
     "HISTORY_MIGRATIONS",
     "IMPORT_STATE_MIGRATIONS",
+    "PATH_SCOPE_MIGRATIONS",
     "TOKEN_USAGE_MIGRATIONS",
 ]

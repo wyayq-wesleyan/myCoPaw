@@ -102,6 +102,20 @@ async def _sync_scroll_history_on_startup() -> None:
         await run_sync_io(sync_all_scroll_agents)
     except Exception:  # noqa: BLE001 - session sync must never block startup
         logger.warning("session-sync: import/launch failed", exc_info=True)
+    # Path scoping runs last: it must see the final agent set, and the steps
+    # above do not depend on it. Cheap and idempotent (two statements per agent),
+    # and self-healing — an agent whose profile appeared after the previous boot
+    # gets its root grant here.
+    try:
+        from ..platform_store import migrate_into_path_scoping
+
+        report = await run_sync_io(migrate_into_path_scoping)
+        if getattr(report, "errors", None):
+            logger.warning(
+                "path-migration: completed with errors: %s", report.errors,
+            )
+    except Exception:  # noqa: BLE001 - must never block startup
+        logger.warning("path-migration: failed", exc_info=True)
 
 
 async def _browser_idle_watchdog(kernel: Any, interval: float) -> None:
