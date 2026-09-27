@@ -32,6 +32,50 @@ export interface PathResource {
   resource_id: string;
 }
 
+/**
+ * An error carrying the HTTP status, so callers can distinguish "this backend
+ * has no paths API" from a genuine failure.
+ */
+export class PathsApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "PathsApiError";
+    this.status = status;
+  }
+}
+
+/**
+ * Turn a failed response into something a person can act on.
+ *
+ * The raw body is `{"detail":"Not Found"}` in the most common failure — a new
+ * frontend talking to a backend that predates the paths API, which is exactly
+ * what a deploy that updates static assets before restarting the app looks like.
+ * Surfacing that JSON tells the user nothing; the message has to name the cause.
+ */
+async function failure(response: Response): Promise<PathsApiError> {
+  let detail = "";
+  try {
+    detail = (await response.text()).slice(0, 500);
+  } catch {
+    /* body unreadable — the status alone is enough */
+  }
+  if (response.status === 404) {
+    return new PathsApiError(
+      404,
+      "当前后端版本不含路径接口（404）。升级后需要重启应用，新的后端代码才会生效。",
+    );
+  }
+  if (response.status === 401) {
+    return new PathsApiError(401, "登录状态已失效，请重新登录。");
+  }
+  return new PathsApiError(
+    response.status,
+    `路径请求失败（${response.status}）${detail ? `：${detail}` : ""}`,
+  );
+}
+
 async function apiGet<T>(path: string, params?: Record<string, unknown>): Promise<T> {
   const url = new URLSearchParams();
   if (params) {
@@ -42,7 +86,7 @@ async function apiGet<T>(path: string, params?: Record<string, unknown>): Promis
   const query = url.toString();
   const apiPath = getApiUrl(path) + (query ? `?${query}` : "");
   const response = await fetch(apiPath, { headers: buildAuthHeaders() });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw await failure(response);
   return response.json();
 }
 
@@ -52,7 +96,7 @@ async function apiSend<T>(path: string, method: string, body?: unknown): Promise
     headers: { ...buildAuthHeaders(), "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) throw await failure(response);
   return response.json();
 }
 

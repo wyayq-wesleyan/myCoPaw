@@ -50,3 +50,22 @@ describe("PathTreePanel", () => {
     expect(row.closest('[role="button"]')).toBeNull();
   });
 });
+
+describe("PathTreePanel when the paths API is unavailable", () => {
+  it("shows the message and a retry instead of an empty panel", async () => {
+    // Re-mock with a rejecting loader. A stale backend is the realistic cause:
+    // the message already says so (see the API module's tests), and the retry
+    // lets the user continue once the app has been restarted — no full reload.
+    vi.doMock("../../api/modules/paths", () => ({
+      pathTree: async () => {
+        throw new Error("当前后端版本不含路径接口（404）。升级后需要重启应用。");
+      },
+      ALL_PATHS: "__all__",
+    }));
+    vi.resetModules();
+    const { default: Panel } = await import("./PathTreePanel");
+    render(<Panel value={ALL_PATHS} onChange={vi.fn()} />);
+    expect(await screen.findByText(/重启应用/)).toBeTruthy();
+    expect(screen.getByText("重试")).toBeTruthy();
+  });
+});

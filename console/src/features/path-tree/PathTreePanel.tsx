@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Empty, Spin, Tag, Tooltip, Typography } from "antd";
+import { Button, Empty, Spin, Tag, Tooltip, Typography } from "antd";
 import { FolderOutlined, GlobalOutlined, RobotOutlined } from "@ant-design/icons";
 import { pathTree, type PathNode } from "../../api/modules/paths";
 import styles from "./PathTreePanel.module.less";
@@ -97,11 +97,17 @@ export default function PathTreePanel({
   }
 
   if (error && tree.length === 0) {
+    // A missing paths API is the normal appearance of a deploy that has not
+    // restarted the app yet, so offer a retry instead of making the user reload
+    // the whole page once the backend catches up.
     return (
       <div className={styles.center}>
         <Text type="danger" className={styles.error}>
           {error}
         </Text>
+        <Button type="link" size="small" onClick={() => void load()}>
+          重试
+        </Button>
       </div>
     );
   }
