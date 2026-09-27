@@ -287,6 +287,10 @@ async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
 async def delete_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """Delete a document and all its related data."""
     owner_id, is_admin = scope
+    # Read the doc before deleting: graph cleanup needs its space and original
+    # filename to reconstruct the LightRAG document id (which is derived from
+    # a space-scoped source ref — see lightrag_bridge).
+    document = await asyncio.to_thread(store.get_document, document_id, owner_id, is_admin)
     result = await asyncio.to_thread(store.delete_document, document_id, owner_id, is_admin)
     if result == "not_found":
         raise HTTPException(status_code=404, detail="Document not found")
@@ -294,7 +298,12 @@ async def delete_document(document_id: str, scope: tuple[str, bool] = Depends(re
         raise HTTPException(status_code=409, detail="Document is being processed, please try again later")
     # Local PostgreSQL is authoritative; graph cleanup is best-effort and
     # must not make a successfully deleted document appear to fail.
-    asyncio.create_task(lightrag.delete_document(document_id))
+    if document:
+        space_id = document.get("space_id") or ""
+        source_name = document.get("filename") or ""
+        asyncio.create_task(
+            lightrag.delete_document(space_id, document_id, source_name),
+        )
     return {"deleted": True}
 
 
