@@ -510,6 +510,10 @@ QWENPAW_ENABLED_CHANNELS=console
 
 ## 5. 目录和配置说明
 
+> **升级前请先读 [`UPGRADE_AND_MIGRATION.md`](./UPGRADE_AND_MIGRATION.md)** ——
+> 该文件记录正式环境当前的版本基线、基线之后**需要迁移动作的改动**（数据库、
+> 依赖、部署），以及升级步骤与验证清单。涉及这三类内容的改动必须同步更新它。
+
 ```text
 src/qwenpaw/                  后端代码
 console/src/                  前端源代码
