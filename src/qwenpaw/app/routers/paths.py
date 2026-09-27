@@ -111,6 +111,106 @@ async def list_paths(request: Request) -> dict[str, Any]:
     return {"tree": [root.as_dict() for root in roots]}
 
 
+@router.get("/tree")
+async def path_tree_with_contents(request: Request) -> dict[str, Any]:
+    """The path tree enriched with what each node holds and which agents see it.
+
+    Separate from ``GET /paths`` because the extra facts are expensive: the
+    knowledge space list comes from the knowledge service over HTTP, and the data
+    table list from the registry. The plain tree endpoint stays cheap for callers
+    that only need the structure (drag-and-drop, pickers).
+
+    Each node carries:
+      * ``document_count`` / ``table_count`` — what the node itself holds;
+      * ``agents`` — the agents granted this node, so the UI can answer "who can
+        see this case" without opening anything;
+      * ``is_public`` — whether this is the account's public area (root), whose
+        contents include everything not yet filed under a path. Surfaced
+        explicitly because "unbound means public" is the one rule that is easy to
+        misread as "already isolated".
+    """
+    username = _username(request)
+    try:
+        roots = path_store.list_path_tree(username)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"路径列表读取失败：{exc}") from exc
+
+    # Best-effort enrichment: a failure here must not blank the tree, because the
+    # structure is still useful (and the caller can retry).
+    docs_by_space: dict[str, int] = {}
+    space_ids: list[str] = []
+    try:
+        from .knowledge import _service_headers, _service_url
+        import httpx
+
+        url = _service_url()
+        if url:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    f"{url}/v1/spaces", headers=_service_headers(username),
+                )
+                response.raise_for_status()
+                spaces = response.json() or []
+            space_ids = [str(item.get("id") or "") for item in spaces]
+            for space_id in space_ids:
+                if not space_id:
+                    continue
+                try:
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        response = await client.get(
+                            f"{url}/v1/spaces/{space_id}/documents",
+                            headers=_service_headers(username),
+                        )
+                        response.raise_for_status()
+                        docs_by_space[space_id] = len(response.json() or [])
+                except Exception:  # noqa: BLE001 - one space must not blank the tree
+                    logger.debug("paths: could not count docs in %s", space_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("paths: knowledge enrichment unavailable", exc_info=True)
+
+    table_ids: list[str] = []
+    tables_by_id: dict[str, dict[str, Any]] = {}
+    try:
+        from ...data_tables.store import SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn
+        import psycopg2.extras
+
+        conn = _get_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"SELECT id, table_name, path_id FROM {SYSTEM_TABLE_REGISTRY} "
+                    "WHERE owner_username = %s",
+                    (username,),
+                )
+                for row in cur.fetchall():
+                    table_ids.append(str(row["id"]))
+                    tables_by_id[str(row["id"])] = dict(row)
+        finally:
+            _put_conn(conn)
+    except Exception:  # noqa: BLE001
+        logger.warning("paths: data table enrichment unavailable", exc_info=True)
+
+    def decorate(node) -> dict[str, Any]:
+        data = node.as_dict()
+        visible_spaces = path_store.effective_space_ids_for_path(
+            node.id, username, space_ids,
+        ) or []
+        visible_tables = path_store.effective_table_ids_for_path(
+            node.id, username, table_ids,
+        ) or []
+        data["document_count"] = sum(
+            docs_by_space.get(space_id, 0) for space_id in visible_spaces
+        )
+        data["table_count"] = len(visible_tables)
+        data["space_count"] = len(visible_spaces)
+        data["agents"] = sorted(path_store.agents_for_path(node.id))
+        data["is_public"] = bool(node.is_root)
+        data["children"] = [decorate(child) for child in node.children]
+        return data
+
+    return {"tree": [decorate(root) for root in roots]}
+
+
 @router.get("/grants")
 async def list_grants(request: Request) -> dict[str, Any]:
     """Which paths each of this account's agents may read.

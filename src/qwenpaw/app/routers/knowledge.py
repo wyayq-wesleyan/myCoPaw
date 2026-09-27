@@ -112,6 +112,63 @@ async def _forward(
         raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
 
 
+async def _resolve_path_document_filter(
+    request: Request,
+    path_id: str,
+) -> list[str] | None:
+    """Document ids visible under one path, or ``None`` if the path is not ours.
+
+    Returns an explicit id list rather than a predicate because the documents live
+    in the knowledge service: resolving here and filtering there keeps the path
+    model in one place (the platform store) instead of teaching the knowledge
+    service about it.
+
+    ``None`` means "unknown or foreign path" — the caller must treat that as *no
+    access*, never as "no filter".
+    """
+    username = _request_username(request)
+    from ...platform_store import paths as path_store
+
+    url = _service_url()
+    if not url:
+        raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            spaces_response = await client.get(
+                f"{url}/v1/spaces", headers=_service_headers(username),
+            )
+            spaces_response.raise_for_status()
+            spaces = spaces_response.json() or []
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
+
+    space_ids = [str(item.get("id") or "") for item in spaces if item.get("id")]
+    visible = path_store.effective_space_ids_for_path(path_id, username, space_ids)
+    if visible is None:
+        return None
+    if not visible:
+        return []
+
+    doc_ids: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            for space_id in visible:
+                response = await client.get(
+                    f"{url}/v1/spaces/{space_id}/documents",
+                    headers=_service_headers(username),
+                )
+                if response.status_code == 404:
+                    continue
+                response.raise_for_status()
+                for item in response.json() or []:
+                    doc_id = item.get("id")
+                    if doc_id:
+                        doc_ids.append(str(doc_id))
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
+    return doc_ids
+
+
 @router.post("/documents/upload")
 async def upload_knowledge_document(
     request: Request,
@@ -198,9 +255,18 @@ async def list_knowledge_documents_v2(
     created_before: str | None = None,
     doc_ids: str | None = None,
     status: str | None = None,
+    path_id: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> Any:
+    """List the account's documents, optionally narrowed to one path.
+
+    ``path_id`` filtering is applied **here**, in the main app, not in the
+    knowledge service: the path model (and the rule that an unfiled document
+    belongs to the account's public area) lives in the platform store, which the
+    knowledge service does not depend on. The document id set is resolved from the
+    path first, then handed to the knowledge service as an explicit id filter.
+    """
     params: dict[str, str] = {}
     if filename:
         params["filename"] = filename
@@ -212,6 +278,16 @@ async def list_knowledge_documents_v2(
         params["doc_ids"] = doc_ids
     if status:
         params["status"] = status
+    if path_id:
+        resolved = await _resolve_path_document_filter(request, path_id)
+        if resolved is None:
+            # Unknown / foreign path: return an empty page rather than falling
+            # back to "everything", which would leak other entries into a case.
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "pending_count": 0}
+        if not resolved:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "pending_count": 0}
+        params["doc_ids"] = ",".join(resolved)
+
     params["page"] = str(page)
     params["page_size"] = str(page_size)
     username = _request_username(request)

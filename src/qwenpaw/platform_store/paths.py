@@ -572,3 +572,87 @@ def grant_all_existing_paths(owner_username: str, agent_id: str) -> int:
         )
         granted += 1
     return granted
+
+
+def bound_resource_ids(path_id: str, resource_kind: str) -> set[str]:
+    """Resource ids of one kind bound to a specific path."""
+    _ensure_ready()
+    rows = _query(
+        'SELECT resource_id FROM "platform".resource_bindings '
+        "WHERE path_id = %s AND resource_kind = %s",
+        (path_id, resource_kind),
+    )
+    return {str(row["resource_id"]) for row in rows}
+
+
+def any_bound_resource_ids(resource_kind: str) -> set[str]:
+    """Every resource id of one kind that is bound to *some* path.
+
+    Needed to compute the account's public area: resources absent from this set
+    are unbound, and unbound means "in the root path"
+    (see :func:`effective_path_of`).
+    """
+    _ensure_ready()
+    rows = _query(
+        'SELECT resource_id FROM "platform".resource_bindings '
+        "WHERE resource_kind = %s",
+        (resource_kind,),
+    )
+    return {str(row["resource_id"]) for row in rows}
+
+
+def effective_space_ids_for_path(
+    path_id: str,
+    owner_username: str,
+    all_space_ids: list[str],
+) -> list[str] | None:
+    """Which of *all_space_ids* are visible under *path_id*. ``None`` = deny.
+
+    ``all_space_ids`` is the account's full space list, supplied by the caller
+    because it lives in the knowledge service rather than here. The root path
+    additionally owns every **unbound** space — that is what makes pre-existing
+    material show up under the public area without migrating anything.
+
+    Returns ``None`` when the path is not this account's, so the caller denies
+    instead of accidentally treating an unknown path as "everything".
+    """
+    _ensure_ready()
+    node = path_by_id(path_id)
+    if node is None or node["owner_username"] != owner_username:
+        return None
+
+    bound_here = bound_resource_ids(path_id, KIND_KNOWLEDGE_SPACE)
+    if node["is_root"]:
+        unbound = {
+            str(space_id)
+            for space_id in all_space_ids
+            if str(space_id) not in any_bound_resource_ids(KIND_KNOWLEDGE_SPACE)
+        }
+        return sorted(bound_here | unbound)
+    return sorted(bound_here)
+
+
+def effective_table_ids_for_path(
+    path_id: str,
+    owner_username: str,
+    all_table_ids: list[str],
+) -> list[str] | None:
+    """Which data tables are visible under *path_id*. ``None`` = deny.
+
+    Same shape as :func:`effective_space_ids_for_path`, and the same root rule:
+    an unbound table is a pre-existing one and therefore public.
+    """
+    _ensure_ready()
+    node = path_by_id(path_id)
+    if node is None or node["owner_username"] != owner_username:
+        return None
+
+    bound_here = bound_resource_ids(path_id, KIND_DATA_TABLE)
+    if node["is_root"]:
+        unbound = {
+            str(table_id)
+            for table_id in all_table_ids
+            if str(table_id) not in any_bound_resource_ids(KIND_DATA_TABLE)
+        }
+        return sorted(bound_here | unbound)
+    return sorted(bound_here)

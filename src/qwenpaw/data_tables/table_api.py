@@ -142,14 +142,24 @@ def create_table_record(
                 (
                     username, db_name, table_name, display_name, description,
                     json.dumps(cols),
-                    # Registered under the caller's chosen path; ``''`` keeps it in
-                    # the account's public (root) area. The physical table is
-                    # created later by the importer, in the schema this resolves to.
+                    # Mirrors the binding below for readability of the raw row; it
+                    # is NOT the authority (see ``schema_for_registry_row``).
                     str(path_id or ""),
                 ),
             )
             row_id = cur.fetchone()[0]
             conn.commit()
+
+        # The authoritative membership record. Written outside the registry
+        # transaction because it lives in the platform store, and a binding
+        # failure must surface rather than leave a table that is physically in one
+        # schema and logically in another.
+        if path_id:
+            from ..platform_store import paths as path_store
+
+            path_store.bind_resource(
+                path_id, path_store.KIND_DATA_TABLE, str(row_id),
+            )
         return {"id": str(row_id), "table_name": table_name}
     except Exception:
         conn.rollback()
@@ -191,8 +201,47 @@ def list_tables(
     keyword: str | None = Query(None),
     created_start: str | None = Query(None),
     created_end: str | None = Query(None),
+    path_id: str | None = Query(None),
 ):
+    """List the account's data tables, optionally narrowed to one path.
+
+    ``path_id`` filters by *the path the table is filed under*, computed from the
+    path model rather than from a column comparison, because an unfiled table
+    belongs to the account's public area (root) — the same rule the query tools
+    use. An unknown or foreign path yields an empty page, never the unfiltered
+    list.
+    """
     username = get_request_username(request) or "admin"
+    path_filter: set[str] | None = None
+    if path_id:
+        from ..platform_store import paths as path_store
+
+        # The account's full table id set, so the store can work out which are
+        # unfiled (public). Fail closed: an unresolvable path must not fall back
+        # to the unfiltered list.
+        conn_ids = _get_conn()
+        try:
+            with conn_ids.cursor() as cur:
+                cur.execute(
+                    f"SELECT id FROM {SYSTEM_TABLE_REGISTRY} WHERE owner_username=%s",
+                    (username,),
+                )
+                all_table_ids = [str(row[0]) for row in cur.fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=f"数据表列表读取失败：{exc}") from exc
+        finally:
+            _put_conn(conn_ids)
+
+        try:
+            visible = path_store.effective_table_ids_for_path(
+                path_id, username, all_table_ids,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed, not open
+            raise HTTPException(status_code=503, detail=f"路径解析失败：{exc}") from exc
+        if visible is None:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+        path_filter = set(visible)
+
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -213,6 +262,13 @@ def list_tables(
             if created_end:
                 conditions.append("created_at <= %s")
                 params.append(created_end)
+            if path_filter is not None:
+                if not path_filter:
+                    # The path exists but holds nothing: return an empty page
+                    # rather than skipping the filter.
+                    return {"items": [], "total": 0, "page": page, "page_size": page_size}
+                conditions.append("id = ANY(%s)")
+                params.append(sorted(path_filter))
             where = " WHERE " + " AND ".join(conditions) if conditions else ""
             cur.execute(f"SELECT COUNT(*) as cnt FROM {SYSTEM_TABLE_REGISTRY}{where}", params)
             total = cur.fetchone()["cnt"]

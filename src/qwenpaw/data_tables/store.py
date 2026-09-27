@@ -195,6 +195,7 @@ def init_data_tables_schema():
             return
         _init_data_tables_schema()
         migrate_legacy_registry_tables()
+        sync_registry_path_mirror()
         _schema_initialized = True
 
 
@@ -339,30 +340,36 @@ def schema_for_path(path_id: str, is_root: bool) -> str:
 def schema_for_registry_row(row) -> str:
     """The schema a registry row's physical table belongs in.
 
-    ``path_id`` empty means unbound — a table registered before path scoping
-    existed. Those live in the root path, which is ``public``: that is why the
-    upgrade moves nothing, and why every existing table keeps working untouched.
+    **Membership has exactly one source of truth: ``platform.resource_bindings``.**
+    An earlier revision read a ``path_id`` column on the registry table instead,
+    while the listings read the binding table — so filing a table into a case made
+    it appear under that case (binding) while its data stayed in ``public``
+    (column). The case's agent then could not reach the table it was shown, which
+    is precisely the isolation failure this feature exists to prevent.
 
-    Accepts a mapping or ``psycopg2`` row (both support ``[]``). A path id that no
-    longer exists in ``paths`` (the path was deleted or never created on this
-    deployment) also resolves to the root rather than raising: a missing path table
-    must not make a stored table unreadable.
+    Unbound means the account's public area, which is ``public`` (the root path) —
+    that is why the upgrade moves nothing and why pre-existing tables keep working.
+    A path id that no longer exists also resolves to the root rather than raising:
+    a deleted path must not make a stored table unreadable.
+
+    Accepts a mapping or ``psycopg2`` row; needs ``id`` to look up the binding.
     """
     try:
-        path_id = row["path_id"]
+        table_id = str(row["id"])
     except (KeyError, TypeError, IndexError):
-        return ROOT_SCHEMA
-    path_id = str(path_id or "").strip()
-    if not path_id:
         return ROOT_SCHEMA
     try:
         from ..platform_store import paths
 
+        path_id = paths.path_of_resource(paths.KIND_DATA_TABLE, table_id)
+        if not path_id:
+            return ROOT_SCHEMA
         node = paths.path_by_id(path_id)
-    except Exception:  # noqa: BLE001 - unresolvable path falls back to the root
+    except Exception:  # noqa: BLE001 - unresolvable membership falls back to root
         logger.warning(
-            "data tables: could not resolve path %s; using the root schema",
-            path_id, exc_info=True,
+            "data tables: could not resolve the path for table %s; using the "
+            "root schema",
+            table_id, exc_info=True,
         )
         return ROOT_SCHEMA
     if not node:
@@ -546,3 +553,64 @@ def migrate_legacy_registry_tables() -> dict[str, int]:
     finally:
         _put_conn(conn)
     return copied
+
+
+def sync_registry_path_mirror() -> dict[str, int]:
+    """Align the registry's ``path_id`` column with the authoritative bindings.
+
+    The column is a mirror kept for readability; membership lives in
+    ``platform.resource_bindings``. A deployment that filed tables during the
+    window when the two disagreed would otherwise keep showing stale values, and
+    anyone reading the column directly would draw the wrong conclusion.
+
+    Bindings win: the mirror is set from them. Idempotent, and failures are
+    logged rather than raised (this runs on the schema-init path).
+    """
+    try:
+        from ..platform_store import paths as path_store
+    except Exception:  # noqa: BLE001 - nothing to sync without the store
+        return {}
+    updated = 0
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, owner_username, path_id FROM {SYSTEM_TABLE_REGISTRY}",
+            )
+            rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("data tables: could not read the registry: %s", exc)
+        _put_conn(conn)
+        return {}
+    finally:
+        try:
+            _put_conn(conn)
+        except Exception:  # noqa: BLE001 - already returned
+            pass
+
+    for row_id, _owner, mirrored in rows:
+        try:
+            bound = path_store.path_of_resource(
+                path_store.KIND_DATA_TABLE, str(row_id),
+            ) or ""
+        except Exception:  # noqa: BLE001 - skip rows we cannot resolve
+            continue
+        if bound == (mirrored or ""):
+            continue
+        conn = _get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE {SYSTEM_TABLE_REGISTRY} SET path_id=%s WHERE id=%s",
+                    (bound, row_id),
+                )
+            conn.commit()
+            updated += 1
+        except Exception as exc:  # noqa: BLE001 - isolate one row
+            conn.rollback()
+            logger.warning("data tables: could not sync path mirror: %s", exc)
+        finally:
+            _put_conn(conn)
+    if updated:
+        logger.info("data tables: aligned %d path mirror(s) with bindings", updated)
+    return {"updated": updated}

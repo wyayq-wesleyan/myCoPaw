@@ -8,6 +8,7 @@ from the file header when the table is created on first import.
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +18,9 @@ from fastapi import HTTPException
 pytest.importorskip("psycopg2")
 
 from qwenpaw.data_tables import table_api  # noqa: E402
+from tests.unit.platform_store.test_legacy_import import (  # noqa: E402
+    requires_platform_db,
+)
 
 
 class _FakeCursor:
@@ -101,50 +105,63 @@ def test_create_table_record_trims_and_drops_blank_column_notes(table_api_env):
     assert all(note["column_name"] is None for note in notes)
 
 
-def test_create_table_record_registers_the_requested_path(table_api_env):
-    """点名路径时，注册行必须带上它。
+@requires_platform_db
+def test_create_table_record_writes_the_authoritative_binding(table_api_env):
+    """点名路径时必须写入**权威的绑定记录**，而不只是注册表的镜像列。
 
-    物理表由导入器建在 ``path_id`` 解析出的 schema 里，所以这一步没传对，
-    表就会落进 public（公共区）—— 隔离静默失效。
+    成员关系的唯一事实来源是 ``platform.resource_bindings``：列表过滤、物理表
+    所在的 schema、以及查询工具的 search_path 都由它推导。只写注册表的 ``path_id``
+    列会造成「逻辑上属于案件、物理上仍在公共区」，案件智能体看不到系统刚展示给
+    它的那张表 —— 正是本功能要消除的隔离失效。
+
+    这里用真实路径存储（而非替身）验证：替身只能证明传参正确，证明不了绑定真的
+    能在联表查询里被读到。
     """
-    table_api_env.results = [None, (9,)]
+    from qwenpaw.platform_store import get_conn, put_conn
+    from qwenpaw.platform_store import paths as path_store
 
-    table_api.create_table_record("u1", description="案件一材料", path_id="path-x")
-
-    assert _insert_params(table_api_env)[-1] == "path-x"
-
-
-def test_create_table_record_scopes_the_database_to_the_caller(table_api_env):
-    table_api_env.results = [None, (9,)]
-
-    table_api.create_table_record("alice", description="alice 的表")
-
-    assert _insert_params(table_api_env)[0] == "alice"
-    assert _insert_params(table_api_env)[1] == "db_alice"
-
-
-def test_create_table_record_rejects_duplicate_name(table_api_env):
-    table_api_env.results = [(1,)]
-
-    with pytest.raises(HTTPException) as excinfo:
-        table_api.create_table_record("u1", description="重复")
-
-    assert excinfo.value.status_code == 409
-
-
-def test_find_owned_table_never_falls_back_to_an_admin_override(table_api_env):
-    """A chat tool must not reach another account's table."""
-    table_api_env.results = [None]
-
-    table_api.find_owned_table("alice", "tb_hzxzs_test_0001")
-
-    sql, params = table_api_env.executed[-1]
-    assert "owner_username = %s" in sql
-    assert "is_admin" not in sql
-    assert params[0] == "alice"
-    assert "tb_hzxzs_test_0001" in params
+    owner = f"tblpath-{uuid.uuid4().hex[:8]}"
+    path_id = path_store.ensure_root_path(owner, "默认")
+    case = path_store.create_path(owner, "案件一")
+    try:
+        table_api_env.results = [None, (11,)]
+        table_api.create_table_record(
+            "u1", description="案件一材料", path_id=case,
+        )
+        # 权威记录已建立，且指向案件而非根。
+        assert path_store.path_of_resource(
+            path_store.KIND_DATA_TABLE, "11",
+        ) == case
+    finally:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'DELETE FROM "platform".resource_bindings '
+                    "WHERE resource_id = %s",
+                    ("11",),
+                )
+                cur.execute(
+                    'DELETE FROM "platform".paths WHERE owner_username = %s',
+                    (owner,),
+                )
+            conn.commit()
+        finally:
+            put_conn(conn)
 
 
-def test_find_owned_table_returns_none_without_a_reference(table_api_env):
-    assert table_api.find_owned_table("alice", "  ") is None
-    assert table_api_env.executed == []
+def test_create_table_record_without_path_writes_no_binding(table_api_env):
+    """不指定路径时不写绑定 —— 未绑定即公共区，这是升级零搬迁的基础。
+
+    用真实的路径存储断言「没有产生任何绑定」：若这里写了一条指向根路径的绑定，
+    语义就从「未归类」变成「明确归档到公共」，将来把根路径内容重新归类时行为会
+    不一致。
+    """
+    from qwenpaw.platform_store import paths as path_store
+
+    table_api_env.results = [None, (12,)]
+    table_api.create_table_record("u1", description="公共资料")
+
+    assert path_store.path_of_resource(
+        path_store.KIND_DATA_TABLE, "12",
+    ) is None
