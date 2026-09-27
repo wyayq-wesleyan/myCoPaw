@@ -69,3 +69,23 @@ describe("PathTreePanel when the paths API is unavailable", () => {
     expect(screen.getByText("重试")).toBeTruthy();
   });
 });
+
+describe("PathTreePanel read-only state", () => {
+  it("does not mark a row as selected when disabled", async () => {
+    // Highlighting a row claims "you are filtered to this". A page that cannot
+    // filter must not make that claim — the tree is an overview, not a control.
+    const { container } = render(
+      <PathTreePanel value={ALL_PATHS} onChange={vi.fn()} disabled />,
+    );
+    await screen.findByText("公共区（未归类）");
+    expect(container.querySelector('[class*="rowActive"]')).toBeNull();
+  });
+
+  it("marks the current row as selected when interactive", async () => {
+    const { container } = render(
+      <PathTreePanel value={ALL_PATHS} onChange={vi.fn()} />,
+    );
+    await screen.findByText("公共区（未归类）");
+    expect(container.querySelector('[class*="rowActive"]')).not.toBeNull();
+  });
+});

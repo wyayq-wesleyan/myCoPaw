@@ -27,6 +27,10 @@ interface Props {
    * path (e.g. the knowledge service is not configured), so clicking a node does
    * not fire a request that is guaranteed to fail and surface an error toast.
    * The structure stays visible — it is still the useful part.
+   *
+   * A read-only tree also drops the selection highlight: highlighting a row says
+   * "you are filtered to this", which is not a state the page can be in when it
+   * cannot filter at all.
    */
   disabled?: boolean;
 }
@@ -138,7 +142,8 @@ export default function PathTreePanel({
    * paths next to the content.
    */
   const renderNode = (node: PathNode, depth: number) => {
-    const selected = value === node.id;
+    // No highlight while read-only: see the ``disabled`` prop docstring.
+    const selected = !disabled && value === node.id;
     const agents = node.agents || [];
     const count = countOf(node);
     const label = node.is_root ? "公共区（未归类）" : node.name;
@@ -198,9 +203,9 @@ export default function PathTreePanel({
   return (
     <div className={styles.panel}>
       <div
-        className={`${styles.row} ${value === ALL_PATHS ? styles.rowActive : ""} ${
-          disabled ? styles.rowDisabled : ""
-        }`}
+        className={`${styles.row} ${
+          !disabled && value === ALL_PATHS ? styles.rowActive : ""
+        } ${disabled ? styles.rowDisabled : ""}`}
         onClick={() => select(ALL_PATHS)}
         role={disabled ? undefined : "button"}
         tabIndex={disabled ? undefined : 0}
