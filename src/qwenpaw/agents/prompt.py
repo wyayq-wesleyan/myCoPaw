@@ -402,6 +402,7 @@ def _get_active_model_info():
 
         # Try to get agent-specific model first
         active = None
+        agent_id = None
         try:
             agent_id = get_current_agent_id()
             agent_config = load_agent_config(agent_id)
@@ -410,9 +411,10 @@ def _get_active_model_info():
         except Exception:
             pass
 
-        # Fallback to global active model
+        # Fall back to the account's first authorized model, matching what the
+        # runtime will actually run (there is no administrator default any more).
         if not active:
-            active = manager.get_active_model()
+            active = ProviderManager.resolve_default_chat_slot(agent_id)
 
         if not active:
             return None, None

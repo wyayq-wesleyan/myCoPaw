@@ -207,15 +207,6 @@ def build_env_context(
         now = datetime.now(timezone.utc)
         user_tz = "UTC"
 
-    if session_id is not None:
-        parts.append(f"- Session ID: {session_id}")
-    if user_id is not None:
-        parts.append(f"- User ID: {user_id}")
-    if user_name:
-        parts.append(f"- User Name: {user_name}")
-    if channel is not None:
-        parts.append(f"- Channel: {channel}")
-
     parts.append(
         f"- OS: {platform.system()} {platform.release()} "
         f"({platform.machine()})",
@@ -236,6 +227,20 @@ def build_env_context(
             )
     elif working_dir is not None:
         parts.append(f"- Working directory: {working_dir}")
+
+    # Everything above is stable for a given agent and workspace, so it forms a
+    # reusable prompt-cache prefix. The lines below change per request (session,
+    # user, and especially the date), and putting them last keeps the stable
+    # prefix byte-identical across requests — otherwise the cache is
+    # invalidated on every turn and every token is billed and processed as new.
+    if channel is not None:
+        parts.append(f"- Channel: {channel}")
+    if user_name:
+        parts.append(f"- User Name: {user_name}")
+    if user_id is not None:
+        parts.append(f"- User ID: {user_id}")
+    if session_id is not None:
+        parts.append(f"- Session ID: {session_id}")
     parts.append(
         f"- Current date: {now.strftime('%Y-%m-%d')} "
         f"{user_tz} ({now.strftime('%A')})",

@@ -142,6 +142,13 @@ class AgentBuilder:
         # Final pass: cover workspace + extras + memory in one filter.
         tools = self.apply_subagent_tool_whitelist(tools, request_context)
 
+        # Sort by tool name so the serialized tool schemas are byte-identical
+        # across requests. The list is assembled from several sources (builtins,
+        # plugin extras, memory tools) whose iteration order is not guaranteed
+        # stable, and an unstable order changes the prompt-cache prefix: every
+        # request would then be reprocessed as new instead of hitting the cache.
+        tools.sort(key=self._tool_name)
+
         skill_dirs = self._resolve_skill_loader_dirs(
             effective_skills,
             workspace_dir,
@@ -256,10 +263,12 @@ class AgentBuilder:
         )
         ctx.agent_config = agent_config
 
-        # Validate model availability.
+        # Validate model availability. An agent with no model of its own runs on
+        # the account's first authorized model; there is no administrator-pinned
+        # global default any more, so resolve the same way the factory will.
         active = agent_config.active_model
         if not (active and active.provider_id and active.model):
-            active = ProviderManager.get_instance().get_active_model()
+            active = ProviderManager.resolve_default_chat_slot(agent_id)
         if active is None or not active.provider_id or not active.model:
             raise RuntimeError(
                 "No active model configured; pick one in the UI",

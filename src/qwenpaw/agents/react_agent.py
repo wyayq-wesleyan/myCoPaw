@@ -11,6 +11,7 @@ as constructor parameters and does not build them internally.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -255,6 +256,18 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 self.state.context = sanitized
         except Exception:
             pass
+        # Same guard for empty text blocks: a reasoning-only turn can persist a
+        # ``TextBlock(text="")`` that providers reject with 400 on every later
+        # replay, so one empty turn poisons the rest of the session. Running it
+        # here also heals sessions already poisoned on disk.
+        try:
+            from .utils.text_block_utils import sanitize_empty_text_blocks
+
+            self.state.context = sanitize_empty_text_blocks(
+                self.state.context,
+            )
+        except Exception:
+            pass
 
         if self._context_manager is None:
             try:
@@ -294,7 +307,15 @@ class QwenPawAgent(CodingModeMixin, Agent):
 
     def _save_to_context(self, blocks: Any, usage: Any = None) -> None:
         """Append blocks, then let the context manager write them through."""
-        block_list = list(blocks or [])
+        # A reasoning-only turn arrives as an empty text block. Persisting it
+        # replays ``{"type": "output_text", "text": ""}`` on every later request,
+        # which some providers reject with ``400 MissingParameter:
+        # input.content.text`` — one empty turn would otherwise poison the rest
+        # of the session. Drop it here, at the write path, so it never lands on
+        # disk in the first place.
+        from .utils.text_block_utils import drop_empty_text_blocks
+
+        block_list = drop_empty_text_blocks(list(blocks or []))
         tool_call_extras = collect_transient_tool_call_extras(block_list)
 
         super()._save_to_context(block_list, usage)
@@ -385,19 +406,25 @@ class QwenPawAgent(CodingModeMixin, Agent):
             )
 
     def _sanitize_loaded_context(self) -> None:
-        """Strip orphan tool_result messages from the loaded context.
+        """Strip orphan tool_result messages and empty text blocks on load.
 
         Orphan tool_result messages (whose tool_call has been evicted)
         can persist in session JSON and leak across session boundaries
         when loaded by ``load_state_dict``.  Without sanitization here
         they reach the model and cause ``400 - Messages with role 'tool'
         must be a response to a preceding message with 'tool_calls'``.
+
+        Empty text blocks are the same class of defect with a different block
+        type: a reasoning-only turn persists ``TextBlock(text="")`` and every
+        later replay is rejected. Sessions written before the guard existed are
+        healed here.
         """
         try:
+            from .utils.text_block_utils import sanitize_empty_text_blocks
             from .utils.tool_message_utils import _sanitize_tool_messages
 
-            self.state.context = _sanitize_tool_messages(
-                self.state.context,
+            self.state.context = sanitize_empty_text_blocks(
+                _sanitize_tool_messages(self.state.context),
             )
         except Exception:
             # Best-effort: a corrupt context will be caught again by
@@ -1171,11 +1198,25 @@ class QwenPawAgent(CodingModeMixin, Agent):
             key = os.environ.get("QWENPAW_KNOWLEDGE_API_KEY", "").strip()
             if key:
                 headers["X-Knowledge-Key"] = key
-            async with httpx.AsyncClient(timeout=20) as client:
-                spaces_response = await client.get(f"{service_url}/v1/spaces", headers=headers)
+            # Per-space timeout for the automatic injection. Deliberately much
+            # shorter than the tool path's budget: this runs before *every* turn
+            # and the user is staring at an empty chat while it happens, so a slow
+            # space must be skipped rather than allowed to delay the answer. The
+            # tool call (query_knowledge) remains available with a longer timeout
+            # when the model decides it actually needs the material.
+            search_timeout = float(
+                os.environ.get("QWENPAW_KNOWLEDGE_AUTO_TIMEOUT", "8") or 8,
+            )
+            # Spaces are searched concurrently. Sequential iteration made the
+            # wait additive — N spaces × their latency — which is what turned a
+            # large account's first token into a multi-second stall.
+            async with httpx.AsyncClient(timeout=search_timeout) as client:
+                spaces_response = await client.get(
+                    f"{service_url}/v1/spaces", headers=headers,
+                )
                 spaces_response.raise_for_status()
                 spaces = spaces_response.json()
-                snippets: list[str] = []
+
                 SOURCE_LABEL = {
                     "fulltext": "全文检索",
                     "filename": "文件名匹配",
@@ -1184,23 +1225,51 @@ class QwenPawAgent(CodingModeMixin, Agent):
                     "entity": "实体匹配",
                     "lightrag": "知识图谱",
                 }
-                for space in spaces[:20]:
-                    response = await client.post(
-                        f"{service_url}/v1/search",
-                        headers=headers,
-                        json={"space_id": space["id"], "query": query, "top_k": 6},
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
+
+                async def _search_space(space: dict) -> list[str]:
+                    """Return this space's rendered snippets; [] on any failure.
+
+                    A failure here is expected (timeout, a space being indexed) and
+                    must not lose the other spaces' hits, so it is swallowed with a
+                    debug log rather than propagated.
+                    """
+                    try:
+                        response = await client.post(
+                            f"{service_url}/v1/search",
+                            headers=headers,
+                            json={"space_id": space["id"], "query": query, "top_k": 6},
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "automatic knowledge search skipped for space %s: %s",
+                            space.get("id"), exc,
+                        )
+                        return []
+                    rendered = []
                     for item in (payload.get("evidence") or [])[:6]:
-                        source = SOURCE_LABEL.get(item.get("source", ""), item.get("source", ""))
+                        source = SOURCE_LABEL.get(
+                            item.get("source", ""), item.get("source", ""),
+                        )
                         confidence = item.get("confidence", "")
                         confidence_str = f" [{confidence}置信]" if confidence else ""
-                        snippets.append(
-                            f"来源：{item.get('filename') or '未知文件'}，第 {item.get('page') or '?'} 页"
+                        rendered.append(
+                            f"来源：{item.get('filename') or '未知文件'}，"
+                            f"第 {item.get('page') or '?'} 页"
                             f"（{source}{confidence_str}）\n"
                             f"{str(item.get('content') or '')[:900]}"
                         )
+                    return rendered
+
+                settled = await asyncio.gather(
+                    *(_search_space(space) for space in spaces[:20]),
+                    return_exceptions=True,
+                )
+                snippets: list[str] = []
+                for result in settled:
+                    if isinstance(result, list):
+                        snippets.extend(result)
             if not snippets:
                 return
             text = (

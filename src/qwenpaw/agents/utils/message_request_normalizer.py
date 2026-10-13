@@ -149,11 +149,55 @@ def _is_media_block(block: Any) -> bool:
     return False
 
 
-def _strip_media_blocks_in_place(msgs: list[Msg]) -> int:
+def _is_document_block(block: Any) -> bool:
+    """Check if a block carries a PDF document payload.
+
+    ``application/pdf`` is rendered as an OpenAI ``file`` content part (or
+    ``input_file`` on the Responses API). OpenAI-compatible Chat Completions
+    servers (vLLM, DeepSeek, DashScope, …) reject ``file`` parts, so document
+    blocks must be stripped at request time irrespective of the model's
+    multimodal support.
+    """
+    btype = (
+        block.get("type")
+        if isinstance(block, dict)
+        else getattr(block, "type", None)
+    )
+    if btype == "file":
+        return True
+    if btype == "data":
+        source = (
+            block.get("source")
+            if isinstance(block, dict)
+            else getattr(block, "source", None)
+        )
+        media_type = (
+            source.get("media_type", "")
+            if isinstance(source, dict)
+            else getattr(source, "media_type", "")
+        ) or ""
+        return media_type in _DOCUMENT_MIME_TYPES
+    return False
+
+
+def _strip_media_blocks_in_place(
+    msgs: list[Msg],
+    *,
+    document_only: bool = False,
+    tool_result_only: bool = False,
+) -> int:
     """Strip media blocks from copied messages only.
 
     Handles both 1.x dict blocks and 2.0 Pydantic block objects.
+
+    ``document_only`` narrows the target to PDF document blocks, leaving
+    image/audio/video intact — those parts *are* accepted by
+    OpenAI-compatible endpoints, so stripping them would remove usable
+    context. ``tool_result_only`` restricts stripping to blocks nested inside
+    tool results, so a user-supplied document keeps its upstream formatting
+    path.
     """
+    should_strip = _is_document_block if document_only else _is_media_block
     total_stripped = 0
 
     for msg in msgs:
@@ -163,7 +207,7 @@ def _strip_media_blocks_in_place(msgs: list[Msg]) -> int:
         new_content = []
         stripped_this_message = 0
         for block in msg.content:
-            if _is_media_block(block):
+            if should_strip(block) and not tool_result_only:
                 total_stripped += 1
                 stripped_this_message += 1
                 continue
@@ -182,7 +226,7 @@ def _strip_media_blocks_in_place(msgs: list[Msg]) -> int:
             if btype == "tool_result" and isinstance(output, list):
                 original_len = len(output)
                 filtered = [
-                    item for item in output if not _is_media_block(item)
+                    item for item in output if not should_strip(item)
                 ]
                 stripped_count = original_len - len(filtered)
                 total_stripped += stripped_count
@@ -275,6 +319,19 @@ def normalize_messages_for_model_request(
     _clean_provider_specific_fields(normalized, target_family)
     if target_family == "anthropic":
         _strip_unsigned_thinking_for_anthropic(normalized)
+    if target_family == "openai":
+        # OpenAI-compatible Chat Completions servers (vLLM, DeepSeek,
+        # DashScope, …) reject ``file`` content parts — that shape belongs to
+        # the Responses API. A PDF returned by a tool would otherwise be
+        # serialized as ``{"type": "file"}`` and rejected with 400 even by a
+        # multimodal server, so tool-result document blocks are stripped for
+        # this family regardless of multimodal support. Images/audio/video are
+        # preserved: ``image_url`` / ``input_audio`` parts are accepted here.
+        _strip_media_blocks_in_place(
+            normalized,
+            document_only=True,
+            tool_result_only=True,
+        )
     if not supports_multimodal:
         _strip_media_blocks_in_place(normalized)
     return normalized
