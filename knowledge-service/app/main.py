@@ -109,6 +109,10 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=20, ge=1, le=100)
     include_relations: bool = True
     min_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Tenant-isolated graph: the per-path workspaces this caller may read. Supplied
+    # by the main app (which owns the path model); the knowledge service never
+    # derives it, so there is exactly one place that decides reachability.
+    workspaces: list[str] = Field(default_factory=list)
 
 
 class DocumentDetailRequest(BaseModel):
@@ -198,6 +202,7 @@ async def list_spaces(scope: tuple[str, bool] = Depends(request_scope)) -> list[
 async def upload_document(
     file: UploadFile = File(...),
     space_id: str = Form(default=""),
+    workspace: str = Form(default=""),
     scope: tuple[str, bool] = Depends(request_scope),
 ) -> dict[str, Any]:
     readiness = await asyncio.to_thread(upload_readiness)
@@ -238,6 +243,13 @@ async def upload_document(
     existing = await asyncio.to_thread(store.find_document_by_hash, space_id, owner_id, content_hash, size)
     if existing:
         target_path.unlink(missing_ok=True)
+        if workspace:
+            # Content-addressed dedup returns the existing row; record the workspace
+            # so the graph follows *this* upload's path. Without it a file uploaded
+            # into case B after being uploaded into case A kept A's workspace.
+            await asyncio.to_thread(
+                store.set_document_workspace, existing["id"], workspace,
+            )
         return {
             "id": existing["id"],
             "job_id": existing.get("job_id"),
@@ -245,6 +257,7 @@ async def upload_document(
             "filename": existing["filename"],
             "duplicate": True,
             "size": existing.get("size", size),
+            "workspace": workspace or None,
         }
     created = await asyncio.to_thread(
         store.create_document,
@@ -257,7 +270,14 @@ async def upload_document(
         size=size,
         content_hash=content_hash,
     )
-    return {**created, "size": size}
+    # Remember the graph workspace now, while the caller's intent is known: the
+    # worker runs later and would otherwise have no way to tell which path the file
+    # was uploaded into.
+    if workspace:
+        await asyncio.to_thread(
+            store.set_document_workspace, created["id"], workspace,
+        )
+    return {**created, "size": size, "workspace": workspace or None}
 
 
 @app.get("/v1/documents/{document_id}", dependencies=[Depends(require_api_key)])
@@ -452,6 +472,40 @@ async def list_documents(space_id: str, scope: tuple[str, bool] = Depends(reques
     return await asyncio.to_thread(store.list_documents, space_id, owner_id, is_admin)
 
 
+@app.get("/v1/jobs/pending-count", dependencies=[Depends(require_api_key)])
+async def count_pending_jobs(scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, int]:
+    """账号级「处理中（queued/processing）」任务数。
+
+    单独出一个接口，而不是让调用方去列文档或列 job 再自己数：主应用在按路径过滤
+    文档时可能一次文档都不请求（例如该路径为空），但「后台还有没有任务在跑」是
+    **账号级**事实，与当前筛选无关。没有这个接口时，那种分支只能返回 0，界面上的
+    「处理中」就会在切换路径时凭空消失。
+
+    必须声明在 ``/v1/jobs/{job_id}`` **之前**，否则 ``pending-count`` 会被当成 job id
+    （FastAPI 按声明顺序匹配）。
+    """
+    owner_id, _is_admin = scope
+    pending = await asyncio.to_thread(store.count_pending_jobs, owner_id)
+    return {"pending": int(pending)}
+
+
+@app.get("/v1/jobs/pending-documents", dependencies=[Depends(require_api_key)])
+async def list_pending_documents(
+    scope: tuple[str, bool] = Depends(request_scope),
+) -> dict[str, list[str]]:
+    """该账号仍在处理中的文档 id 列表。
+
+    给主应用按路径分摊「处理中」计数用：主应用知道每条路径能看到哪些文档，这里知道
+    哪些还在跑，两者求交集就是该路径自己的计数。返回 id 列表而不是计数，正是因为
+    「分摊到哪条路径」只有主应用知道（路径模型在平台库，知识服务不依赖它）。
+
+    必须声明在 ``/v1/jobs/{job_id}`` 之前。
+    """
+    owner_id, _is_admin = scope
+    pending = await asyncio.to_thread(store.list_pending_document_ids, owner_id)
+    return {"document_ids": pending}
+
+
 @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 async def get_job(job_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     owner_id, is_admin = scope
@@ -473,7 +527,12 @@ async def get_job_log(job_id: str, scope: tuple[str, bool] = Depends(request_sco
     )
 
 
-async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+async def _hybrid_search(
+    space_id: str,
+    query: str,
+    top_k: int,
+    workspaces: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     """融合检索：PostgreSQL 文件名/全文/字面/向量 + 实体上下文 + LightRAG 图检索。
 
     每条 evidence 附带 match_reasons（多路命中来源列表）、confidence（归一化置信度）、
@@ -533,7 +592,9 @@ async def _hybrid_search(space_id: str, query: str, top_k: int) -> tuple[list[di
     # 为图谱证据保留约 1/3 配额，避免被低质量字面匹配挤占。
     graph_results = []
     if merged:
-        graph_results = await lightrag.search(query, space_id, top_k)
+        graph_results = await lightrag.search(
+            query, space_id, top_k, workspaces=workspaces,
+        )
     if graph_results:
         for g in graph_results:
             g["match_reasons"] = [g.get("source", "lightrag")]
@@ -620,7 +681,7 @@ async def search(body: SearchRequest, scope: tuple[str, bool] = Depends(request_
 
     # 融合检索（本地 + LightRAG 图检索）
     evidence, relations, semantic_enabled = await _hybrid_search(
-        body.space_id, body.query, body.top_k
+        body.space_id, body.query, body.top_k, workspaces=body.workspaces,
     )
     relations = relations if body.include_relations else []
 
@@ -718,6 +779,22 @@ class ReindexRequest(BaseModel):
     space_id: str
 
 
+class DocumentWorkspaceMapping(BaseModel):
+    document_id: str
+    workspace: str
+
+
+class GraphMigrateRequest(BaseModel):
+    """Rebuild legacy graph data into per-path workspaces.
+
+    The main app supplies the mapping because it owns the path model (the knowledge
+    service deliberately does not know about paths). Every pre-existing document was
+    unfiled, i.e. in the account's root path, so the main app maps them to the root
+    workspace.
+    """
+    mappings: list[DocumentWorkspaceMapping]
+
+
 @app.post("/v1/lightrag/reindex", dependencies=[Depends(require_api_key)])
 async def reindex_lightrag(body: ReindexRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     """将指定知识空间的所有已完成文档重新索引到 LightRAG 图谱。"""
@@ -728,6 +805,99 @@ async def reindex_lightrag(body: ReindexRequest, scope: tuple[str, bool] = Depen
         raise HTTPException(status_code=503, detail="LightRAG is not configured (LIGHTRAG_URL not set)")
     result = await lightrag.reindex_space(store, body.space_id)
     return {"space_id": body.space_id, **result}
+
+
+@app.post("/v1/graph/migrate", dependencies=[Depends(require_api_key)])
+async def migrate_graph(body: GraphMigrateRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    """Rebuild documents into their per-path workspaces (idempotent, resumable).
+
+    Called by the main app at startup; safe to call repeatedly. A document already
+    present in its target workspace is skipped, so a rerun after a partial failure
+    only does the remaining work. Each document is isolated: one failure does not
+    stop the batch, and failures are returned for retry.
+
+    The legacy shared graph is **not** deleted, so switching the config back restores
+    the previous behaviour until the migration is verified and the old store is
+    dropped deliberately.
+    """
+    owner_id, is_admin = scope
+    if not lightrag.isolated:
+        return {"enabled": False, "reason": "tenancy not configured"}
+
+    targets = []
+    for mapping in body.mappings:
+        document = await asyncio.to_thread(
+            store.get_document, mapping.document_id, owner_id, is_admin,
+        )
+        if not document:
+            # Not this account's document (or gone) — skip rather than error, so one
+            # stale id cannot fail the whole migration.
+            continue
+        targets.append({
+            "document_id": document["id"],
+            "filename": document["filename"],
+            "workspace": mapping.workspace,
+        })
+
+    report = await lightrag.tenant.migrate_legacy(
+        targets=targets,
+        chunk_loader=lambda doc_id: store.get_document_evidence(doc_id),
+    )
+    # Record where each migrated document now lives: `move`/`delete` and the
+    # processing path all read this, so leaving it unset would make a later move
+    # treat the document as having no workspace.
+    for target in targets:
+        try:
+            await asyncio.to_thread(
+                store.set_document_workspace, target["document_id"], target["workspace"],
+            )
+        except Exception:  # noqa: BLE001 - the graph copy already succeeded
+            logger.warning(
+                "graph migration: could not record workspace for %s",
+                target["document_id"], exc_info=True,
+            )
+    logger.info(
+        "graph migration: indexed=%s skipped=%s failed=%s",
+        report["indexed"], report["skipped"], report["failed"],
+    )
+    return report
+
+
+class MoveWorkspaceRequest(BaseModel):
+    document_id: str
+    from_workspace: str
+    to_workspace: str
+
+
+@app.post("/v1/graph/move", dependencies=[Depends(require_api_key)])
+async def move_graph_document(body: MoveWorkspaceRequest, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
+    """Move one document's graph data between workspaces.
+
+    Build-then-delete inside the store: an interrupted move leaves the document
+    readable in its old workspace rather than losing it. Rebuilds entity/relation
+    extraction, so this is **not** the instant metadata operation that moving a data
+    table is — callers should show it as in-progress.
+    """
+    owner_id, is_admin = scope
+    if not lightrag.isolated:
+        return {"enabled": False, "moved": False, "reason": "tenancy not configured"}
+
+    document = await asyncio.to_thread(
+        store.get_document, body.document_id, owner_id, is_admin,
+    )
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    ok = await lightrag.tenant.move(
+        from_workspace=body.from_workspace,
+        to_workspace=body.to_workspace,
+        document_id=document["id"],
+        filename=document["filename"],
+        chunks=await asyncio.to_thread(store.get_document_evidence, document["id"]),
+    )
+    if ok:
+        await asyncio.to_thread(store.set_document_workspace, document["id"], body.to_workspace)
+    return {"enabled": True, "moved": ok, "workspace": body.to_workspace if ok else body.from_workspace}
 
 
 @app.post("/v1/lightrag/migrate", dependencies=[Depends(require_api_key)])

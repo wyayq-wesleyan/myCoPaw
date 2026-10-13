@@ -117,6 +117,20 @@ async def _sync_scroll_history_on_startup() -> None:
     except Exception:  # noqa: BLE001 - must never block startup
         logger.warning("path-migration: failed", exc_info=True)
 
+    # Knowledge graph tenancy, last because it depends on the paths created above:
+    # it needs each account's root path to name the workspace. Best-effort and
+    # idempotent — the retrieval side is already tenant-scoped, so until the
+    # rebuild finishes the graph signal is simply absent (never wrong), which is
+    # the same state as before this feature existed.
+    try:
+        from .routers.knowledge import migrate_legacy_graph_workspaces
+
+        report = await migrate_legacy_graph_workspaces()
+        if report.get("failed"):
+            logger.warning("graph-migration: completed with failures: %s", report)
+    except Exception:  # noqa: BLE001 - must never block startup
+        logger.warning("graph-migration: failed", exc_info=True)
+
 
 async def _browser_idle_watchdog(kernel: Any, interval: float) -> None:
     """Periodically reclaim idle browser workers for this app process."""

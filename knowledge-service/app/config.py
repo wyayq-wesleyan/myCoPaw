@@ -48,6 +48,20 @@ class Settings:
     lightrag_url: str
     lightrag_api_key: str
     lightrag_query_mode: str
+
+    # Tenant-isolated graph storage (see docs/知识服务多租户存储设计方案.md).
+    # When ``graph_database_url`` is set, the graph runs **in-process** against
+    # PostgreSQL with one LightRAG workspace per path, and ``lightrag_url`` is
+    # ignored. Leaving it empty keeps the legacy shared-graph + HTTP behaviour, so
+    # a deployment can switch over without a code rollback.
+    graph_database_url: str
+    # Resident LightRAG instances kept alive per process (LRU-evicted above this).
+    # This bounds **memory**, not connections: every workspace shares the single
+    # process-wide PostgreSQL pool that LightRAG creates, so the connection count
+    # is ``graph_pool_max_connections`` per process regardless of this value.
+    graph_max_workspaces: int
+    # Size of that one shared pool. Total graph connections per process = this.
+    graph_pool_max_connections: int
     chat_base_url: str
     chat_api_key: str
     chat_model: str
@@ -127,6 +141,11 @@ class Settings:
             mineru_timeout_seconds=max(60, int(_env("MINERU_TIMEOUT_SECONDS", "900"))),
             knowledge_offline=_env("KNOWLEDGE_OFFLINE", "false").lower() in {"1", "true", "yes", "on"},
             lightrag_url=_env("LIGHTRAG_URL").rstrip("/"),
+            graph_database_url=_env("KNOWLEDGE_GRAPH_DATABASE_URL"),
+            graph_max_workspaces=int(_env("KNOWLEDGE_GRAPH_MAX_WORKSPACES", "32") or "32"),
+            graph_pool_max_connections=int(
+                _env("KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS", "8") or "8"
+            ),
             lightrag_api_key=_env("LIGHTRAG_API_KEY"),
             lightrag_query_mode=_env("LIGHTRAG_QUERY_MODE", "mix"),
             chat_base_url=chat_base_url.rstrip("/"),

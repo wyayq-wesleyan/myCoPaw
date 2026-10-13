@@ -98,12 +98,29 @@ class LightRAGBridge:
     的说明）。
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, tenant_graph=None) -> None:
         self.settings = settings
+        self._tenant = tenant_graph
+        if self._tenant is None and getattr(settings, "graph_database_url", ""):
+            # Tenant-isolated, in-process graph (see docs/知识服务多租户存储设计方案.md).
+            # Constructed lazily so importing this module has no side effects.
+            from .graph_store import GraphPool, TenantGraph
+
+            self._tenant = TenantGraph(GraphPool(settings))
+
+    @property
+    def tenant(self):
+        """The workspace-scoped graph store, when tenant isolation is configured."""
+        return self._tenant
+
+    @property
+    def isolated(self) -> bool:
+        """Whether tenant-isolated graph storage is in use (per-path workspaces)."""
+        return bool(self._tenant and self._tenant.enabled)
 
     @property
     def enabled(self) -> bool:
-        return bool(self.settings.lightrag_url)
+        return bool(self.settings.lightrag_url) or self.isolated
 
     def _headers(self) -> dict[str, str]:
         return (
@@ -139,14 +156,24 @@ class LightRAGBridge:
         query: str,
         space_id: str,
         top_k: int = 20,
+        workspaces: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Query LightRAG retrieval data (no LLM generation) for fusion.
 
-        The graph is shared, so results are filtered down to the requesting
-        space before they are handed back (see the class docstring).
+        With tenant isolation configured, ``workspaces`` is the set of per-path
+        workspaces this caller may read, and each is queried separately — the graph
+        signal then cannot cross cases at all. Without it, results are filtered down
+        to the requesting space (the legacy shared-graph behaviour).
         """
         if not self.enabled:
             return []
+        if self.isolated:
+            return await self._tenant.search(
+                query=query,
+                workspaces=list(workspaces or []),
+                top_k=top_k,
+                mode=self.settings.lightrag_query_mode,
+            )
         payload = {
             "query": query,
             "mode": self.settings.lightrag_query_mode,
@@ -212,10 +239,31 @@ class LightRAGBridge:
         document_id: str,
         source_name: str,
         chunks: list[dict[str, Any]],
+        workspace: str | None = None,
     ) -> bool:
-        """Index normalized content in LightRAG after local evidence is durable."""
+        """Index normalized content in LightRAG after local evidence is durable.
+
+        With tenant isolation configured, ``workspace`` is the **required** target
+        (one per path) and indexing goes to that workspace only. Falling back to the
+        shared graph because a caller forgot it would silently write into the wrong
+        tenant, so a missing workspace is refused rather than defaulted.
+        """
         if not self.enabled or not chunks:
             return False
+        if self.isolated:
+            if not workspace:
+                logger.warning(
+                    "lightrag: isolated graph requires a workspace; refusing "
+                    "space=%s doc=%s",
+                    space_id, document_id,
+                )
+                return False
+            return await self._tenant.insert(
+                workspace=workspace,
+                document_id=document_id,
+                filename=source_name,
+                chunks=chunks,
+            )
         text = "\n\n".join(
             f"[{chunk.get('location') or '正文'} | 第 {chunk.get('page') or '?'} 页]\n{chunk['content']}"
             for chunk in chunks
@@ -615,6 +663,19 @@ class LightRAGBridge:
         }
 
     async def health(self) -> dict[str, Any]:
+        if self.isolated:
+            # In-process Postgres graph: there is no HTTP endpoint to probe, so the
+            # check is whether a workspace can actually be opened.
+            try:
+                await self._tenant.count_documents("ws_health_probe")
+                return {"enabled": True, "mode": "isolated", "reachable": True}
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "enabled": True,
+                    "mode": "isolated",
+                    "reachable": False,
+                    "error": str(exc)[:200],
+                }
         if not self.enabled:
             return {"enabled": False}
         try:

@@ -51,6 +51,13 @@ services:
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      # Tenant-isolated graph storage (docs/知识服务多租户存储设计方案.md).
+      # Set to a PostgreSQL DSN to run the graph **in-process** with one LightRAG
+      # workspace per path, which replaces LIGHTRAG_URL. Leave empty to keep the
+      # legacy shared graph — existing deployments are unaffected until switched.
+      KNOWLEDGE_GRAPH_DATABASE_URL: "${KNOWLEDGE_GRAPH_DATABASE_URL:-}"
+      KNOWLEDGE_GRAPH_MAX_WORKSPACES: "${KNOWLEDGE_GRAPH_MAX_WORKSPACES:-32}"
+      KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS: "${KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS:-8}"
     depends_on:
       knowledge-postgres:
         condition: service_healthy
@@ -81,6 +88,9 @@ services:
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      KNOWLEDGE_GRAPH_DATABASE_URL: "${KNOWLEDGE_GRAPH_DATABASE_URL:-}"
+      KNOWLEDGE_GRAPH_MAX_WORKSPACES: "${KNOWLEDGE_GRAPH_MAX_WORKSPACES:-32}"
+      KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS: "${KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS:-8}"
     depends_on:
       knowledge-postgres:
         condition: service_healthy

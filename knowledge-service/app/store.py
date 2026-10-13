@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -11,6 +12,12 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+try:  # the pool is optional: without it ``_connect`` falls back to direct links
+    from psycopg_pool import PoolTimeout
+except ImportError:  # pragma: no cover - knowledge image always ships it
+    class PoolTimeout(Exception):  # type: ignore[no-redef]
+        """Stand-in so ``_connect``'s except clause stays importable."""
 
 logger = logging.getLogger("knowledge-store")
 
@@ -50,13 +57,37 @@ def _json_value(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
 
+def _vector_literal(vector: Any) -> str:
+    """Render an embedding as pgvector's ``[a,b,c]`` text form.
+
+    Passed as a parameter and cast with ``%s::vector`` rather than formatted into
+    SQL: the values come from an embedding service, so they must never be treated
+    as SQL. ``repr``-style shortest float formatting keeps the literal small; the
+    precision is well beyond what float32 storage can distinguish.
+    """
+    return "[" + ",".join(f"{float(x):.8g}" for x in vector) + "]"
+
+
 class Store:
     """PostgreSQL-backed durable store for parsed knowledge and retrieval data."""
 
-    # 连接池容量按 30-50 并发用户评估：单次检索最多占用 2-3 个连接，
-    # 20 上限可覆盖峰值并留余量；PostgreSQL 默认 max_connections=100。
+    # Sized against the *thread* ceiling, not a user count. Every store call
+    # reaches this pool through ``asyncio.to_thread``, i.e. from one of the
+    # server's worker threads (anyio defaults to 40). A pool smaller than that
+    # ceiling means concurrent requests queue on connections and, at the limit,
+    # fail with an opaque PoolTimeout — which is what "连接已满" was.
+    #
+    # Budget: this pool + the graph pool are per process, and there are two
+    # processes (api, worker). See ``POOL_WAIT_SECONDS`` for the wait policy and
+    # the compose ``max_connections`` for the PostgreSQL-side ceiling.
     POOL_MIN_SIZE = 2
-    POOL_MAX_SIZE = 20
+    POOL_MAX_SIZE = 30
+
+    # How long a caller waits for a free connection before giving up. The
+    # psycopg_pool default is 30s, which is long enough to look like a hang; this
+    # keeps a saturated pool a bounded delay and makes the eventual error
+    # name the cause instead of surfacing as a bare timeout.
+    POOL_WAIT_SECONDS = 20.0
 
     def __init__(self, database_url: str) -> None:
         if not database_url:
@@ -72,6 +103,7 @@ class Store:
                 min_size=self.POOL_MIN_SIZE,
                 max_size=self.POOL_MAX_SIZE,
                 open=True,
+                timeout=self.POOL_WAIT_SECONDS,
                 # Both pooled and direct connections must log their statements;
                 # passing the class here covers the pool, and ``_connect`` below
                 # covers the no-pool fallback.
@@ -108,12 +140,27 @@ class Store:
                 time.sleep(delay)
 
     def _connect(self):
-        """Return a connection context manager; pooled when available."""
-        if self._pool is not None:
+        """Return a connection context manager; pooled when available.
+
+        A pool that stays saturated past ``POOL_WAIT_SECONDS`` raises
+        ``PoolTimeout`` from deep inside psycopg_pool, which reads as an opaque
+        internal failure in the UI. Re-raising it with the pool's own numbers
+        makes the cause and the remedy obvious from the message alone.
+        """
+        if self._pool is None:
+            return LoggingConnection.connect(
+                self.database_url, row_factory=dict_row,
+            )
+        try:
             return self._pool.connection()
-        return LoggingConnection.connect(
-            self.database_url, row_factory=dict_row,
-        )
+        except PoolTimeout as exc:  # pragma: no cover - needs a saturated pool
+            raise RuntimeError(
+                "知识服务数据库连接池已满："
+                f"{self.POOL_WAIT_SECONDS:.0f} 秒内未取得连接"
+                f"（池上限 {self.POOL_MAX_SIZE}）。"
+                "请检查是否有长时间未结束的查询，或调大 "
+                "KNOWLEDGE 连接池上限并同步放宽 PostgreSQL max_connections。",
+            ) from exc
 
     def _init_db(self) -> None:
         statements = [
@@ -143,6 +190,23 @@ class Store:
               updated_at TIMESTAMPTZ NOT NULL,
               started_at TIMESTAMPTZ
             )
+            """,
+            # Which path a document's **graph data** belongs to, i.e. its LightRAG
+            # workspace. The path model itself lives in the main app (which does not
+            # share a database with this service), so the main app supplies the
+            # workspace on upload and this table records it. Kept here rather than
+            # reusing ``space_id`` because the graph is per path, not per space: two
+            # cases can share a space but must not share a graph.
+            """
+            CREATE TABLE IF NOT EXISTS document_workspaces (
+              document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+              workspace TEXT NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_document_workspaces_workspace
+              ON document_workspaces (workspace)
             """,
             """
             CREATE TABLE IF NOT EXISTS jobs (
@@ -252,6 +316,150 @@ class Store:
                     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stage TEXT",
                 ],
             )
+            # ── pgvector 向量列 ──────────────────────────────────────────────
+            # 原实现把整个空间的所有向量读回 Python 再逐个算余弦，开销与内存都
+            # 随语料线性增长（实测 6 万 chunk = 34.6s / 3.7GB，15 万 chunk 直接
+            # OOM）。改为数据库内近邻检索后，延迟与内存与语料规模基本无关。
+            #
+            # 分三步、各自容错：老库先加列（此刻为空，很快），回填由启动后的
+            # 后台任务做，回填完再建 HNSW 索引。任何一步失败都只降级到原来的
+            # jsonb 全量比对，不影响可用性。
+            self._migrate(db, ["CREATE EXTENSION IF NOT EXISTS vector"])
+            dimensions = self._resolve_embedding_dimensions(db)
+            if dimensions:
+                self._migrate(
+                    db,
+                    [
+                        f"ALTER TABLE chunk_embeddings "
+                        f"ADD COLUMN IF NOT EXISTS embedding vector({dimensions})",
+                    ],
+                )
+                # The HNSW index is **never** built on this path, for two reasons.
+                #
+                # Maintaining the index during the backfill costs a graph insert per
+                # row: measured 50 rows/s with it versus 2900 rows/s without — 58x
+                # slower, i.e. an hour versus a minute for a 150k-row corpus.
+                #
+                # And this code runs inside ``Store.__init__``, which ``main.py``
+                # executes at *import* time — before uvicorn can answer anything.
+                # Building the index here made start-up block for as long as the
+                # build takes (measured 22s at 50k rows; minutes at production
+                # size), so the console's health probe timed out and the knowledge
+                # page showed 503 until it finished. The index is created by the
+                # worker's idle branch (``rebuild_vector_index_if_needed``) instead,
+                # where taking minutes blocks nothing.
+                if self._column_is_vector_typed(db, dimensions):
+                    remaining = self._count_unconverted(db, dimensions)
+                    if remaining:
+                        logger.info(
+                            "pgvector: %d embedding(s) still on the jsonb fallback; "
+                            "the background backfill will convert them and then "
+                            "build the HNSW index",
+                            remaining,
+                        )
+
+    # ------------------------------------------------------------------
+    # pgvector migration helpers
+    # ------------------------------------------------------------------
+
+    # Dimension used when the environment does not pin one and the database has no
+    # rows to measure. Matches the shipped embedding model (Qwen3-Embedding).
+    DEFAULT_EMBEDDING_DIMENSIONS = 1024
+
+    # HNSW parameters: m=16 / ef_construction=64 are pgvector's defaults, which are
+    # the documented starting point for a few-hundred-thousand-row corpus.
+    HNSW_INDEX_NAME = "idx_chunk_embeddings_hnsw"
+
+    @classmethod
+    def _create_hnsw_index_statement(cls) -> str:
+        return (
+            f"CREATE INDEX IF NOT EXISTS {cls.HNSW_INDEX_NAME} "
+            "ON chunk_embeddings USING hnsw (embedding vector_cosine_ops) "
+            "WITH (m = 16, ef_construction = 64)"
+        )
+
+    @classmethod
+    def _count_unconverted(cls, db: Any, dimensions: int) -> int:
+        """Rows not yet copied into the vector column (wrong-width rows excluded)."""
+        try:
+            row = db.execute(
+                """
+                SELECT count(*) AS n FROM chunk_embeddings
+                WHERE embedding IS NULL
+                  AND jsonb_typeof(vector_json) = 'array'
+                  AND jsonb_array_length(vector_json) = %s
+                """,
+                (dimensions,),
+            ).fetchone()
+            return int((row or {}).get("n") or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    @classmethod
+    def _resolve_embedding_dimensions(cls, db: Any) -> int | None:
+        """Width of the ``vector`` column, or ``None`` to skip the pgvector path.
+
+        Resolution order: an explicit ``EMBEDDING_DIMENSIONS`` wins (the operator
+        knows what their endpoint returns); otherwise the width is measured from a
+        row already in the table, so an existing install migrates to the dimension
+        it actually stored; otherwise the model default. A measured value that
+        contradicts the configured one is logged and the configured value is kept —
+        the column must not change shape mid-life or the index is invalidated.
+        """
+        configured = os.getenv("EMBEDDING_DIMENSIONS", "").strip()
+        configured_n = int(configured) if configured.isdigit() and int(configured) > 0 else None
+
+        measured: int | None = None
+        try:
+            row = db.execute(
+                "SELECT vector_dims((vector_json::text)::vector) AS dims "
+                "FROM chunk_embeddings "
+                "WHERE jsonb_typeof(vector_json) = 'array' "
+                "  AND jsonb_array_length(vector_json) BETWEEN 1 AND 8192 "
+                "LIMIT 1",
+            ).fetchone()
+            if row and row.get("dims"):
+                measured = int(row["dims"])
+        except Exception as exc:  # noqa: BLE001 - extension or data shape missing
+            logger.debug("pgvector: could not measure existing dimensions: %s", exc)
+
+        if configured_n and measured and configured_n != measured:
+            logger.warning(
+                "pgvector: EMBEDDING_DIMENSIONS=%s but stored vectors are %s-wide; "
+                "using the configured value — re-embed documents if this is wrong",
+                configured_n, measured,
+            )
+        return configured_n or measured or cls.DEFAULT_EMBEDDING_DIMENSIONS
+
+    @staticmethod
+    def _column_is_vector_typed(db: Any, dimensions: int) -> bool:
+        """True when ``chunk_embeddings.embedding`` is ``vector(dimensions)``.
+
+        Guards the case where the column exists with a *different* width (the
+        embedding model changed): building an index on it would either fail or
+        index nothing useful, and the jsonb fallback is still correct.
+        """
+        try:
+            row = db.execute(
+                "SELECT format_type(a.atttypid, a.atttypmod) AS t "
+                "FROM pg_attribute a "
+                "JOIN pg_class c ON c.oid = a.attrelid "
+                "WHERE c.relname = 'chunk_embeddings' "
+                "  AND a.attname = 'embedding' AND a.attnum > 0",
+            ).fetchone()
+        except Exception:  # noqa: BLE001
+            return False
+        if not row:
+            return False
+        declared = str(row.get("t") or "")
+        if declared == f"vector({dimensions})":
+            return True
+        logger.warning(
+            "pgvector: existing embedding column is %s, expected vector(%d); "
+            "leaving it alone (jsonb fallback stays in use)",
+            declared, dimensions,
+        )
+        return False
 
     @staticmethod
     def _migrate(db: Any, statements: list[str]) -> None:
@@ -350,10 +558,11 @@ class Store:
             rows = db.execute(
                 """
                 SELECT d.*, j.id AS job_id, j.status AS job_status,
-                       j.attempts AS job_attempts, j.error AS job_error
+                       j.attempts AS job_attempts, j.error AS job_error,
+                       j.next_retry_at AS job_next_retry_at
                 FROM documents d
                 LEFT JOIN LATERAL (
-                    SELECT id, status, attempts, error FROM jobs
+                    SELECT id, status, attempts, error, next_retry_at FROM jobs
                     WHERE document_id = d.id ORDER BY created_at DESC, id DESC LIMIT 1
                 ) j ON TRUE
                 WHERE d.space_id = %s
@@ -488,10 +697,11 @@ class Store:
             rows = db.execute(
                 """
                 SELECT d.*, j.id AS job_id, j.status AS job_status,
-                       j.attempts AS job_attempts, j.error AS job_error
+                       j.attempts AS job_attempts, j.error AS job_error,
+                       j.next_retry_at AS job_next_retry_at
                 FROM documents d
                 LEFT JOIN LATERAL (
-                    SELECT id, status, attempts, error
+                    SELECT id, status, attempts, error, next_retry_at
                     FROM jobs
                     WHERE document_id = d.id
                     ORDER BY created_at DESC, id DESC
@@ -625,6 +835,69 @@ class Store:
             )
         return len(row)
 
+    def requeue_stale_jobs(self, max_age_seconds: int, max_attempts: int) -> int:
+        """Reclaim jobs whose processing has gone silent for too long.
+
+        Start-up recovery only handles the case where the worker itself
+        restarted. A job that hangs *inside* a run (a parser that never
+        returns, a worker process that died while the container stayed up) is
+        never reclaimed: the worker is single-threaded, so everything queued
+        behind it sits at "等待 Worker" forever while the LLM stays idle.
+        Sweeping on a timer converts that permanent stall into a retry.
+
+        ``max_age_seconds`` must comfortably exceed the longest legitimate
+        single stage (the parser timeout). Reclaiming a healthy-but-slow run
+        would yank it out from under the worker and duplicate the work, so the
+        caller derives the threshold from the configured parser timeout.
+
+        Jobs that already used up their attempts are failed instead of
+        requeued, so a document that reliably hangs cannot spin forever.
+        """
+        timestamp = now_utc()
+        cutoff = timestamp - timedelta(seconds=max(60, int(max_age_seconds)))
+        note = "任务长时间无进展，已自动重新排队"
+        give_up_note = "任务长时间无进展，且已用尽重试次数"
+        with self._connect() as db:
+            # Exhausted first: the requeue below must not pick these up again.
+            # ``error`` is overwritten rather than coalesced — the previous
+            # value is the "requeued" notice, which would misreport a job that
+            # has now been given up on.
+            exhausted = db.execute(
+                """
+                UPDATE jobs SET status = 'failed', stage = 'failed', updated_at = %s,
+                    next_retry_at = NULL,
+                    error = %s,
+                    log_excerpt = COALESCE(log_excerpt, %s)
+                WHERE status = 'processing' AND updated_at < %s AND attempts >= %s
+                RETURNING id, document_id
+                """,
+                (timestamp, give_up_note, give_up_note, cutoff, max_attempts),
+            ).fetchall()
+            for row in exhausted:
+                db.execute(
+                    """UPDATE documents SET status = 'failed', processing_stage = 'failed',
+                       updated_at = %s, error = %s WHERE id = %s""",
+                    (timestamp, give_up_note, row["document_id"]),
+                )
+
+            requeued = db.execute(
+                """
+                UPDATE jobs SET status = 'queued', stage = 'queued', updated_at = %s,
+                    next_retry_at = NULL,
+                    error = COALESCE(error, %s)
+                WHERE status = 'processing' AND updated_at < %s
+                RETURNING id, document_id
+                """,
+                (timestamp, note, cutoff),
+            ).fetchall()
+            for row in requeued:
+                db.execute(
+                    """UPDATE documents SET status = 'queued', processing_stage = 'queued',
+                       updated_at = %s WHERE id = %s""",
+                    (timestamp, row["document_id"]),
+                )
+        return len(exhausted) + len(requeued)
+
     def finish_job(self, job_id: str, document_id: str) -> None:
         timestamp = now_utc()
         with self._connect() as db:
@@ -636,6 +909,214 @@ class Store:
                 "UPDATE documents SET status = 'completed', processing_stage = 'completed', updated_at = %s, error = NULL WHERE id = %s",
                 (timestamp, document_id),
             )
+
+    # Rows per backfill round trip. Large enough to keep the job short, small
+    # enough that a run never holds a meaningful amount of memory.
+    VECTOR_BACKFILL_BATCH = 500
+
+    def backfill_embedding_vectors(self, max_batches: int = 20) -> int:
+        """Copy ``vector_json`` into the pgvector ``embedding`` column, in batches.
+
+        Existing installs have every vector in the jsonb column only. The column
+        has to be filled before the HNSW index can serve queries, and doing it at
+        startup would block the first request for minutes on a large corpus, so it
+        runs in the background and is resumable.
+
+        **One statement per batch, converting in the database.** The conversion is
+        ``(vector_json::text)::vector`` executed by PostgreSQL, so the 20 KB vector
+        text never crosses the wire — neither read into Python nor written back.
+        That is not just tidier: passing the literal back in means an extra full
+        copy of every vector through the client, and the earlier round-trip version
+        measured ~40 rows/s (about an hour for a 150k-row corpus).
+
+        Idempotent and self-limiting: each call converts up to
+        ``max_batches × VECTOR_BACKFILL_BATCH`` rows and returns how many were
+        converted, so the caller can interleave it with real work and simply stop
+        when it returns 0. Rows already converted are skipped by the
+        ``embedding IS NULL`` predicate, so a restart mid-way resumes rather than
+        repeating.
+
+        The scan requires the stored array to be exactly the column's width. That
+        is what makes the loop safe to repeat on a batch that cannot progress: a
+        row whose width disagrees (the embedding model was swapped) is never
+        selected again, so one bad generation of vectors cannot stall the rest.
+        Those rows keep working through the jsonb fallback.
+
+        Returns the number of rows converted.
+        """
+        if not self._vector_column_available():
+            return 0
+
+        dimensions = self._vector_column_dimensions()
+        if not dimensions:
+            return 0
+
+        converted = 0
+        for _ in range(max(1, int(max_batches))):
+            try:
+                with self._connect() as db:
+                    result = db.execute(
+                        """
+                        WITH batch AS (
+                            SELECT chunk_id, vector_json
+                            FROM chunk_embeddings
+                            WHERE embedding IS NULL
+                              AND jsonb_typeof(vector_json) = 'array'
+                              AND jsonb_array_length(vector_json) = %s
+                            LIMIT %s
+                        )
+                        UPDATE chunk_embeddings AS ce
+                        SET embedding = (b.vector_json::text)::vector
+                        FROM batch b
+                        WHERE ce.chunk_id = b.chunk_id
+                          AND ce.embedding IS NULL
+                        """,
+                        (dimensions, self.VECTOR_BACKFILL_BATCH),
+                    )
+                    batch_done = result.rowcount or 0
+            except Exception as exc:  # noqa: BLE001 - keep the service usable
+                logger.warning(
+                    "pgvector backfill: batch failed (%s); "
+                    "remaining rows stay on the jsonb fallback",
+                    exc,
+                )
+                break
+
+            converted += batch_done
+            if batch_done == 0:
+                # Either nothing is left, or the remaining rows are all
+                # wrong-width. Another round would select the same rows.
+                break
+
+        return converted
+
+    def _vector_column_dimensions(self) -> int | None:
+        """Width declared on ``chunk_embeddings.embedding``, or ``None``."""
+        try:
+            with self._connect() as db:
+                row = db.execute(
+                    "SELECT format_type(a.atttypid, a.atttypmod) AS t "
+                    "FROM pg_attribute a "
+                    "JOIN pg_class c ON c.oid = a.attrelid "
+                    "WHERE c.relname = 'chunk_embeddings' "
+                    "  AND a.attname = 'embedding' AND a.attnum > 0",
+                ).fetchone()
+        except Exception:  # noqa: BLE001
+            return None
+        declared = str((row or {}).get("t") or "")
+        if declared.startswith("vector(") and declared.endswith(")"):
+            inner = declared[len("vector("):-1]
+            return int(inner) if inner.isdigit() else None
+        return None
+
+    def backfill_embedding_vectors_until_done(
+        self, max_total_batches: int = 100_000,
+    ) -> int:
+        """Run ``backfill_embedding_vectors`` until the column needs no more work.
+
+        Convenience for the worker's idle branch, which wants the whole job done
+        rather than one batch per idle tick (the queue can stay empty for hours).
+        Bounded so a pathological database cannot trap the worker here.
+        """
+        total = 0
+        for _ in range(max_total_batches):
+            done = self.backfill_embedding_vectors(max_batches=1)
+            if done == 0:
+                break
+            total += done
+        if total:
+            self.rebuild_vector_index_if_needed()
+        return total
+
+    @staticmethod
+    def _space_has_chunks(db: Any, space_id: str) -> bool:
+        """True when the space contains at least one chunk (cheap, bounded to 1)."""
+        try:
+            row = db.execute(
+                "SELECT 1 AS ok FROM chunks WHERE space_id = %s LIMIT 1",
+                (space_id,),
+            ).fetchone()
+            return row is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    def count_unconverted_embeddings(self) -> int:
+        """Rows still waiting for their pgvector value; ``-1`` when unknown.
+
+        ``-1`` rather than ``0`` on failure: the callers use this to decide whether
+        the column is finished, and reporting "0 remaining" for a database that
+        merely could not be reached would let them conclude the migration is done
+        and stop retrying. ``0`` means "confirmed nothing left".
+        """
+        if not self._vector_column_available():
+            return 0
+        dimensions = self._vector_column_dimensions()
+        if not dimensions:
+            return 0
+        try:
+            with self._connect() as db:
+                row = db.execute(
+                    """
+                    SELECT count(*) AS n FROM chunk_embeddings
+                    WHERE embedding IS NULL
+                      AND jsonb_typeof(vector_json) = 'array'
+                      AND jsonb_array_length(vector_json) = %s
+                    """,
+                    (dimensions,),
+                ).fetchone()
+            return int((row or {}).get("n") or 0)
+        except Exception:  # noqa: BLE001 - unknown, not zero
+            logger.warning(
+                "pgvector: could not count unconverted embeddings",
+                exc_info=True,
+            )
+            return -1
+
+    def rebuild_vector_index_if_needed(self) -> bool:
+        """Create the HNSW index once every convertible row has a vector.
+
+        Deliberately deferred until the backfill is done: building the graph
+        incrementally during the conversion costs 58x (measured 50 vs 2900 rows/s),
+        so the index is created in one pass over a finished column instead.
+
+        A no-op when the index already exists or rows are still pending, and
+        best-effort overall — without it queries still work through the column
+        scan (and, for any remaining rows, the jsonb fallback), just slower.
+        """
+        if not self._vector_column_available():
+            return False
+        dimensions = self._vector_column_dimensions()
+        if not dimensions:
+            return False
+        try:
+            with self._connect() as db:
+                if self._count_unconverted(db, dimensions):
+                    return False
+                existing = db.execute(
+                    "SELECT 1 AS ok FROM pg_indexes WHERE indexname = %s",
+                    (self.HNSW_INDEX_NAME,),
+                ).fetchone()
+                if existing:
+                    return True
+            # Autocommit connection rather than the pooled session: building an
+            # HNSW index over a large table is a long single statement and must not
+            # sit inside the pool's implicit transaction.
+            with psycopg.connect(
+                self.database_url, autocommit=True, connect_timeout=30,
+            ) as db:
+                # Left at the server default. Raising maintenance_work_mem makes the
+                # build faster, but it is charged against shared memory
+                # (``/dev/shm``), which is small in the default container and fails
+                # the whole statement with "could not resize shared memory segment
+                # ... No space left on device". The default is slower but always
+                # fits.
+                db.execute("SET statement_timeout = 0")
+                db.execute(self._create_hnsw_index_statement())
+            logger.info("pgvector: HNSW index created after backfill")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pgvector: index creation skipped (%s)", exc)
+            return False
 
     def update_document_backend(self, document_id: str, backend: str) -> None:
         with self._connect() as db:
@@ -733,6 +1214,11 @@ class Store:
             )
             db.execute("DELETE FROM chunks WHERE document_id = %s", (document["id"],))
 
+            # Resolved once per save rather than per chunk: the pgvector column may
+            # be absent (extension unavailable), in which case the jsonb column is
+            # the only store and retrieval uses the fallback scan.
+            vector_ready = self._vector_column_available()
+
             for chunk_index, chunk in enumerate(chunks):
                 chunk_id = str(chunk.get("id") or uuid.uuid4())
                 db.execute(
@@ -753,10 +1239,25 @@ class Store:
                     ),
                 )
                 if embeddings and chunk_index < len(embeddings):
-                    db.execute(
-                        "INSERT INTO chunk_embeddings (chunk_id, vector_json) VALUES (%s, %s)",
-                        (chunk_id, Jsonb(embeddings[chunk_index])),
-                    )
+                    embedding = embeddings[chunk_index]
+                    if vector_ready:
+                        # Write the pgvector column alongside the jsonb copy, so new
+                        # documents are searchable through the index immediately and
+                        # never depend on the backfill job. The jsonb column stays
+                        # the durable source of truth and the fallback for a
+                        # database where the extension could not be created.
+                        db.execute(
+                            "INSERT INTO chunk_embeddings "
+                            "(chunk_id, vector_json, embedding) "
+                            "VALUES (%s, %s, %s::vector)",
+                            (chunk_id, Jsonb(embedding), _vector_literal(embedding)),
+                        )
+                    else:
+                        db.execute(
+                            "INSERT INTO chunk_embeddings (chunk_id, vector_json) "
+                            "VALUES (%s, %s)",
+                            (chunk_id, Jsonb(embedding)),
+                        )
                 chunk["id"] = chunk_id
 
             for item in extracted.get("entities", []):
@@ -968,23 +1469,180 @@ class Store:
         limit: int = 20,
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
-        """Semantic retrieval with vectorized cosine scoring.
+        """Semantic retrieval, scored in the database.
+
+        ``pgvector`` with an HNSW index does the neighbour search, so both the
+        latency and the memory are independent of how much material the account
+        has uploaded. The previous implementation pulled every vector in the space
+        into Python and scored them there: measured at 0.52 ms and ~62 MB per
+        10k chunks, i.e. 34.6 s / 3.7 GB at 60k chunks and an OOM kill around
+        150k — which is exactly the "2000 documents and chat got slow" report.
+
+        Falls back to the old in-Python scan when the ``embedding`` column is
+        absent or empty (a database mid-migration, or a deployment where the
+        extension could not be created), so retrieval never breaks — it only
+        loses the speed-up until the backfill catches up.
 
         Scores below *min_score* are dropped so unrelated queries do not
         return noise (embedding cosine for CJK runs high; 0.30 is a practical
         relevance floor, enforced by the caller by default).
         """
-        import math
-
-        try:
-            import numpy as np
-        except ImportError:
-            np = None
+        if not vector:
+            return []
 
         with self._connect() as db:
-            rows = db.execute(
+            if self._has_vector_column(db):
+                rows = self._vector_search_sql(db, space_id, vector, limit, min_score)
+                if rows:
+                    # The query deliberately fetches more candidates than *limit*
+                    # so that discounting scores below *min_score* still leaves
+                    # enough rows — the same contract as the in-Python path below,
+                    # which filters and truncates rather than returning everything.
+                    ranked = sorted(
+                        (r for r in rows if (r.get("score") or 0.0) >= min_score),
+                        key=lambda item: item["score"],
+                        reverse=True,
+                    )
+                    for item in ranked:
+                        item["source"] = "semantic"
+                    return ranked[:limit]
+                # Empty from the index is ambiguous: it can mean "no close match",
+                # which is a normal answer, or "this space is not backfilled yet".
+                # Only the second case may take the full-scan fallback — and the
+                # distinction must be made by looking at the data, **not** at the
+                # row count. Treating "no match" as "not migrated" would scan every
+                # vector in the account, which is what made a large account OOM.
+                if self._space_is_backfilled(db, space_id):
+                    # A backfilled space with content should normally produce
+                    # candidates. Getting none hints at a stale HNSW index (built
+                    # before a bulk load); ``REINDEX INDEX
+                    # idx_chunk_embeddings_hnsw`` is the remedy. Logged rather than
+                    # silently returning [] so the cause is diagnosable.
+                    if self._space_has_chunks(db, space_id):
+                        logger.warning(
+                            "pgvector: no neighbours returned for a populated, "
+                            "fully-backfilled space (%s); if this repeats, "
+                            "REINDEX INDEX %s",
+                            space_id, self.HNSW_INDEX_NAME,
+                        )
+                    return []
+            rows = self._load_all_vectors(db, space_id)
+
+        return self._score_in_python(rows, vector, limit, min_score)
+
+    @staticmethod
+    def _space_is_backfilled(db: Any, space_id: str) -> bool:
+        """True when every chunk in the space has its pgvector value.
+
+        Used to decide whether an empty index result is authoritative. Bounded to
+        one row so the check stays cheap on a large space.
+        """
+        try:
+            row = db.execute(
                 """
-                SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename, ce.vector_json
+                SELECT 1 AS pending FROM chunk_embeddings ce
+                JOIN chunks c ON c.id = ce.chunk_id
+                WHERE c.space_id = %s AND ce.embedding IS NULL
+                LIMIT 1
+                """,
+                (space_id,),
+            ).fetchone()
+            return row is None
+        except Exception:  # noqa: BLE001 - unknown means "fall back", the safe side
+            return False
+
+    @staticmethod
+    def _has_vector_column(db: Any) -> bool:
+        """True once the pgvector column exists (even if not yet backfilled)."""
+        try:
+            row = db.execute(
+                "SELECT 1 AS ok FROM information_schema.columns "
+                "WHERE table_name = 'chunk_embeddings' AND column_name = 'embedding'",
+            ).fetchone()
+            return bool(row)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _vector_column_available(self) -> bool:
+        """Whether ``chunk_embeddings.embedding`` can be written to.
+
+        **Only a positive answer is cached.** The column is permanent once it
+        exists, so ``True`` is safe to remember for the process lifetime — but
+        ``False`` is not: it is also what an unreachable database returns, and the
+        ``Store`` is a process-wide singleton. Caching that made a single
+        transient error (a hiccup during the first probe, or the window before
+        ``CREATE EXTENSION`` finished) disable pgvector for good: writes fell back
+        to jsonb, the backfill converted nothing, the HNSW index was never built,
+        and semantic search stayed on the slow in-Python path until a restart. On
+        failure the next call re-probes instead.
+        """
+        cached = getattr(self, "_vector_col_cache", None)
+        if cached:
+            return True
+        try:
+            with self._connect() as db:
+                available = self._has_vector_column(db)
+        except Exception:  # noqa: BLE001 - unreachable DB is "not yet", not "never"
+            logger.warning(
+                "pgvector: could not check for the embedding column; will retry",
+                exc_info=True,
+            )
+            return False
+        if available:
+            self._vector_col_cache = True
+        return available
+
+    def _vector_search_sql(
+        self,
+        db: Any,
+        space_id: str,
+        vector: list[float],
+        limit: int,
+        min_score: float,
+    ) -> list[dict[str, Any]]:
+        """Nearest neighbours via the HNSW index.
+
+        ``<=>`` is cosine *distance*; ``1 - distance`` is the cosine similarity the
+        caller expects. Asking for more rows than ``limit`` keeps the previous
+        behaviour of cutting off by ``min_score`` after ranking rather than
+        silently returning fewer than asked.
+
+        Rows whose ``embedding`` is still NULL (not yet backfilled) are skipped by
+        the index scan itself; the caller falls back to the full scan only when
+        this returns nothing at all, so a partially backfilled space still returns
+        the vectors that are ready.
+        """
+        literal = "[" + ",".join(f"{float(x):.8g}" for x in vector) + "]"
+        candidates = max(limit * 4, limit + 20)
+        try:
+            return db.execute(
+                """
+                SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
+                       1 - (ce.embedding <=> %s::vector) AS score
+                FROM chunk_embeddings ce
+                JOIN chunks c ON c.id = ce.chunk_id
+                JOIN documents d ON d.id = c.document_id
+                WHERE c.space_id = %s AND ce.embedding IS NOT NULL
+                ORDER BY ce.embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (literal, space_id, literal, candidates),
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001 - fall back rather than fail
+            logger.warning(
+                "pgvector: neighbour search failed, falling back to full scan: %s",
+                exc,
+            )
+            return []
+
+    @staticmethod
+    def _load_all_vectors(db: Any, space_id: str) -> list[dict[str, Any]]:
+        """Load every vector in the space — the pre-pgvector fallback path."""
+        try:
+            return db.execute(
+                """
+                SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
+                       ce.vector_json
                 FROM chunk_embeddings ce
                 JOIN chunks c ON c.id = ce.chunk_id
                 JOIN documents d ON d.id = c.document_id
@@ -992,6 +1650,24 @@ class Store:
                 """,
                 (space_id,),
             ).fetchall()
+        except Exception:  # noqa: BLE001
+            return []
+
+    @staticmethod
+    def _score_in_python(
+        rows: list[dict[str, Any]],
+        vector: list[float],
+        limit: int,
+        min_score: float,
+    ) -> list[dict[str, Any]]:
+        """Cosine-score ``rows`` in Python (fallback for un-backfilled data)."""
+        import math
+
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
+
         if not rows:
             return []
 
@@ -1003,7 +1679,9 @@ class Store:
             matrix = []
             keep_rows = []
             for row in rows:
-                vec = row.pop("vector_json")
+                vec = row.pop("vector_json", None)
+                if vec is None:
+                    continue
                 if isinstance(vec, str):
                     try:
                         vec = json.loads(vec)
@@ -1288,6 +1966,45 @@ class Store:
                 (owner_id,),
             ).fetchone()
         return int(row["cnt"] if row else 0)
+
+    def set_document_workspace(self, document_id: str, workspace: str) -> None:
+        """Record which workspace a document's graph data belongs to."""
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO document_workspaces (document_id, workspace, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (document_id)
+                DO UPDATE SET workspace = EXCLUDED.workspace,
+                              updated_at = EXCLUDED.updated_at
+                """,
+                (document_id, workspace, now_utc()),
+            )
+
+    def get_document_workspace(self, document_id: str) -> str | None:
+        """The workspace a document belongs to, or ``None`` if unrecorded."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT workspace FROM document_workspaces WHERE document_id = %s",
+                (document_id,),
+            ).fetchone()
+        return str(row["workspace"]) if row else None
+
+    def list_pending_document_ids(self, owner_id: str) -> list[str]:
+        """该账号仍在 queued/processing 的文档 id。
+
+        界面要把「处理中」标在**具体哪条路径**上，需要的不是总数而是哪些文档在跑
+        —— 主应用把每条路径的可见文档集合与这份列表求交集，即可得到该路径自己的
+        计数。与 ``count_pending_jobs`` 同源（同样的状态集合），避免两处口径不一致。
+        """
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT DISTINCT d.id FROM jobs j
+                   JOIN documents d ON d.id = j.document_id
+                   WHERE d.owner_id = %s AND j.status IN ('queued', 'processing')""",
+                (owner_id,),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
 
     def get_document_evidence(self, document_id: str) -> list[dict[str, Any]]:
         with self._connect() as db:

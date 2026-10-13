@@ -61,5 +61,9 @@ def process_document(
             document_id=document["id"],
             source_name=document["filename"],
             chunks=chunks,
+            # Resolved here rather than passed down from the request: the worker
+            # runs minutes later, in another process, and the mapping is the only
+            # durable record of which path the upload was for.
+            workspace=store.get_document_workspace(document["id"]),
         )
     )

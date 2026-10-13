@@ -18,6 +18,12 @@ services:
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      # 知识图谱多租户（docs/知识服务多租户存储设计方案.md）。
+      # 填 PostgreSQL DSN 即启用「进程内 LightRAG + 每路径一个 workspace」，
+      # 此时 LIGHTRAG_URL 不再使用；留空保持旧的共享图谱行为。
+      KNOWLEDGE_GRAPH_DATABASE_URL: "${KNOWLEDGE_GRAPH_DATABASE_URL:-}"
+      KNOWLEDGE_GRAPH_MAX_WORKSPACES: "${KNOWLEDGE_GRAPH_MAX_WORKSPACES:-32}"
+      KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS: "${KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS:-8}"
       # Log files land here; the host directory below is mounted over it.
       KNOWLEDGE_LOG_DIR: /var/log/knowledge
       KNOWLEDGE_SQL_LOG: "${KNOWLEDGE_SQL_LOG:-true}"
@@ -55,6 +61,9 @@ services:
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
       LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      KNOWLEDGE_GRAPH_DATABASE_URL: "${KNOWLEDGE_GRAPH_DATABASE_URL:-}"
+      KNOWLEDGE_GRAPH_MAX_WORKSPACES: "${KNOWLEDGE_GRAPH_MAX_WORKSPACES:-32}"
+      KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS: "${KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS:-8}"
       KNOWLEDGE_LOG_DIR: /var/log/knowledge
       KNOWLEDGE_SQL_LOG: "${KNOWLEDGE_SQL_LOG:-true}"
     extra_hosts:
