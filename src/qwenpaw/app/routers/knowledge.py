@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -11,6 +12,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .auth import _request_username
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -41,6 +44,29 @@ class DocumentChunksRequest(BaseModel):
 
 def _service_url() -> str:
     return os.environ.get("QWENPAW_KNOWLEDGE_URL", "").strip().rstrip("/")
+
+
+def workspace_for_path(path_id: str) -> str:
+    """Graph workspace name for a path.
+
+    Mirrors ``knowledge-service/app/graph_store.py::workspace_for_path`` (and the
+    data-space schema naming) so one path is recognisable in every store. Kept as a
+    small duplicate rather than a cross-service import: the two services deploy
+    separately and must not share a code dependency.
+    """
+    compact = str(path_id or "").lower().replace("-", "").strip()
+    return f"ws_{compact}" if compact else ""
+
+
+def _workspace_for_root(username: str) -> str:
+    """The public area's workspace (the account root path)."""
+    try:
+        from ...platform_store import paths as path_store
+
+        return workspace_for_path(path_store.ensure_root_path(username))
+    except Exception:  # noqa: BLE001 - unresolvable root means no workspace
+        logger.warning("knowledge: could not resolve the root path", exc_info=True)
+        return ""
 
 
 def _service_headers(username: str) -> dict[str, str]:
@@ -112,11 +138,131 @@ async def _forward(
         raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
 
 
+async def _account_pending_count(request: Request) -> int:
+    """How many of this account's documents are still queued or processing.
+
+    Deliberately *not* derived from the current page or path: it is the answer to
+    "is background work still running?", which the UI shows persistently. A short
+    document list must not make it read as zero — that is exactly how the
+    indicator used to vanish when the user switched to an empty path.
+
+    Best-effort: an unreachable service yields 0 rather than failing the whole
+    listing, because the list itself is still useful without the count.
+    """
+    url = _service_url()
+    if not url:
+        return 0
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(
+                f"{url}/v1/jobs/pending-count",
+                headers=_service_headers(_request_username(request)),
+            )
+            response.raise_for_status()
+            return int((response.json() or {}).get("pending") or 0)
+    except Exception:  # noqa: BLE001 - the count must never break the listing
+        logger.warning("knowledge: could not read the pending count", exc_info=True)
+        return 0
+
+
+async def migrate_legacy_graph_workspaces() -> dict[str, Any]:
+    """Rebuild every account's knowledge graph into per-path workspaces.
+
+    Runs at startup, after the path model exists (so each account's root path is
+    known). Kept in the main app because **it owns the path model** — the knowledge
+    service cannot name a workspace on its own.
+
+    Only the **root** (public) workspace is populated: every document that existed
+    before this feature was unfiled, which by definition is the public area. Filing
+    a document into a case afterwards moves it (see the transfer flow).
+
+    Idempotent: the knowledge service skips documents already present, so a rerun
+    after a failure only does the remaining work. Best-effort by design — a graph
+    outage must not stop the app from starting.
+    """
+    url = _service_url()
+    if not url:
+        return {"enabled": False, "reason": "knowledge service not configured"}
+
+    from ...config.utils import load_config
+    from ...platform_store import paths as path_store
+    from ..user_space import user_agent_ids
+
+    try:
+        owners = sorted({
+            getattr(profile, "owner_username", None)
+            for profile in load_config().agents.profiles.values()
+            if getattr(profile, "owner_username", None)
+        })
+    except Exception:  # noqa: BLE001
+        logger.warning("graph-migration: could not list accounts", exc_info=True)
+        return {"enabled": False, "reason": "accounts unavailable"}
+
+    total = {"indexed": 0, "skipped": 0, "failed": 0, "accounts": 0}
+    for owner in owners:
+        try:
+            # Documents reachable through the account's root path today. Anything
+            # unfiled belongs to the root, and the root workspace is where the
+            # pre-existing material has to land.
+            root_path = path_store.ensure_root_path(owner)
+            workspace = workspace_for_path(root_path)
+            async with httpx.AsyncClient(timeout=60) as client:
+                page = 1
+                mappings: list[dict[str, str]] = []
+                while True:
+                    response = await client.get(
+                        f"{url}/v1/documents",
+                        headers=_service_headers(owner),
+                        params={"page": page, "page_size": 100},
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    items = payload.get("items") if isinstance(payload, dict) else payload
+                    items = items or []
+                    mappings.extend(
+                        {"document_id": str(item.get("id")), "workspace": workspace}
+                        for item in items
+                        if item.get("id")
+                    )
+                    total_docs = payload.get("total") if isinstance(payload, dict) else None
+                    if len(items) < 100 or (
+                        total_docs is not None and len(mappings) >= int(total_docs)
+                    ):
+                        break
+                    page += 1
+                    if page > 1000:
+                        break
+                if not mappings:
+                    continue
+                # The rebuild can take minutes (entity extraction); allow for it.
+                migrate = await client.post(
+                    f"{url}/v1/graph/migrate",
+                    headers=_service_headers(owner),
+                    json={"mappings": mappings},
+                    timeout=httpx.Timeout(3600.0, connect=10.0),
+                )
+                migrate.raise_for_status()
+                report = migrate.json() or {}
+                total["indexed"] += int(report.get("indexed") or 0)
+                total["skipped"] += int(report.get("skipped") or 0)
+                total["failed"] += int(report.get("failed") or 0)
+                total["accounts"] += 1
+        except Exception:  # noqa: BLE001 - one account must not stop the rest
+            logger.warning("graph-migration: failed for %s", owner, exc_info=True)
+            total["failed"] += 1
+    logger.info("graph-migration: %s", total)
+    return {"enabled": True, **total}
+
+
 async def _resolve_path_document_filter(
     request: Request,
     path_id: str,
 ) -> list[str] | None:
     """Document ids visible under one path, or ``None`` if the path is not ours.
+
+    Access is resolved at **document** granularity: a path holds individual files,
+    so a case folder shows exactly the files put in it, and an unfiled file shows
+    under the root (public) path.
 
     Returns an explicit id list rather than a predicate because the documents live
     in the knowledge service: resolving here and filtering there keeps the path
@@ -133,52 +279,77 @@ async def _resolve_path_document_filter(
     if not url:
         raise HTTPException(status_code=503, detail="Knowledge service is not configured")
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            spaces_response = await client.get(
-                f"{url}/v1/spaces", headers=_service_headers(username),
-            )
-            spaces_response.raise_for_status()
-            spaces = spaces_response.json() or []
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
-
-    space_ids = [str(item.get("id") or "") for item in spaces if item.get("id")]
-    visible = path_store.effective_space_ids_for_path(path_id, username, space_ids)
-    if visible is None:
-        return None
-    if not visible:
-        return []
-
-    doc_ids: list[str] = []
-    try:
         async with httpx.AsyncClient(timeout=120) as client:
-            for space_id in visible:
+            page = 1
+            documents: list[str] = []
+            while True:
                 response = await client.get(
-                    f"{url}/v1/spaces/{space_id}/documents",
+                    f"{url}/v1/documents",
                     headers=_service_headers(username),
+                    params={"page": page, "page_size": 100},
                 )
-                if response.status_code == 404:
-                    continue
                 response.raise_for_status()
-                for item in response.json() or []:
-                    doc_id = item.get("id")
-                    if doc_id:
-                        doc_ids.append(str(doc_id))
+                payload = response.json()
+                items = payload.get("items") if isinstance(payload, dict) else payload
+                items = items or []
+                documents.extend(
+                    str(item.get("id") or "") for item in items if item.get("id")
+                )
+                total = payload.get("total") if isinstance(payload, dict) else None
+                if len(items) < 100 or (
+                    total is not None and len(documents) >= int(total)
+                ):
+                    break
+                page += 1
+                if page > 1000:  # defensive bound
+                    break
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
-    return doc_ids
+
+    return path_store.effective_document_ids_for_path(path_id, username, documents)
 
 
 @router.post("/documents/upload")
 async def upload_knowledge_document(
     request: Request,
     space_id: str = Form(default=""),
+    path_id: str = Form(default=""),
     file: UploadFile = File(...),
 ) -> Any:
+    """Upload a document, filing it under *path_id* when one is given.
+
+    ``path_id`` exists because the console uploads **while a path is selected**:
+    the file must land in the path the user is looking at. Before this, the target
+    path was never sent, so every upload silently became public — the user picked
+    测试1, the document went to 公共区, and selecting the path again did not bring
+    it back.
+
+    An empty ``path_id`` means the public area, which matches the rest of the model
+    ("unbound = public"). A path that is not this account's is refused *before* the
+    upload so a typo cannot scatter files into the wrong case.
+    """
     username = _request_username(request)
+
+    # Validate the destination *before* the service check: a bad path is the
+    # caller's mistake and should read as "路径不存在" rather than being masked by
+    # an unrelated 503 when the knowledge service happens to be unconfigured.
+    from ...platform_store import paths as path_store
+
+    if path_id:
+        node = path_store.path_by_id(path_id)
+        if node is None or node["owner_username"] != username:
+            raise HTTPException(status_code=404, detail="路径不存在。")
+
     url = _service_url()
     if not url:
         raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+
+    # The graph workspace for this upload's path. An empty path_id means the public
+    # area, i.e. the account root.
+    target_workspace = (
+        workspace_for_path(path_id) if path_id else _workspace_for_root(username)
+    )
+
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3600.0, connect=10.0)) as client:
             health = await client.get(f"{url}/health")
@@ -194,14 +365,32 @@ async def upload_knowledge_document(
                 f"{url}/v1/documents/upload",
                 headers=_service_headers(username),
                 files={"file": (file.filename or "unnamed", file.file, file.content_type or "application/octet-stream")},
-                data={"space_id": space_id},
+                data={"space_id": space_id, "workspace": target_workspace},
             )
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text[:2000]) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"Knowledge service unavailable: {exc}") from exc
+
+    # File it after a successful upload: binding first would leave a membership row
+    # pointing at a document that was never created.
+    document_id = str((payload or {}).get("id") or "")
+    if path_id and document_id:
+        try:
+            path_store.bind_resource(
+                path_id, path_store.KIND_KNOWLEDGE_DOCUMENT, document_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("knowledge: could not file upload %s", document_id, exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"文件已上传，但归入路径失败（{exc}）。请在列表中重新归入。",
+            ) from exc
+    if isinstance(payload, dict):
+        payload["path_id"] = path_id or None
+    return payload
 
 
 @router.get("/documents/{document_id}")
@@ -216,7 +405,35 @@ async def reprocess_knowledge_document(document_id: str, request: Request) -> An
 
 @router.delete("/documents/{document_id}")
 async def delete_knowledge_document(document_id: str, request: Request) -> Any:
-    return await _forward(request, "DELETE", f"/v1/documents/{document_id}", _request_username(request))
+    """Delete a document and drop its path membership.
+
+    The membership row lives in the platform store, which the knowledge service
+    knows nothing about, so forwarding the delete alone left the binding behind
+    forever. Those rows grant nothing once the document is gone, but they are a
+    leak — and ``resource_bindings`` is keyed by resource id, so a reused id would
+    silently inherit the old document's case.
+
+    The unbind runs **after** a successful delete so a failed delete cannot strip a
+    still-existing document of its path.
+    """
+    result = await _forward(
+        request, "DELETE", f"/v1/documents/{document_id}", _request_username(request),
+    )
+    try:
+        from ...platform_store import paths as path_store
+
+        current = path_store.path_of_resource(
+            path_store.KIND_KNOWLEDGE_DOCUMENT, document_id,
+        )
+        if current is not None:
+            path_store.unbind_resource(path_store.KIND_KNOWLEDGE_DOCUMENT, document_id)
+    except Exception:  # noqa: BLE001 - the document is already deleted
+        logger.warning(
+            "knowledge: could not clear the path binding for deleted document %s",
+            document_id,
+            exc_info=True,
+        )
+    return result
 
 
 @router.get("/documents/{document_id}/file")
@@ -266,7 +483,15 @@ async def list_knowledge_documents_v2(
     belongs to the account's public area) lives in the platform store, which the
     knowledge service does not depend on. The document id set is resolved from the
     path first, then handed to the knowledge service as an explicit id filter.
+
+    ``pending_count`` is **account-wide** and therefore computed independently of
+    every filter above. It answers "is background processing still running?", a
+    fact about the account rather than about the current view — earlier revisions
+    returned ``0`` from the short-circuit branches below, so the indicator
+    disappeared as soon as the user switched to a path with nothing pending.
     """
+    pending = await _account_pending_count(request)
+
     params: dict[str, str] = {}
     if filename:
         params["filename"] = filename
@@ -278,15 +503,34 @@ async def list_knowledge_documents_v2(
         params["doc_ids"] = doc_ids
     if status:
         params["status"] = status
+
+    def empty_page() -> dict[str, Any]:
+        return {
+            "items": [], "total": 0, "page": page,
+            "page_size": page_size, "pending_count": pending,
+        }
+
     if path_id:
         resolved = await _resolve_path_document_filter(request, path_id)
         if resolved is None:
             # Unknown / foreign path: return an empty page rather than falling
             # back to "everything", which would leak other entries into a case.
-            return {"items": [], "total": 0, "page": page, "page_size": page_size, "pending_count": 0}
+            return empty_page()
         if not resolved:
-            return {"items": [], "total": 0, "page": page, "page_size": page_size, "pending_count": 0}
-        params["doc_ids"] = ",".join(resolved)
+            return empty_page()
+        if doc_ids:
+            # Both filters can arrive at once (keyword search + a selected path).
+            # The knowledge service accepts a single ``doc_ids`` list, so the two
+            # narrower sets have to be intersected here — assigning one over the
+            # other silently dropped the keyword filter, showing every document in
+            # the path as if it had matched.
+            allowed = set(resolved)
+            kept = [d for d in (part.strip() for part in doc_ids.split(",")) if d in allowed]
+            if not kept:
+                return empty_page()
+            params["doc_ids"] = ",".join(kept)
+        else:
+            params["doc_ids"] = ",".join(resolved)
 
     params["page"] = str(page)
     params["page_size"] = str(page_size)

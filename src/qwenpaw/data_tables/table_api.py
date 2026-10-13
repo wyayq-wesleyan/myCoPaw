@@ -8,6 +8,7 @@ table) stall every other request, including other accounts' chat turns.
 """
 
 import json
+import logging
 import re
 
 import psycopg2.extras
@@ -32,6 +33,8 @@ router = APIRouter(
     dependencies=[Depends(init_data_tables_schema)],
 )
 
+logger = logging.getLogger(__name__)
+
 TABLE_NAME_RE = re.compile(r"^tb_[a-z][a-z0-9_]{0,62}$")
 
 
@@ -48,6 +51,10 @@ class CreateTableRequest(BaseModel):
     # Optional per-column type keys (see ALLOWED_COLUMN_TYPES). Positional, and
     # a missing/short list means every column defaults to TEXT.
     column_types: list[str] = Field(default_factory=list)
+    # File the new table under this path. The console creates a table while a path
+    # is selected, so the table must belong there from the start — otherwise it
+    # silently became public and the user had to transfer it afterwards.
+    path_id: str = ""
 
 
 class UpdateTableRequest(BaseModel):
@@ -337,12 +344,23 @@ def create_table(payload: CreateTableRequest, request: Request):
         if not col.strip():
             raise HTTPException(status_code=400, detail=f"第 {i} 列的含义不能为空，请填写后再提交")
 
+    # Validate the target path before creating anything: a typo would otherwise
+    # leave a table created but unfiled, which reads as "it went to 公共区 again".
+    path_id = (payload.path_id or "").strip()
+    if path_id:
+        from ..platform_store import paths as path_store
+
+        node = path_store.path_by_id(path_id)
+        if node is None or node["owner_username"] != username:
+            raise HTTPException(status_code=404, detail="路径不存在。")
+
     return create_table_record(
         username,
         display_name=payload.display_name,
         description=payload.description,
         columns=payload.columns,
         column_types=payload.column_types,
+        path_id=path_id,
     )
 
 
@@ -450,12 +468,36 @@ def delete_table(table_id: str, request: Request):
                 drop_table(row["db_name"], row["table_name"])
             cur.execute(f"DELETE FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (table_id,))
             conn.commit()
+        # Clear the path membership too. The registry row is gone, so a leftover
+        # binding is unreachable — and worse, it keeps the path looking non-empty,
+        # which makes the case permanently undeletable ("路径下还有内容") with no
+        # visible resource to move out. Deleting the table is the only thing that
+        # can release it, so it has to happen here.
+        _release_path_binding(table_id)
         return {"ok": True}
     except Exception:
         conn.rollback()
         raise
     finally:
         _put_conn(conn)
+
+
+def _release_path_binding(table_id: str) -> None:
+    """Drop the resource's path membership after its registry row is deleted.
+
+    Best-effort: the table is already gone, so a failure here leaves a stale
+    binding rather than failing the delete. It is logged because the symptom is
+    confusing (a path that cannot be deleted, naming no resource).
+    """
+    try:
+        from ..platform_store import paths as path_store
+
+        path_store.unbind_resource(path_store.KIND_DATA_TABLE, str(table_id))
+    except Exception:  # noqa: BLE001 - the delete itself already succeeded
+        logger.warning(
+            "data tables: could not release the path binding for deleted table %s",
+            table_id, exc_info=True,
+        )
 
 
 @router.post("/batch-delete")
@@ -466,6 +508,7 @@ def batch_delete_tables(payload: dict, request: Request):
     username = get_request_username(request) or "admin"
     conn = _get_conn()
     deleted = 0
+    removed: list[str] = []
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             for tid in ids:
@@ -481,8 +524,13 @@ def batch_delete_tables(payload: dict, request: Request):
                     except Exception:
                         pass
                 cur.execute(f"DELETE FROM {SYSTEM_TABLE_REGISTRY} WHERE id = %s", (tid,))
+                removed.append(str(tid))
                 deleted += 1
             conn.commit()
+        # Same reason as the single delete: a binding whose registry row is gone
+        # keeps its path looking occupied, blocking that path's deletion.
+        for tid in removed:
+            _release_path_binding(tid)
         return {"ok": True, "deleted": deleted}
     except Exception:
         conn.rollback()

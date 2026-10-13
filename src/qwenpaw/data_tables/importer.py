@@ -458,6 +458,14 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
         # same normalisation used everywhere else, and why no pre-existing table
         # has to move on upgrade.
         table_schema = _schema_for_registry_row(table)
+        # Bound before the try so the ``finally`` below can always tell whether a
+        # connection was actually acquired. ``ensure_path_schema`` runs first and
+        # can raise (a schema/permission/database failure); the earlier shape
+        # called it *before* the assignment, so that failure made the ``finally``
+        # raise ``UnboundLocalError`` and the real database error was replaced in
+        # ``log_excerpt`` — the operator saw "cannot access local variable
+        # 'hg_conn'" and every retry reproduced the same masking.
+        hg_conn = None
         try:
             # The table's schema is decided once, by whichever job gets here
             # first for an uninitialized table. Concurrent jobs would otherwise
@@ -523,7 +531,8 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                     break
             status = "completed" if not insert_errors else ("partial" if success > 0 else "failed")
         finally:
-            put_target_connection(hg_conn, db_name, table_schema)
+            if hg_conn is not None:
+                put_target_connection(hg_conn, db_name, table_schema)
 
         conn = get_sys_conn()
         try:
@@ -604,31 +613,87 @@ async def start_import_task(table_id: str, file_path: str, filename: str) -> str
             conn.commit()
     finally:
         _put_conn(conn)
-    _schedule_job(job_id, table_id, file_path, filename)
+    if not _schedule_job(job_id, table_id, file_path, filename):
+        # This coroutine runs on the event loop, so a failure here means the loop
+        # is shutting down. The row is already committed and the recovery loop
+        # (or the next start-up) will pick it up, so the upload is not lost —
+        # but it will not run right now, and saying nothing would look like a
+        # silent stall.
+        logger.warning(
+            "data import: job %s committed but could not be started now; "
+            "the recovery loop will pick it up",
+            job_id,
+        )
     return job_id
 
 
-def _schedule_job(job_id: str, table_id: str, file_path: str, filename: str) -> None:
+def _schedule_job(job_id: str, table_id: str, file_path: str, filename: str) -> bool:
+    """Start a job's runner task. Returns whether a task was actually created.
+
+    **The in-use mark is rolled back if the task could not be created.** This is
+    what makes the caller safe to run off the event loop: startup recovery is
+    invoked via ``asyncio.to_thread(recover_import_jobs)``, i.e. in a worker thread
+    with no running loop, where ``create_task`` raises ``RuntimeError``. An earlier
+    revision added the id to ``_scheduled_jobs`` *before* creating the task and
+    relied on the task's ``finally`` to remove it — so the raise left the id marked
+    forever. The 60-second recovery loop then hit the ``already scheduled``
+    early-return for that id on every pass and skipped it, while still counting it
+    as scheduled, so the job sat at ``pending`` for good and a restart re-poisoned
+    it. Failing the whole app start is not an option either, so the mark is undone
+    here instead and the caller decides what to do.
+
+    Returns ``True`` when a runner task was created (and will discard the mark
+    when it finishes), ``False`` when it could not be — including "already
+    scheduled", so callers can tell "handled" from "not handled".
+    """
     if job_id in _scheduled_jobs:
-        return
+        return True
     _scheduled_jobs.add(job_id)
+
     async def runner() -> None:
         try:
             await _run_import_job_bounded(job_id, table_id, file_path, filename)
         finally:
             _scheduled_jobs.discard(job_id)
-    asyncio.create_task(runner(), name=f"data-import-{job_id}")
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this thread (startup recovery runs in a worker
+        # thread via ``asyncio.to_thread``). Undo the mark so a later attempt from
+        # the event loop can still schedule this job instead of finding it
+        # permanently "in use".
+        #
+        # Checked before building the coroutine: constructing it and letting
+        # ``create_task`` fail leaves an un-awaited coroutine object, which Python
+        # warns about and which reads like a bug in the logs.
+        _scheduled_jobs.discard(job_id)
+        logger.warning(
+            "data import: no event loop in this thread; job %s left for the "
+            "recovery loop",
+            job_id,
+        )
+        return False
+
+    loop.create_task(runner(), name=f"data-import-{job_id}")
+    return True
 
 
 def recover_import_jobs() -> int:
     """Requeue interrupted jobs and schedule queued jobs after app restart.
 
-    Returns the number of jobs actually scheduled. This is the *only* path that
-    retries a job after it failed: a failed job is parked as ``pending`` with a
-    future ``next_retry_at`` and is rescheduled here once that time passes. A
-    crash inside this function therefore does not just skip a scan — it stops
-    every parked job from ever being retried, which is how a couple of failed
-    imports became permanently stuck.
+    Returns the number of jobs whose runner task was **actually created** — not
+    the number of rows that looked eligible. The distinction matters because the
+    count is the only signal that this scan did anything: an earlier revision
+    incremented it after calling a ``_schedule_job`` that had silently failed
+    (``create_task`` with no running loop), so the log reported progress while
+    every job stayed ``pending`` and the operator had nothing to go on.
+
+    This is the *only* path that retries a job after it failed: a failed job is
+    parked as ``pending`` with a future ``next_retry_at`` and is rescheduled here
+    once that time passes. A crash inside this function therefore does not just
+    skip a scan — it stops every parked job from ever being retried, which is how
+    a couple of failed imports became permanently stuck.
     """
     conn = _get_conn()
     try:
@@ -656,18 +721,27 @@ def recover_import_jobs() -> int:
                     row["file_path"],
                 )
                 continue
-            _schedule_job(
+            if _schedule_job(
                 str(row["id"]),
                 str(row["table_id"]),
                 row["file_path"],
                 row["filename"],
-            )
-            scheduled += 1
+            ):
+                scheduled += 1
         except Exception:  # noqa: BLE001 - keep the scan going
             logger.exception(
                 "data import recovery: failed to schedule job %s",
                 row.get("id"),
             )
+    if rows and not scheduled:
+        # Every eligible row was skipped. Say so, otherwise this looks identical
+        # to a healthy scan that found nothing to do.
+        logger.warning(
+            "data import recovery: %d pending job(s) could not be started "
+            "(staged file missing, or no event loop in this thread); they will "
+            "be retried by the periodic recovery loop",
+            len(rows),
+        )
     return scheduled
 
 

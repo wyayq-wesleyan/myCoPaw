@@ -118,7 +118,10 @@ export const dataAnalysisApi = {
   getTable: (id: string) =>
     apiGet<DataTableItem>(`/data-tables/${id}`),
 
-  createTable: (data: { display_name: string; description: string; columns: string[]; column_types?: string[] }) =>
+  // ``path_id`` files the new table under the selected path; omitting it means the
+  // public area. The console creates tables while a path is selected, so the table
+  // must land there rather than always in 公共区.
+  createTable: (data: { display_name: string; description: string; columns: string[]; column_types?: string[]; path_id?: string }) =>
     apiPost<{ id: string; table_name: string }>("/data-tables", data),
 
   updateTable: (id: string, data: { display_name?: string; description?: string }) =>

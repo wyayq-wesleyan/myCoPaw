@@ -52,6 +52,10 @@ def _read_edges(
     列名来自用户输入，因此必须过标识符校验再拼接 —— 表名/列名无法参数化，
     这是 SQL 标识符注入的经典入口。表是否存在、是否属于本账号，由既有
     ``_find_table_sync`` 校验（它按 owner 查询注册表）。
+
+    连接按该智能体可访问的路径 schema 打开：表被归入案件路径后会物理移出
+    ``public``，用不受限的 ``search_path`` 去读会报「relation does not exist」，
+    而用 ``public`` 去读又会绕过路径隔离。
     """
     from qwenpaw.data_tables.connection import (
         ensure_user_database,
@@ -60,6 +64,13 @@ def _read_edges(
     )
 
     username = _resolve_username()
+
+    from .path_scope import data_search_path
+
+    search_path = data_search_path(username)
+    if search_path is None:
+        raise ValueError("当前智能体没有可访问的数据分析路径。")
+
     db_name = ensure_user_database(username)
     columns = [source_column, target_column]
     if weight_column:
@@ -72,14 +83,16 @@ def _read_edges(
         sql += f" WHERE {where}"
     sql += f" LIMIT {int(limit)}"
 
-    conn = get_target_connection(db_name)
+    conn = get_target_connection(db_name, search_path)
     try:
         with conn.cursor() as cur:
             cur.execute("SET statement_timeout = '60s'")
             cur.execute(sql)
             rows = cur.fetchall()
     finally:
-        put_target_connection(conn, db_name)
+        # The pool key is (db_name, schema); returning without ``search_path``
+        # would leave the scoped pool counting this connection as borrowed.
+        put_target_connection(conn, db_name, search_path)
     return rows
 
 

@@ -1,8 +1,10 @@
 """Agent tools for data table queries against HighGo."""
 
 import asyncio
-import re
 import logging
+import re
+
+import psycopg2
 import shutil
 import time
 import uuid
@@ -59,6 +61,100 @@ def _is_read_only(sql: str) -> bool:
     return first_word in ("SELECT", "WITH")
 
 
+_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
+# Identifiers: double-quoted (PostgreSQL escapes a quote by doubling it) or bare
+# word tokens. Used by the schema-scope guard below.
+_QUOTED_IDENT_RE = re.compile(r'"((?:[^"]|"")*)"')
+_BARE_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+# Functions that read the server filesystem. Not needed for any legitimate query,
+# and reachable through a plain SELECT.
+_BLOCKED_FUNCS_RE = re.compile(
+    r"\b(pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|lo_import|lo_export)\b",
+    re.IGNORECASE,
+)
+
+
+class SchemaScopeError(ValueError):
+    """A query reached outside the schemas this agent was granted."""
+
+
+def _enforce_schema_scope(sql: str, allowed_schemas: list[str], known_schemas: list[str]) -> None:
+    """Refuse a query that names a path schema the agent was not granted.
+
+    **Why this exists.** ``search_path`` only decides how *unqualified* names
+    resolve — it is a convenience, not a boundary. Any query can name another
+    schema directly::
+
+        SELECT * FROM p_<another-case>."tb_secret"
+
+    which ``search_path`` happily allows because the name is already qualified.
+    Since ``query_data_table`` executes model-written SQL, that was a real hole:
+    an agent granted one case could read another case's tables (verified — it
+    returned the other case's rows), and could even enumerate the schemas to find
+    them via ``pg_namespace``.
+
+    Rejecting any mention of a schema the agent does not hold closes it. Names are
+    UUID-derived, so a legitimate query has no reason to reference a foreign one;
+    string literals are stripped first so data values that merely *look* like a
+    schema name (and quoted references to allowed schemas) are unaffected.
+    """
+    if _BLOCKED_FUNCS_RE.search(sql):
+        raise SchemaScopeError("查询包含不允许的函数（禁止读取服务器文件）。")
+
+    scrubbed = _STRING_LITERAL_RE.sub("''", _sanitize_sql(sql))
+    mentioned: set[str] = set(_QUOTED_IDENT_RE.findall(scrubbed))
+    mentioned.update(_BARE_WORD_RE.findall(scrubbed))
+
+    allowed = set(allowed_schemas)
+    forbidden = sorted(
+        name for name in known_schemas
+        # ``public`` is the root path's schema: referencing it is only legitimate
+        # when the agent actually holds the root.
+        if name not in allowed and name in mentioned
+    )
+    if forbidden:
+        raise SchemaScopeError(
+            f"查询引用了未授权的路径 schema（{', '.join(forbidden)}）。"
+            "只能查询当前智能体被挂载的路径下的数据表。",
+        )
+
+
+def _known_path_schemas(db_name: str) -> list[str]:
+    """Every path schema that exists in one account database.
+
+    Needed by the scope guard: it must know which identifiers *are* schemas, so a
+    table alias that happens to look like a name is not mistaken for one.
+    """
+    from qwenpaw.data_tables.connection import _system_db_config
+
+    try:
+        conn = psycopg2.connect(
+            host=_system_db_config()["host"],
+            port=_system_db_config()["port"],
+            dbname=db_name,
+            user=_system_db_config()["username"],
+            password=_system_db_config()["password"],
+            connect_timeout=10,
+        )
+    except Exception:  # noqa: BLE001 - no database means no schemas to guard
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT nspname FROM pg_namespace "
+                "WHERE nspname LIKE %s OR nspname = %s",
+                ("p\\_%", "public"),
+            )
+            return [row[0] for row in cur.fetchall()]
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "data tables: could not list path schemas for %s", db_name, exc_info=True,
+        )
+        return []
+    finally:
+        conn.close()
+
+
 def _ensure_limit(sql: str, max_rows: int = 100) -> str:
     """给查询追加 LIMIT 上限，防止单次查询拉取过多行。
 
@@ -104,6 +200,53 @@ def _resolve_username() -> str:
     from .user_files import resolve_account_username
 
     return resolve_account_username()
+
+
+@tool_descriptor(
+    name="list_paths",
+    description=(
+        "列出当前智能体可以访问的路径（案件/数据空间分区），含路径名称与默认区标记。"
+        "在需要把数据表或知识文档归入某个案件之前调用，以确认案件是否存在、名称怎么写。"
+    ),
+    parameters={"type": "object", "properties": {}, "required": []},
+    tool_type="internal",
+    policy_name="ListPaths",
+    default_policy="allow",
+    policy_reason="Read-only listing of the paths this agent may reach",
+)
+def list_paths() -> str:
+    """List the paths (cases) this agent is allowed to read and write.
+
+    Exists so the model can discover case names before naming one: without it the
+    only way to file material into a case would be for the user to type a raw UUID
+    into the chat.
+    """
+    username = _resolve_username()
+    from .path_scope import granted_path_nodes
+
+    nodes = granted_path_nodes(username)
+    if nodes is None:
+        return (
+            "当前智能体没有可访问的路径。请先在「数据分析」中为该智能体挂载"
+            "「默认」或某个案件，之后才能读写其中的数据。"
+        )
+    if not nodes:
+        return (
+            "当前智能体挂载的路径已被删除，暂时没有可访问的路径。"
+            "请在「数据分析」中重新挂载。"
+        )
+
+    lines = ["当前智能体可访问的路径："]
+    for node in nodes:
+        if node["is_root"]:
+            lines.append(f"- {node['name']}（默认区，未指定案件时数据放在这里）")
+        else:
+            lines.append(f"- {node['name']}")
+    lines.append(
+        "\n把数据表或知识文档归入某个案件时，把上面的名称原样传给对应工具的 "
+        "path 参数即可。",
+    )
+    return "\n".join(lines)
 
 
 @tool_descriptor(
@@ -334,6 +477,15 @@ def query_data_table(sql: str) -> str:
         )
 
     db_name = ensure_user_database(username)
+
+    # ``search_path`` alone is not a boundary: it only fixes how unqualified names
+    # resolve, so a query naming another case's schema directly would still run.
+    # Refuse those before executing (see ``_enforce_schema_scope``).
+    try:
+        _enforce_schema_scope(sql, search_path, _known_path_schemas(db_name))
+    except SchemaScopeError as exc:
+        return f"查询被拒绝：{exc}"
+
     hg_conn = get_target_connection(db_name, search_path)
     try:
         with hg_conn.cursor() as cur:
@@ -357,13 +509,22 @@ def query_data_table(sql: str) -> str:
         put_target_connection(hg_conn, db_name, search_path)
 
 
-def _create_table_sync(username: str, description: str, display_name: str) -> dict:
+def _create_table_sync(
+    username: str,
+    description: str,
+    display_name: str,
+    path_id: str = "",
+) -> dict:
     from qwenpaw.data_tables.table_api import create_table_record
 
+    # ``path_id`` is what files the table into a case. Omitting it is what made
+    # every agent-created table land in the account's public area, where an agent
+    # granted only a case could not even list the table it had just created.
     return create_table_record(
         username,
         display_name=display_name,
         description=description,
+        path_id=path_id,
     )
 
 
@@ -371,6 +532,30 @@ def _find_table_sync(username: str, table_ref: str) -> dict | None:
     from qwenpaw.data_tables.table_api import find_owned_table
 
     return find_owned_table(username, table_ref)
+
+
+def _move_table_sync(table_id: str, path_id: str) -> dict:
+    """Move one table's storage and membership to ``path_id``.
+
+    Order matters and mirrors the console endpoint: the physical move runs first,
+    so a rejected move leaves nothing half-done, and the binding is written only
+    once the data really sits in the target schema.
+
+    ``path_id`` of ``""`` means the public area — ``move_table_for_path`` treats
+    that as the root schema, and ``bind_resource`` is skipped because "unbound"
+    already means root.
+    """
+    from qwenpaw.data_tables.store import move_table_for_path
+
+    result = move_table_for_path(table_id, path_id or None)
+
+    from ...platform_store import paths as path_store
+
+    if path_id:
+        path_store.bind_resource(path_id, path_store.KIND_DATA_TABLE, table_id)
+    else:
+        path_store.unbind_resource(path_store.KIND_DATA_TABLE, table_id)
+    return result
 
 
 def _job_status_sync(job_id: str) -> dict | None:
@@ -464,25 +649,33 @@ async def _await_import(job_id: str, table_name: str, filename: str) -> str:
 @tool_descriptor(
     name="create_data_table",
     description=(
-        "在当前用户的数据分析中新建一张数据表。仅在用户上传了表格文件且明确要求建表、"
+        "在当前用户的数据空间中新建一张数据表。仅在用户上传了表格文件且明确要求建表、"
         "入库或以后能直接查询时使用。表名由描述自动生成，列名和类型会在导入文件时按文件"
         "表头自动推断，所以这里不需要提供列定义。创建后用 import_data_table 导入数据。"
+        "如果用户要求放到某个案件下，用 path 参数指定案件名称（可先调用 list_paths 确认）。"
     ),
     async_execution=True,
-    tool_type="file",
+    tool_type="internal",
     policy_name="CreateDataTable",
     default_policy="ask",
     policy_reason="Creates a persistent data table in the current account",
     ui_description="在当前用户的数据分析中新建数据表",
     ui_icon="🗂️",
 )
-async def create_data_table(description: str, display_name: str = "") -> str:
+async def create_data_table(
+    description: str,
+    display_name: str = "",
+    path: str = "",
+) -> str:
     """Create a data table definition for the current account.
 
     Args:
         description: 这张表的中文描述，用于生成表名并展示在数据分析页面，
             例如"2024 年各区域销售明细"。写清楚数据来源和含义，便于以后查询。
         display_name: 可选的展示名称，留空则与描述一致。
+        path: 可选，把这张表归入哪个案件；留空表示默认区。可以是案件名称
+            （先用 list_paths 查看可用案件），也可以是路径 id。用户没说放哪里
+            时留空即可，不要自己猜一个案件。
     """
     description = (description or "").strip()
     display_name = (display_name or "").strip()
@@ -490,16 +683,158 @@ async def create_data_table(description: str, display_name: str = "") -> str:
         return "请先说明这张表是做什么用的（表描述），表名会根据描述自动生成。"
 
     username = _resolve_username()
+
+    # Resolve the case *before* creating anything: a bad or ambiguous name must not
+    # leave a half-created table behind in the wrong place.
+    from .path_scope import PathAmbiguous, PathNotWritable, resolve_writable_path_id
+
     try:
-        record = await run_sync_io(_create_table_sync, username, description, display_name)
+        path_id = await run_sync_io(
+            resolve_writable_path_id, username, path,
+        )
+    except PathAmbiguous as exc:
+        options = "、".join(
+            f"{c['name']}（{c['id']}）" for c in exc.candidates
+        )
+        return f"有多个路径匹配「{path}」：{options}。请指明要用哪一个。"
+    except PathNotWritable as exc:
+        return str(exc)
+
+    try:
+        record = await run_sync_io(
+            _create_table_sync, username, description, display_name, path_id,
+        )
     except Exception as exc:  # Keep failures readable to the model.
         detail = getattr(exc, "detail", None) or str(exc)
         return f"新建数据表失败：{detail}"
 
+    where = await run_sync_io(_describe_path_label, username, path_id) if path_id else "默认区"
     return (
         f"已创建数据表 {record['table_name']}：{description}\n"
+        f"存放位置：{where}\n"
         f"接下来调用 import_data_table，table_name 传 \"{record['table_name']}\"，"
         f"file 传用户的表格文件名，即可把数据导入这张表。"
+    )
+
+
+def _describe_path_label(username: str, path_id: str) -> str:
+    """A human-readable label for a path id, for tool output.
+
+    Falls back to the raw id rather than raising: the table is already created by
+    the time this runs, so a naming lookup failure must not turn success into an
+    error message.
+    """
+    try:
+        from ...platform_store import paths as path_store
+
+        node = path_store.path_by_id(path_id)
+        if node and node.get("name"):
+            return str(node["name"])
+    except Exception:  # noqa: BLE001
+        pass
+    return path_id
+
+
+@tool_descriptor(
+    name="move_data_table_to_path",
+    description=(
+        "把已经存在的数据表归入某个案件（或在需要时移回默认区）。"
+        "当用户说「把某张表放到案件X下」「这张表归到X案件」时使用。"
+        "用 path 指定目标案件名称（可先调用 list_paths 确认）；path 留空表示移回默认区。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "table_name": {
+                "type": "string",
+                "description": "要移动的数据表名称（list_data_tables 返回的表名）。",
+            },
+            "path": {
+                "type": "string",
+                "description": "目标案件名称或路径 id；留空表示移回默认区。",
+            },
+        },
+        "required": ["table_name"],
+    },
+    async_execution=True,
+    tool_type="internal",
+    policy_name="MoveDataTableToPath",
+    default_policy="ask",
+    policy_reason=(
+        "Changes which case a data table belongs to; for a table inside this "
+        "account only"
+    ),
+    ui_description="把数据表归入案件",
+    ui_icon="📁",
+)
+async def move_data_table_to_path(table_name: str, path: str = "") -> str:
+    """File an existing data table into a case (or move it back to the default area).
+
+    Args:
+        table_name: 要移动的数据表名称，用 list_data_tables 里看到的表名。
+        path: 目标案件名称或路径 id；留空表示移回默认区。
+    """
+    table_name = (table_name or "").strip()
+    path = (path or "").strip()
+    if not table_name:
+        return "请说明要移动哪张数据表（table_name）。"
+
+    username = _resolve_username()
+
+    from .path_scope import PathAmbiguous, PathNotWritable, resolve_writable_path_id
+
+    try:
+        path_id = await run_sync_io(resolve_writable_path_id, username, path)
+    except PathAmbiguous as exc:
+        options = "、".join(f"{c['name']}（{c['id']}）" for c in exc.candidates)
+        return f"有多个路径匹配「{path}」：{options}。请指明要用哪一个。"
+    except PathNotWritable as exc:
+        return str(exc)
+
+    table = await run_sync_io(_find_table_sync, username, table_name)
+    if table is None:
+        return (
+            f"没有找到名为「{table_name}」的数据表。"
+            f"可以先用 list_data_tables 查看当前可用的表。"
+        )
+
+    # Moving *out of* a case the agent cannot see would be a write to a case it has
+    # no grant for. Refuse rather than silently relocate someone else's material.
+    current_path_id = table.get("path_id") or ""
+    from .path_scope import root_path_id, visible_data_path_ids
+
+    allowed = visible_data_path_ids(username)
+    if allowed is None:
+        return (
+            "当前智能体没有可访问的数据分析路径，请先在数据分析中为该智能体"
+            "挂载对应的路径。"
+        )
+    allowed = set(allowed)
+    root = root_path_id(username)
+    if root and root in allowed:
+        allowed.add("")
+    if current_path_id not in allowed:
+        return (
+            f"表「{table['table_name']}」当前不在该智能体可访问的路径内，"
+            f"无法移动。请先在数据分析中把这张表所在的路径挂载给该智能体。"
+        )
+
+    try:
+        result = await run_sync_io(
+            _move_table_sync, str(table["id"]), path_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - readable failure for the model
+        detail = getattr(exc, "detail", None) or str(exc)
+        return f"移动数据表失败：{detail}"
+
+    label = await run_sync_io(_describe_path_label, username, path_id) if path_id else "默认区"
+    note = ""
+    if str(result.get("moved")) == "false":
+        # The table has no physical table yet (never imported). The binding still
+        # applies and the importer will create it in the right schema.
+        note = "（该表尚未导入数据，导入时会直接建在目标路径下）"
+    return (
+        f"已把数据表 {table['table_name']} 归入：{label}{note}"
     )
 
 

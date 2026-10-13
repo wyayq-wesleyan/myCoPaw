@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from ..app.user_space import get_request_username
 from ..utils.io_utils import run_sync_io
 from .connection import get_target_connection, put_target_connection
-from .store import SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn, init_data_tables_schema
+from .store import (
+    SYSTEM_TABLE_REGISTRY,
+    _get_conn,
+    _put_conn,
+    init_data_tables_schema,
+    schema_for_registry_row,
+)
 
 router = APIRouter(tags=["data-preview"], dependencies=[Depends(init_data_tables_schema)])
 
@@ -32,7 +38,12 @@ def _preview_table_sync(table_id: str, username: str, limit: int) -> dict:
     if not table["initialized"]:
         return {"columns": [], "rows": [], "total": 0, "initialized": False}
 
-    hg_conn = get_target_connection(table["db_name"])
+    # The table's schema follows its path: a table filed into a case lives in that
+    # path's schema, so opening the connection on ``public`` would fail with
+    # "relation does not exist" for every filed table. The same schema must be
+    # passed back on return — the pool is keyed by ``(db_name, schema)``.
+    table_schema = schema_for_registry_row(table)
+    hg_conn = get_target_connection(table["db_name"], table_schema)
     try:
         with hg_conn.cursor() as cur:
             cur.execute(f'SELECT * FROM "{table["table_name"]}" LIMIT %s', (limit,))
@@ -69,7 +80,7 @@ def _preview_table_sync(table_id: str, username: str, limit: int) -> dict:
             "initialized": True,
         }
     finally:
-        put_target_connection(hg_conn, table["db_name"])
+        put_target_connection(hg_conn, table["db_name"], table_schema)
 
 
 @router.get("/data-tables/{table_id}/preview")

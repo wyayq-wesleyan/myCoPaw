@@ -105,9 +105,19 @@ def list_import_jobs(
     request: Request,
     table_id: str | None = Query(None),
     status: str | None = Query(None),
+    pending_only: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=50),
 ):
+    """List this account's import jobs, newest first.
+
+    ``pending_only`` selects just the in-flight ones (``pending``/``parsing``/
+    ``loading``). The page header needs that count to answer "is background work
+    still running?", and an *account-wide* answer must not be derived from the
+    tables currently listed — a table filed under another path is invisible in the
+    current view but its import is still running. Asking the server for the count
+    keeps the indicator truthful regardless of what the user is looking at.
+    """
     username = get_request_username(request) or "admin"
     conn = _get_conn()
     try:
@@ -117,7 +127,9 @@ def list_import_jobs(
             if table_id:
                 conditions.append("j.table_id = %s")
                 params.append(table_id)
-            if status:
+            if pending_only:
+                conditions.append("j.status IN ('pending', 'parsing', 'loading')")
+            elif status:
                 conditions.append("j.status = %s")
                 params.append(status)
             # Strictly per account, administrators included.

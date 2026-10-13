@@ -5,7 +5,7 @@ A user's knowledge and data resources were one flat bucket per account. Case
 work needs a second isolation dimension: separate cases must not see each other's
 material, while shared background (investigation techniques, methodology) stays
 visible to several of them. A **path** is that container — a node in a tree that
-both a knowledge space and a data table can belong to, and that an agent is
+both a knowledge document and a data table can belong to, and that an agent is
 granted access to.
 
 Design rules that the rest of the code depends on:
@@ -42,14 +42,21 @@ import psycopg2
 from .migrations import PATH_SCOPE_MIGRATIONS
 from .pool import dict_cursor, get_conn, put_conn
 from .schema import ensure_schema
+from ..utils.text_safety import strip_nuls
 
 logger = logging.getLogger(__name__)
 
 # ``resource_kind`` values. Kept as an explicit closed set so a typo cannot
 # silently create an unreachable binding.
-KIND_KNOWLEDGE_SPACE = "knowledge_space"
+#
+# Knowledge is filed **per document**, not per knowledge space. A space is an
+# account-wide bucket (in practice one per account holds every uploaded file), so
+# binding a space could only move all of an account's material at once — the
+# opposite of what case isolation needs. Documents are the unit a case is
+# actually built from.
+KIND_KNOWLEDGE_DOCUMENT = "knowledge_document"
 KIND_DATA_TABLE = "data_table"
-RESOURCE_KINDS = (KIND_KNOWLEDGE_SPACE, KIND_DATA_TABLE)
+RESOURCE_KINDS = (KIND_KNOWLEDGE_DOCUMENT, KIND_DATA_TABLE)
 
 # Schema-name prefix for a path's data tables (see :func:`data_schema_for`).
 DATA_SCHEMA_PREFIX = "p_"
@@ -130,7 +137,9 @@ def _execute(sql: str, params: tuple | list = ()) -> int:
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, params or ())
+            # Path names and resource labels are user-supplied text; a NUL in
+            # one would make PostgreSQL reject the row outright.
+            cur.execute(sql, strip_nuls(params) or ())
             count = cur.rowcount
         conn.commit()
         return int(count)
@@ -449,6 +458,56 @@ def unbind_agent(agent_id: str, path_id: str) -> None:
     )
 
 
+def replace_agent_paths(agent_id: str, path_ids: list[str]) -> list[str]:
+    """Set an agent's granted paths to exactly *path_ids*; returns the new set.
+
+    Replacing in one statement rather than adding/removing one path at a time
+    keeps the selector in the chat header honest: what the user sees checked is
+    what the agent can read, with no window where a partially-applied selection
+    grants more (or less) than displayed.
+
+    The whole set is written in one transaction, so a failure half-way cannot
+    leave the agent with a mixture of the old and new selections. An empty list is
+    allowed and means "no paths" — deliberately, because turning every path off is
+    a legitimate way to make an agent read nothing.
+    """
+    _ensure_ready()
+    agent = str(agent_id or "").strip()
+    if not agent:
+        raise PathScopeError("必须指定智能体。")
+    wanted: list[str] = []
+    seen: set[str] = set()
+    for path_id in path_ids:
+        value = str(path_id)
+        if value in seen:
+            continue
+        if path_by_id(value) is None:
+            raise PathScopeError(f"路径不存在：{value}")
+        seen.add(value)
+        wanted.append(value)
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                'DELETE FROM "platform".agent_path_bindings WHERE agent_id = %s',
+                (agent,),
+            )
+            for path_id in wanted:
+                cur.execute(
+                    'INSERT INTO "platform".agent_path_bindings (agent_id, path_id) '
+                    "VALUES (%s, %s) ON CONFLICT (agent_id, path_id) DO NOTHING",
+                    (agent, path_id),
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        put_conn(conn)
+    return wanted
+
+
 def agent_path_ids(agent_id: str) -> list[str]:
     """Path ids granted to an agent. Empty list means nothing is visible."""
     _ensure_ready()
@@ -477,7 +536,7 @@ def effective_path_of(
 
     **Why unbound resources fall back to the root rather than being invisible.**
     Every resource that existed before paths were introduced has no binding, and
-    enumerating them all at upgrade time (knowledge spaces live behind the
+    enumerating them all at upgrade time (documents live behind the
     knowledge service, data tables live in per-account databases) would be
     fragile: anything missed would silently disappear from every agent's view.
     Treating "unbound" as "in the root path" makes the root the account's public
@@ -601,17 +660,28 @@ def any_bound_resource_ids(resource_kind: str) -> set[str]:
     return {str(row["resource_id"]) for row in rows}
 
 
-def effective_space_ids_for_path(
+def effective_resource_ids_for_path(
     path_id: str,
     owner_username: str,
-    all_space_ids: list[str],
+    resource_kind: str,
+    all_resource_ids: list[str],
 ) -> list[str] | None:
-    """Which of *all_space_ids* are visible under *path_id*. ``None`` = deny.
+    """Which of *all_resource_ids* are reachable under *path_id*. ``None`` = deny.
 
-    ``all_space_ids`` is the account's full space list, supplied by the caller
-    because it lives in the knowledge service rather than here. The root path
-    additionally owns every **unbound** space — that is what makes pre-existing
-    material show up under the public area without migrating anything.
+    ``all_resource_ids`` is the account's full list for that kind, supplied by the
+    caller because it lives elsewhere (documents in the knowledge service, tables
+    in the account database). The root path additionally owns every **unbound**
+    resource — that is what makes pre-existing material show up under the public
+    area without migrating anything.
+
+    **A binding only counts while its resource still exists.** The result is
+    intersected with ``all_resource_ids`` in both branches, so a binding row whose
+    resource is gone contributes nothing. Binding rows are not foreign-keyed to the
+    resource (it is stored in another database), so a delete that fails to release
+    its binding leaves an orphan row. Counting those made the path tree disagree
+    with the table it labels: 案件 X showed 10 while the list it opened held 3,
+    because the list (correctly) intersected with the registry while this function
+    returned the raw binding set.
 
     Returns ``None`` when the path is not this account's, so the caller denies
     instead of accidentally treating an unknown path as "everything".
@@ -621,15 +691,33 @@ def effective_space_ids_for_path(
     if node is None or node["owner_username"] != owner_username:
         return None
 
-    bound_here = bound_resource_ids(path_id, KIND_KNOWLEDGE_SPACE)
+    live = {str(resource_id) for resource_id in all_resource_ids}
+    bound_here = bound_resource_ids(path_id, resource_kind) & live
     if node["is_root"]:
         unbound = {
-            str(space_id)
-            for space_id in all_space_ids
-            if str(space_id) not in any_bound_resource_ids(KIND_KNOWLEDGE_SPACE)
+            str(resource_id)
+            for resource_id in all_resource_ids
+            if str(resource_id) not in any_bound_resource_ids(resource_kind)
         }
         return sorted(bound_here | unbound)
     return sorted(bound_here)
+
+
+def effective_document_ids_for_path(
+    path_id: str,
+    owner_username: str,
+    all_document_ids: list[str],
+) -> list[str] | None:
+    """Which knowledge documents are visible under *path_id*. ``None`` = deny.
+
+    The knowledge counterpart of :func:`effective_table_ids_for_path`. Documents
+    are filed individually, so a case holds exactly the files put in it: an
+    unfiled document is public (root), a filed one is reachable only through its
+    path.
+    """
+    return effective_resource_ids_for_path(
+        path_id, owner_username, KIND_KNOWLEDGE_DOCUMENT, all_document_ids,
+    )
 
 
 def effective_table_ids_for_path(
@@ -639,20 +727,9 @@ def effective_table_ids_for_path(
 ) -> list[str] | None:
     """Which data tables are visible under *path_id*. ``None`` = deny.
 
-    Same shape as :func:`effective_space_ids_for_path`, and the same root rule:
+    Same shape as :func:`effective_document_ids_for_path`, and the same root rule:
     an unbound table is a pre-existing one and therefore public.
     """
-    _ensure_ready()
-    node = path_by_id(path_id)
-    if node is None or node["owner_username"] != owner_username:
-        return None
-
-    bound_here = bound_resource_ids(path_id, KIND_DATA_TABLE)
-    if node["is_root"]:
-        unbound = {
-            str(table_id)
-            for table_id in all_table_ids
-            if str(table_id) not in any_bound_resource_ids(KIND_DATA_TABLE)
-        }
-        return sorted(bound_here | unbound)
-    return sorted(bound_here)
+    return effective_resource_ids_for_path(
+        path_id, owner_username, KIND_DATA_TABLE, all_table_ids,
+    )

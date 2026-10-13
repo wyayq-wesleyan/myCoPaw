@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
-  Badge,
   Card,
   Col,
   DatePicker,
@@ -12,12 +11,14 @@ import {
   message,
   Modal,
   Popconfirm,
+  Radio,
   Row,
   Select,
   Space,
   Spin,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload,
 } from "antd";
@@ -26,11 +27,15 @@ import {
   DownloadOutlined,
   EditOutlined,
   EyeOutlined,
+  FolderOutlined,
+  GlobalOutlined,
   InboxOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
+  SwapOutlined,
   UnorderedListOutlined,
+  TableOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
@@ -52,6 +57,7 @@ import type {
   DataTableItem,
 } from "../../api/modules/dataAnalysis";
 import PathTreePanel, { ALL_PATHS } from "../../features/path-tree/PathTreePanel";
+import { flattenPaths, pathsApi, pathTree, type PathNode } from "../../api/modules/paths";
 import styles from "./index.module.less";
 
 const { RangePicker } = DatePicker;
@@ -77,6 +83,13 @@ export default function DataAnalysisPage() {
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  // Move-selected-tables dialog.
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<string | null>(null);
+  const [transferPaths, setTransferPaths] = useState<Map<string, PathNode>>(new Map());
+  const [transferring, setTransferring] = useState(false);
+  // Bumped after a transfer so the tree's counts re-read.
+  const [treeRefreshKey, setTreeRefreshKey] = useState(0);
 
   // Create wizard
   const [createOpen, setCreateOpen] = useState(false);
@@ -105,6 +118,31 @@ export default function DataAnalysisPage() {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
   const [jobsFilterStatus, setJobsFilterStatus] = useState<string | undefined>(undefined);
+  // Account-wide in-flight count, independent of the path being viewed (see
+  // `loadJobCounts`). Drives both the header indicator and the polling loop.
+  const [pendingImportCount, setPendingImportCount] = useState(0);
+  // Path id -> node, fed by the tree so a new table's destination can be named and
+  // sent without a second request for the same structure.
+  const [pathNodes, setPathNodes] = useState<Map<string, PathNode>>(new Map());
+
+  const rootPathId = useMemo(() => {
+    for (const node of pathNodes.values()) {
+      if (node.is_root) return node.id;
+    }
+    return "";
+  }, [pathNodes]);
+
+  /**
+   * Where a new table will be created.
+   *
+   * ``ALL_PATHS`` means "no filter", which for creation can only mean the public
+   * area (the root path). Naming it lets the wizard state the destination instead
+   * of the user finding out later that it went somewhere unexpected.
+   */
+  const createTargetPathId =
+    selectedPath && selectedPath !== ALL_PATHS ? selectedPath : rootPathId;
+  const createTargetName =
+    (createTargetPathId && pathNodes.get(createTargetPathId)?.name) || "公共区（未归类）";
 
   // Preview (inline in upload area)
   const [previewData, setPreviewData] = useState<{
@@ -123,6 +161,16 @@ export default function DataAnalysisPage() {
   // Detail
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailData, setDetailData] = useState<DataTableItem | null>(null);
+
+  /**
+   * Reload the path tree.
+   *
+   * The tree shows per-path table counts and the import badge, so anything that
+   * changes where a table lives — or whether its import is running — must call
+   * this. Without it the tree kept showing pre-import counts and no badge while a
+   * file was still being imported.
+   */
+  const refreshTree = useCallback(() => setTreeRefreshKey((n) => n + 1), []);
 
   const fetchTables = useCallback(async () => {
     setLoading(true);
@@ -157,15 +205,46 @@ export default function DataAnalysisPage() {
       pathEffectReady.current = true;
       return;
     }
+    // The ticked rows belong to the list that was on screen. Carrying the
+    // selection across a path switch leaves checkboxes ticked for tables that are
+    // no longer displayed, so a batch action would hit rows the user cannot see.
+    setSelectedRowKeys([]);
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPath]);
 
+  // Fetch the account-wide counts: total jobs (for the drawer) and how many are
+  // still in flight (for the header). The pending count must come from the server
+  // rather than from `tables`: a table filed under another path is not in the
+  // current view, but its import is still running, and deriving the number from
+  // the visible rows made the indicator vanish when switching paths.
+  const loadJobCounts = useCallback(async () => {
+    try {
+      const [all, pending] = await Promise.all([
+        getImportJobs({ page: 1, page_size: 1 }),
+        getImportJobs({ page: 1, page_size: 1, pending_only: true }),
+      ]);
+      setJobsTotal(all.total);
+      setPendingImportCount(pending.total);
+    } catch {
+      /* the indicator is best-effort; the table list still works without it */
+    }
+  }, []);
+
   useEffect(() => {
-    if (!tables.some((table) => (table.pending_import_count || 0) > 0)) return;
-    const timer = window.setInterval(() => void fetchTables(), 3000);
+    void loadJobCounts();
+  }, [loadJobCounts]);
+
+  // Poll while the *account* has imports in flight (see `loadJobCounts`).
+  useEffect(() => {
+    if (pendingImportCount <= 0) return;
+    const timer = window.setInterval(() => {
+      void fetchTables();
+      void loadJobCounts();
+      refreshTree();
+    }, 3000);
     return () => window.clearInterval(timer);
-  }, [tables, fetchTables]);
+  }, [pendingImportCount, fetchTables, loadJobCounts, refreshTree]);
 
   // Auto-fetch preview when import area opens for an initialized table
   useEffect(() => {
@@ -188,12 +267,18 @@ export default function DataAnalysisPage() {
     getImportJobs({ page: 1, page_size: 1 }).then((d) => setJobsTotal(d.total)).catch(() => {});
   }, []);
 
-  const fetchJobs = useCallback(async (p: number, tableId?: string, status?: string) => {
+  const fetchJobs = useCallback(async (
+    p: number,
+    tableId?: string,
+    status?: string,
+    pendingOnly?: boolean,
+  ) => {
     setJobsLoading(true);
     try {
       const params: Record<string, unknown> = { page: p, page_size: 10 };
       if (tableId) params.table_id = tableId;
-      if (status) params.status = status;
+      if (pendingOnly) params.pending_only = true;
+      else if (status) params.status = status;
       const data = await getImportJobs(params);
       setJobs(data.items);
       setJobsTotal(data.total);
@@ -209,6 +294,7 @@ export default function DataAnalysisPage() {
       await deleteTable(id);
       message.success("已删除");
       fetchTables();
+      refreshTree();
     } catch {
       message.error("删除失败");
     }
@@ -221,8 +307,58 @@ export default function DataAnalysisPage() {
       message.success(`已删除 ${selectedRowKeys.length} 张表`);
       setSelectedRowKeys([]);
       fetchTables();
+      refreshTree();
     } catch {
       message.error("批量删除失败");
+    }
+  };
+
+  /**
+   * Move the selected tables to a path (or back to the public area).
+   *
+   * Filing a table also moves its physical storage to that path's schema on the
+   * server; that move is what actually isolates it. Failure is reported per file
+   * rather than swallowed, because a partially-filed batch is the confusing case.
+   */
+  const transferSelected = async (targetPathId: string | null) => {
+    const ids = selectedRowKeys as string[];
+    if (ids.length === 0) return;
+    setTransferring(true);
+    let moved = 0;
+    let failed = 0;
+    for (const tableId of ids) {
+      try {
+        if (targetPathId) {
+          await pathsApi.bindResource(targetPathId, "data_table", tableId);
+        } else {
+          await pathsApi.unbindResourceAnyPath("data_table", tableId);
+        }
+        moved += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setTransferring(false);
+    setTransferOpen(false);
+    setSelectedRowKeys([]);
+    fetchTables();
+    refreshTree();
+    if (failed === 0) {
+      message.success(`已将 ${moved} 张表转移`);
+    } else {
+      message.warning(`${moved} 张成功，${failed} 张失败`);
+    }
+  };
+
+  /** Open the transfer dialog, loading the path tree to choose from. */
+  const openTransfer = async () => {
+    setTransferTarget(null);
+    setTransferOpen(true);
+    try {
+      const result = await pathTree();
+      setTransferPaths(flattenPaths(result.tree || []));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "路径列表读取失败");
     }
   };
 
@@ -240,7 +376,7 @@ export default function DataAnalysisPage() {
     setJobsPage(1);
     setJobsFilterStatus(undefined);
     setJobsDrawerOpen(true);
-    fetchJobs(1);
+    fetchJobs(1, undefined, undefined, true);
   };
 
   // Create wizard
@@ -276,12 +412,16 @@ export default function DataAnalysisPage() {
         display_name: values.display_name || "",
         description: values.description || "",
         columns: notes,
+        // Land in the path the user is looking at; without this the table was
+        // created public and had to be transferred by hand afterwards.
+        path_id: createTargetPathId,
       });
-      message.success("数据表定义已创建，首次导入时将自动确定列名和类型");
+      message.success(`数据表定义已创建并归入「${createTargetName}」，首次导入时将自动确定列名和类型`);
       setCreateOpen(false);
       createForm.resetFields();
       setColumnNotes([""]);
       fetchTables();
+      refreshTree();
     } catch (err) {
       if (err && typeof err === "object" && "errorFields" in err) return;
       message.error("创建失败");
@@ -311,6 +451,7 @@ export default function DataAnalysisPage() {
       await importFiles(importTableId, [file]);
       message.success("文件已上传，正在后台导入");
       fetchTables();
+      refreshTree();
     } catch {
       message.error("上传失败");
     } finally {
@@ -385,7 +526,10 @@ export default function DataAnalysisPage() {
       sorter: (a: DataTableItem, b: DataTableItem) => (a.display_name || a.table_name).localeCompare(b.display_name || b.table_name),
     },
     {
-      title: <Badge count={tables.reduce((sum, item) => sum + (item.pending_import_count || 0), 0)} overflowCount={999} offset={[8, 0]}><span>状态</span></Badge>,
+      // No badge here: an import count on the column is not attributable to a path,
+      // so it showed while viewing a case with nothing importing. Per-path progress
+      // is shown on the path tree instead.
+      title: "状态",
       dataIndex: "initialized",
       key: "status",
       width: 100,
@@ -517,22 +661,49 @@ export default function DataAnalysisPage() {
   ];
 
   return (
-    <div className={styles.container}>
-      <div style={{ display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: 20, alignItems: "start" }}>
-        {/* Path tree: shows which case each table is filed under and which agents
-            can read it. Read-only for now. */}
-        <Card bordered={false} styles={{ body: { padding: "10px 6px" } }}>
-          <div style={{ padding: "2px 8px 8px", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em", color: "rgba(0,0,0,0.45)" }}>
-            路径
+    <section className={styles.page}>
+      <header className={styles.hero}>
+        <div className={styles.titleBlock}>
+          <div className={styles.mark}><TableOutlined /></div>
+          <div>
+            <Typography.Title level={3}>数据空间</Typography.Title>
+            <Typography.Text>把表格数据变为可查询、可关联、可供智能体分析的数据资产。</Typography.Text>
           </div>
+        </div>
+        <Space>
+          {/* Entry point to the task list. No account-wide number here: the count
+              is only meaningful per path, so it lives on the tree. */}
+          <Tooltip title="查看导入任务列表">
+            <Button
+              type="text"
+              size="small"
+              icon={<UnorderedListOutlined />}
+              onClick={handleShowJobs}
+              aria-label="导入任务列表"
+            >
+              任务
+            </Button>
+          </Tooltip>
+          <Tooltip title="刷新列表">
+            <Button type="text" icon={<ReloadOutlined />} onClick={() => void fetchTables()} />
+          </Tooltip>
+        </Space>
+      </header>
+
+      <div className={styles.body}>
+        {/* Path tree: shows which case each table is filed under and which agents
+            can read it. */}
+        <aside className={styles.sidebar}>
+          <div className={styles.sidebarTitle}>路径</div>
           <PathTreePanel
             value={selectedPath}
             onChange={setSelectedPath}
             countKind="table"
-            refreshKey={total}
+            refreshKey={treeRefreshKey}
+            onTreeLoaded={(nodes) => setPathNodes(flattenPaths(nodes))}
           />
-        </Card>
-        <div style={{ minWidth: 0 }}>
+        </aside>
+        <div className={styles.content}>
       <Card bordered={false}>
         <Row gutter={16} align="middle" style={{ marginBottom: 16 }}>
           <Col>
@@ -561,9 +732,14 @@ export default function DataAnalysisPage() {
           <Col flex="1" />
           <Col>
             <Space>
-              <Button icon={<UnorderedListOutlined />} onClick={handleShowJobs}>
-                任务
-              </Button>
+              {selectedRowKeys.length > 0 && (
+                <Button
+                  icon={<SwapOutlined />}
+                  onClick={() => void openTransfer()}
+                >
+                  转移到路径 ({selectedRowKeys.length})
+                </Button>
+              )}
               {selectedRowKeys.length > 0 && (
                 <Popconfirm
                   title={`确定删除选中的 ${selectedRowKeys.length} 张表？`}
@@ -592,6 +768,11 @@ export default function DataAnalysisPage() {
           dataSource={tables}
           rowKey="id"
           loading={loading}
+          // The columns need ~1080px, more than this column has beside the 240px
+          // path tree. Without a scroll container the table's intrinsic width
+          // pushed the whole flex row wider, which shrank the sidebar to ~56px and
+          // made this page's layout visibly differ from the knowledge page's.
+          scroll={{ x: 1080 }}
           onRow={(record) => ({
             onClick: (e) => {
               if ((e.target as HTMLElement).closest('button, .ant-checkbox-wrapper, .ant-dropdown')) return;
@@ -959,6 +1140,46 @@ export default function DataAnalysisPage() {
           </div>
         )}
       </Modal>
-    </div>
+
+      {/* Move selected tables between paths. */}
+      <Modal
+        title={`将 ${selectedRowKeys.length} 张表转移到`}
+        open={transferOpen}
+        onCancel={() => setTransferOpen(false)}
+        onOk={() => void transferSelected(transferTarget)}
+        okText="转移"
+        cancelText="取消"
+        confirmLoading={transferring}
+        destroyOnHidden
+      >
+        <Typography.Paragraph type="secondary">
+          转移会把表的数据一并移到目标路径，之后只有挂载了该路径的智能体才能访问。
+          选择「公共区（未归类）」则移回公共区，账号下所有智能体可见。
+        </Typography.Paragraph>
+        <Radio.Group
+          value={transferTarget ?? ""}
+          onChange={(event) =>
+            setTransferTarget(event.target.value === "" ? null : String(event.target.value))
+          }
+          style={{ display: "flex", flexDirection: "column", gap: 8 }}
+        >
+          <Radio value="">
+            <GlobalOutlined /> 公共区（未归类）
+          </Radio>
+          {[...transferPaths.values()]
+            .filter((node) => !node.is_root)
+            .map((node) => (
+              <Radio key={node.id} value={node.id}>
+                <FolderOutlined /> {node.name}
+              </Radio>
+            ))}
+        </Radio.Group>
+        {[...transferPaths.values()].filter((node) => !node.is_root).length === 0 && (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+            还没有子路径。请先在左侧路径树中新建一条路径，再转移数据表。
+          </Typography.Paragraph>
+        )}
+      </Modal>
+    </section>
   );
 }

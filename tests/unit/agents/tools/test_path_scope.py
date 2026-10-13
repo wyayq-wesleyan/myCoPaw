@@ -75,7 +75,7 @@ def test_agent_with_root_grant_sees_public_material(scope):
     P.bind_agent(f"{owner}-ag", root)
     set_agent(f"{owner}-ag")
 
-    assert ps.visible_space_ids(owner, [public]) == [public]
+    assert ps.visible_document_ids(owner, [public]) == [public]
 
 
 @requires_platform_db
@@ -88,11 +88,11 @@ def test_case_material_is_hidden_from_root_only_agent(scope):
     root = P.ensure_root_path(owner, "公共")
     case = P.create_path(owner, "案件一")
     case_material = f"{owner}-案件材料"
-    P.bind_resource(case, P.KIND_KNOWLEDGE_SPACE, case_material)
+    P.bind_resource(case, P.KIND_KNOWLEDGE_DOCUMENT, case_material)
     P.bind_agent(f"{owner}-ag", root)
     set_agent(f"{owner}-ag")
 
-    assert ps.visible_space_ids(owner, [case_material]) == []
+    assert ps.visible_document_ids(owner, [case_material]) == []
 
 
 @requires_platform_db
@@ -104,14 +104,14 @@ def test_case_agent_sees_its_case_and_loses_it_when_material_moves(scope):
     case2 = P.create_path(owner, "案件二")
     material = f"{owner}-材料"
 
-    P.bind_resource(case1, P.KIND_KNOWLEDGE_SPACE, material)
+    P.bind_resource(case1, P.KIND_KNOWLEDGE_DOCUMENT, material)
     for pid in (root, case1):
         P.bind_agent(f"{owner}-ag", pid)
     set_agent(f"{owner}-ag")
-    assert ps.visible_space_ids(owner, [material]) == [material]
+    assert ps.visible_document_ids(owner, [material]) == [material]
 
-    P.bind_resource(case2, P.KIND_KNOWLEDGE_SPACE, material)
-    assert ps.visible_space_ids(owner, [material]) == []
+    P.bind_resource(case2, P.KIND_KNOWLEDGE_DOCUMENT, material)
+    assert ps.visible_document_ids(owner, [material]) == []
 
 
 @requires_platform_db
@@ -121,7 +121,7 @@ def test_agent_without_grants_sees_nothing(scope):
     P.ensure_root_path(owner, "公共")
     set_agent(f"{owner}-ghost")
 
-    assert ps.visible_space_ids(owner, [f"{owner}-公共资料"]) == []
+    assert ps.visible_document_ids(owner, [f"{owner}-公共资料"]) == []
 
 
 @requires_platform_db
@@ -136,7 +136,7 @@ def test_unknown_agent_identity_denies(scope):
     P.bind_agent(f"{owner}-ag", root)  # 即使账号下有授权
     set_agent("")  # 但这次调用拿不到身份
 
-    assert ps.visible_space_ids(owner, [f"{owner}-资料"]) == []
+    assert ps.visible_document_ids(owner, [f"{owner}-资料"]) == []
 
 
 @requires_platform_db
@@ -147,25 +147,25 @@ def test_scope_filters_only_the_agents_own_spaces(scope):
     case = P.create_path(owner, "案件一")
     public = f"{owner}-公共"
     case_material = f"{owner}-案件"
-    P.bind_resource(case, P.KIND_KNOWLEDGE_SPACE, case_material)
+    P.bind_resource(case, P.KIND_KNOWLEDGE_DOCUMENT, case_material)
     for pid in (root, case):
         P.bind_agent(f"{owner}-ag", pid)
     set_agent(f"{owner}-ag")
 
-    visible = ps.visible_space_ids(owner, [public, case_material])
+    visible = ps.visible_document_ids(owner, [public, case_material])
     assert set(visible) == {public, case_material}
 
     # 换成只绑根的智能体：案件材料被滤掉。
     P.bind_agent(f"{owner}-ag2", root)
     set_agent(f"{owner}-ag2")
-    assert ps.visible_space_ids(owner, [public, case_material]) == [public]
+    assert ps.visible_document_ids(owner, [public, case_material]) == [public]
 
 
 @requires_platform_db
 def test_empty_input_stays_empty(scope):
     owner, set_agent, ps = scope
     set_agent(f"{owner}-ag")
-    assert ps.visible_space_ids(owner, []) == []
+    assert ps.visible_document_ids(owner, []) == []
 
 
 @requires_platform_db
@@ -182,7 +182,7 @@ def test_store_failure_denies_instead_of_allowing(scope, monkeypatch):
         raise RuntimeError("simulated store outage")
 
     monkeypatch.setattr(P, "agent_path_ids", boom)
-    assert ps.visible_space_ids(owner, [f"{owner}-资料"]) == []
+    assert ps.visible_document_ids(owner, [f"{owner}-资料"]) == []
 
 
 def test_current_agent_id_rejects_the_default_placeholder(monkeypatch):

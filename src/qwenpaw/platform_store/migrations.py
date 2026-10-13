@@ -184,7 +184,7 @@ TOKEN_USAGE_MIGRATIONS: list[Migration] = [
 # Case work needs a second isolation dimension *inside* an account: separate
 # cases must not see each other's material, while shared background knowledge
 # is visible to several of them. A "path" is that container — a node in a tree
-# that both a knowledge space and a data table can belong to, and that an agent
+# that both a knowledge document and a data table can belong to, and that an agent
 # is granted access to.
 #
 # Three tables, deliberately minimal:

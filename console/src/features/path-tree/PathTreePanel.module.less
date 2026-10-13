@@ -26,6 +26,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  /* Anchor for the absolutely positioned row actions (see .actions). */
+  position: relative;
+  /* Reserved so the count/tag never sit under the hover buttons. */
   padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
@@ -73,6 +76,19 @@
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Processing badge, in the slot the agent count used to occupy. Kept compact so a
+ * path row still fits name + count + badge without squeezing the name (see the
+ * .actions note above about why width matters here).
+ */
+.pendingTag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+  font-size: 11px;
+  line-height: 16px;
+  padding-inline: 4px;
+}
+
 .agentTag {
   flex: 0 0 auto;
   margin-inline-end: 0;
@@ -98,4 +114,106 @@
 
 .rowDisabled:hover {
   background: transparent;
+}
+
+/*
+ * Row actions appear on hover so the tree stays readable at a glance, while the
+ * controls are still reachable without a separate screen. They are kept in the
+ * layout (not display:none) so hovering does not make the row jump.
+ *
+ * They are also taken **out of flow** for sizing purposes: the buttons keep their
+ * own box, but the row lays the name out as if they were not there and the actions
+ * are painted over the trailing edge. Before this, five 24px buttons consumed
+ * 120px of a 226px row and squeezed every path name to 0px — the tree showed
+ * names only when the pointer happened to hover the row.
+ */
+.actions {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding-left: 6px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  /* Opaque so a long name does not show through the buttons. */
+  background: #fff;
+  border-radius: 6px 6px 6px 6px;
+}
+
+.row:hover .actions,
+.actions:focus-within {
+  opacity: 1;
+}
+
+.actions :global(.qwenpaw-btn) {
+  padding-inline: 3px;
+  height: 20px;
+  min-width: 20px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.actions :global(.qwenpaw-btn):hover {
+  color: #1677ff;
+}
+
+.dialogHint {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.assignList {
+  display: flex;
+  flex-direction: column;
+  max-height: 46vh;
+  margin-top: 12px;
+  overflow-y: auto;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+}
+
+.assignItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.assignItem:last-child {
+  border-bottom: none;
+}
+
+.assignItem:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.assignName {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.assignDetail {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+/* Push the status tag to the right edge so the list scans as name → status. */
+.assignTag {
+  flex: 0 0 auto;
+  margin-left: auto;
+  margin-inline-end: 0;
+  font-size: 11px;
 }

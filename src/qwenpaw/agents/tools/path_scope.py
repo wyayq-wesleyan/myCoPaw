@@ -46,16 +46,21 @@ def current_agent_id() -> str:
     return str(agent)
 
 
-def visible_space_ids(owner_username: str, space_ids: list[str]) -> list[str]:
-    """Filter knowledge space ids down to those this agent may read.
+def visible_document_ids(
+    owner_username: str,
+    all_document_ids: list[str],
+) -> list[str]:
+    """Which of the account's documents *this agent* may read. Empty = none.
 
-    ``space_ids`` is what the account owns (already owner-scoped by the knowledge
-    service); this narrows it to the agent's granted paths. An empty result means
-    the agent has no grants — the caller must present that as "no accessible
-    material", not as "the search found nothing".
+    Knowledge is filed per document, so the allowed set is the union over the
+    agent's granted paths of the documents filed there, plus — when the agent
+    holds the root path — every unfiled document (the account's public area).
+
+    ``all_document_ids`` is the account's full list, supplied by the caller
+    because the documents live in the knowledge service. It is *required* for the
+    root case: without it, "unfiled" cannot be told apart from "filed elsewhere",
+    and a root-only agent would see nothing.
     """
-    if not space_ids:
-        return []
     agent_id = current_agent_id()
     if not agent_id:
         logger.warning(
@@ -67,10 +72,7 @@ def visible_space_ids(owner_username: str, space_ids: list[str]) -> list[str]:
     try:
         from ...platform_store import paths
 
-        # Granted *path* ids. Comparing them against resource ids would never
-        # match (the two are different namespaces) and would silently filter out
-        # everything the agent should see.
-        allowed = set(paths.agent_path_ids(agent_id))
+        granted = set(paths.agent_path_ids(agent_id))
         root = paths.ensure_root_path(owner_username)
     except Exception:  # noqa: BLE001 - unavailable store must deny, not allow
         logger.warning(
@@ -79,22 +81,26 @@ def visible_space_ids(owner_username: str, space_ids: list[str]) -> list[str]:
         )
         return []
 
-    # A space with no binding is public (lives in the root path); one with a
-    # binding is visible only if that path was granted.
-    visible: list[str] = []
-    for space_id in space_ids:
-        try:
-            bound = paths.path_of_resource(paths.KIND_KNOWLEDGE_SPACE, space_id)
-            effective = bound if bound is not None else root
-        except Exception:  # noqa: BLE001 - deny this one rather than leak it
-            logger.warning(
-                "path_scope: could not resolve path for space %s", space_id,
-                exc_info=True,
+    if not granted:
+        # fail-closed: an agent with no grants reads nothing.
+        return []
+
+    allowed: set[str] = set()
+    try:
+        for path_id in granted:
+            visible = paths.effective_document_ids_for_path(
+                path_id, owner_username, all_document_ids,
             )
-            continue
-        if effective in allowed:
-            visible.append(space_id)
-    return visible
+            if visible:
+                allowed.update(visible)
+    except Exception:  # noqa: BLE001 - deny rather than leak on a partial failure
+        logger.warning(
+            "path_scope: refusing knowledge access — document lookup failed",
+            exc_info=True,
+        )
+        return []
+
+    return sorted(allowed)
 
 
 def data_search_path(owner_username: str) -> list[str] | None:
@@ -195,11 +201,143 @@ def root_path_id(owner_username: str) -> str | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Resolving a path the *user* named (a case name, or an id)
+# ---------------------------------------------------------------------------
+
+
+class PathNotWritable(ValueError):
+    """The named path cannot be written to by this agent."""
+
+
+class PathAmbiguous(ValueError):
+    """The name matches more than one granted path; the caller must disambiguate."""
+
+    def __init__(self, candidates: list[dict[str, str]]) -> None:
+        self.candidates = candidates
+        # Include the ids: when the collision is two paths with the *same* name,
+        # repeating the name (the earlier form) gives the reader nothing to choose
+        # between, and the id is the only distinguishing value there is.
+        described = "、".join(
+            f"{c.get('name') or '未命名'}（{c.get('id') or '无 id'}）"
+            for c in candidates
+        )
+        super().__init__(
+            f"「{candidates[0].get('name') if candidates else ''}」"
+            f"匹配到多个路径：{described}。请指明要用哪一个（可用路径 id）。",
+        )
+
+
+def granted_path_nodes(owner_username: str) -> list[dict[str, str]] | None:
+    """Paths this agent may write into, as ``{id, name, is_root, parent_id}``.
+
+    ``None`` means deny (unknown identity, no grants, or an unreachable store) —
+    the same fail-closed rule the read paths use. An empty list can never be
+    returned: no grants is ``None``, so callers cannot mistake "nothing" for
+    "unfiltered".
+    """
+    agent_id = current_agent_id()
+    if not agent_id:
+        return None
+    try:
+        from ...platform_store import paths as path_store
+
+        granted = path_store.agent_path_ids(agent_id)
+        if not granted:
+            return None
+        nodes: list[dict[str, str]] = []
+        for path_id in granted:
+            node = path_store.path_by_id(path_id)
+            if not node:
+                # A grant pointing at a deleted path grants nothing; skip rather
+                # than fail the whole call, so the other cases stay usable.
+                continue
+            nodes.append(
+                {
+                    "id": str(node.get("id") or ""),
+                    "name": str(node.get("name") or ""),
+                    "is_root": bool(node.get("is_root")),
+                    "parent_id": str(node.get("parent_id") or ""),
+                },
+            )
+        return nodes
+    except Exception:  # noqa: BLE001 - deny rather than widen on failure
+        logger.warning(
+            "path_scope: could not resolve granted paths", exc_info=True,
+        )
+        return None
+
+
+def resolve_writable_path_id(owner_username: str, reference: str) -> str:
+    """Turn what the user said (a case name or an id) into a writable path id.
+
+    Returning ``""`` means the account's public area (the root path), which is
+    where resources go when no case is named — the pre-existing behaviour.
+
+    **Only granted paths are candidates.** Letting the model file material into a
+    case the agent was never granted would be a write-side isolation hole: the
+    agent could not read that case, but it could still add to it, and the case's
+    own agent would then see material appear from nowhere. Names are matched only
+    inside the granted set, so an un-granted case name simply does not resolve.
+
+    Raises :class:`PathNotWritable` when nothing matches and
+    :class:`PathAmbiguous` when several do — a wrong guess here silently misfiles
+    the user's data, so ambiguity is reported instead of resolved.
+    """
+    reference = (reference or "").strip()
+    if not reference:
+        return ""
+
+    nodes = granted_path_nodes(owner_username)
+    if nodes is None:
+        raise PathNotWritable(
+            "当前智能体没有可写入的路径。请先在「数据分析」中为该智能体挂载路径。",
+        )
+
+    # An explicit id always wins: it is unambiguous by construction.
+    for node in nodes:
+        if node["id"] == reference:
+            return "" if node["is_root"] else node["id"]
+
+    exact = [node for node in nodes if node["name"] == reference]
+    if len(exact) == 1:
+        node = exact[0]
+        return "" if node["is_root"] else node["id"]
+    if len(exact) > 1:
+        raise PathAmbiguous(exact)
+
+    # Fall back to a case-insensitive / substring match so "销售案件" finds
+    # "2024销售案件". Ambiguity is still reported rather than guessed.
+    lowered = reference.lower()
+    loose = [
+        node
+        for node in nodes
+        if lowered in node["name"].lower() and not node["is_root"]
+    ]
+    if len(loose) == 1:
+        return loose[0]["id"]
+    if len(loose) > 1:
+        raise PathAmbiguous(loose)
+
+    visible = "、".join(
+        f"{node['name']}（默认区）" if node["is_root"] else node["name"]
+        for node in nodes
+    )
+    raise PathNotWritable(
+        f"没有找到名为「{reference}」的可写入路径。当前可写入：{visible}。"
+        f"如需新案件，请先在「数据分析」中创建并挂载给该智能体。",
+    )
+
+
 __all__ = [
     "ROOT_SCHEMA",
+    "PathAmbiguous",
+    "PathNotWritable",
     "current_agent_id",
     "data_search_path",
+    "granted_path_nodes",
+    "resolve_writable_path_id",
     "root_path_id",
     "visible_data_path_ids",
-    "visible_space_ids",
+    "visible_document_ids",
 ]

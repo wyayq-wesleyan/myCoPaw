@@ -196,6 +196,10 @@ def init_data_tables_schema():
         _init_data_tables_schema()
         migrate_legacy_registry_tables()
         sync_registry_path_mirror()
+        # Bindings left behind by deletes that predate the release-on-delete fix.
+        # They inflate the path tree's counts and block deleting the path they
+        # point at, so they are cleared once per process at start-up.
+        prune_orphan_table_bindings()
         _schema_initialized = True
 
 
@@ -322,6 +326,15 @@ def _init_data_tables_schema():
 
 # Must match ``agents.tools.path_scope.ROOT_SCHEMA``; asserted by a test.
 ROOT_SCHEMA = "public"
+
+
+class TableNotFound(LookupError):
+    """No registry row for the requested table id (a client-side mistake).
+
+    Distinct from a generic ``ValueError`` so the router can answer 404 rather than
+    500 — and so a malformed id (``id::text`` avoids the uuid cast error) reads as
+    "不存在" instead of a raw database message.
+    """
 
 
 def schema_for_path(path_id: str, is_root: bool) -> str:
@@ -555,6 +568,201 @@ def migrate_legacy_registry_tables() -> dict[str, int]:
     return copied
 
 
+def table_actual_schema(db_name: str, table_name: str) -> str | None:
+    """Which schema *table_name* physically lives in, or ``None`` if absent.
+
+    Needed because the physical location is the thing that actually enforces
+    isolation, and it can disagree with the binding: a table filed before the
+    move was wired up still sits in ``public``. Moving from the *actual* schema
+    (rather than from the schema the binding implies) is what lets that backlog
+    heal on the next move instead of failing with "relation does not exist".
+
+    Only the account's own schemas are considered — ``public`` plus the
+    UUID-derived ``p_*`` ones — so a same-named table in an unrelated schema is
+    never picked up.
+    """
+    from ..platform_store import paths as path_store
+    from .connection import _system_db_config
+
+    cfg = _system_db_config()
+    conn = psycopg2.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        dbname=db_name,
+        user=cfg["username"],
+        password=cfg["password"],
+        connect_timeout=10,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT schemaname FROM pg_tables WHERE tablename = %s "
+                "AND (schemaname = %s OR schemaname LIKE %s) "
+                "ORDER BY (schemaname = %s) DESC LIMIT 1",
+                (
+                    table_name, ROOT_SCHEMA,
+                    f"{path_store.DATA_SCHEMA_PREFIX}%", ROOT_SCHEMA,
+                ),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def move_table_for_path(table_id: str, target_path_id: str | None) -> dict[str, str]:
+    """Move one table's physical storage to match its path binding.
+
+    **Why this exists.** ``platform.resource_bindings`` records *membership*, but
+    membership alone does not isolate anything: the agent-side search path is
+    derived from the granted paths, so a table that is bound to a case while
+    still physically sitting in ``public`` is (a) unreachable for the case's own
+    agent and (b) still reachable for every agent that holds the root. Both are
+    the opposite of the intent. The binding only becomes real isolation once the
+    table lives in that path's schema, which is this call.
+
+    ``target_path_id`` of ``None`` (or the root path) means the public area, i.e.
+    ``public``. The move is a metadata-only ``ALTER TABLE ... SET SCHEMA``, so it
+    is cheap even for a very large table.
+
+    Returns the ``from``/``to`` schemas for logging and tests. Raises
+    :class:`TableNotFound` when the id is not one of this registry's rows, so the
+    caller can answer "no such table" instead of leaking a database error.
+    """
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            # ``id::text`` rather than ``id = %s``: the column is ``uuid`` and a
+            # non-UUID string would make PostgreSQL reject the *type* ("invalid
+            # input syntax for type uuid") before it can answer "no such row" —
+            # surfacing a raw DB error for what is really a bad request.
+            cur.execute(
+                f"SELECT db_name, table_name FROM {SYSTEM_TABLE_REGISTRY} "
+                "WHERE id::text = %s",
+                (str(table_id),),
+            )
+            row = cur.fetchone()
+    finally:
+        _put_conn(conn)
+    if not row:
+        raise TableNotFound(f"数据表不存在：{table_id}")
+    db_name, table_name = row[0], row[1]
+
+    to_schema = ROOT_SCHEMA
+    if target_path_id:
+        from ..platform_store import paths as path_store
+
+        node = path_store.path_by_id(target_path_id)
+        if node and not node.get("is_root"):
+            to_schema = path_store.data_schema_for(target_path_id)
+
+    from_schema = table_actual_schema(db_name, table_name)
+    if from_schema is None:
+        # Never initialized (no physical table yet): there is nothing to move, and
+        # the importer will create the table in the target schema on first import.
+        #
+        # The mirror is updated here too. Skipping it (as an earlier revision did)
+        # left the raw registry row naming the *old* path while the binding named
+        # the new one — exactly the "raw row says the opposite of the binding"
+        # confusion the mirror column exists to prevent. The fix surfaced in
+        # practice: filing a not-yet-imported table into a case looked like it had
+        # silently failed, even though the binding was correct.
+        _write_registry_path_mirror(table_id, target_path_id)
+        logger.info(
+            "data tables: %s has no physical table yet; binding recorded only "
+            "(target %s)",
+            table_name, to_schema,
+        )
+        return {"from": "", "to": to_schema, "moved": "false"}
+
+    move_table_to_schema(db_name, table_name, from_schema, to_schema)
+
+    # Keep the readable mirror column in step, so anyone reading the raw registry
+    # row does not draw the opposite conclusion to the binding.
+    _write_registry_path_mirror(table_id, target_path_id)
+
+    logger.info(
+        "data tables: moved %s.%s from %s to %s",
+        db_name, table_name, from_schema, to_schema,
+    )
+    return {"from": from_schema, "to": to_schema, "moved": "true"}
+
+
+def _write_registry_path_mirror(table_id: str, target_path_id: str | None) -> None:
+    """Sync the registry's readable ``path_id`` column to the authoritative binding.
+
+    Best-effort by design: the binding is the source of truth, so a failure here
+    leaves the mirror stale (healed by ``sync_registry_path_mirror``) rather than
+    failing the caller's move.
+    """
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {SYSTEM_TABLE_REGISTRY} SET path_id=%s WHERE id=%s",
+                (str(target_path_id or ""), table_id),
+            )
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 - the move already happened
+        conn.rollback()
+        logger.warning("data tables: could not update path mirror: %s", exc)
+    finally:
+        _put_conn(conn)
+
+
+def drop_path_schema(owner_username: str, path_id: str) -> list[str]:
+    """Drop a deleted path's schema in the account database, if it is empty.
+
+    Only empty schemas are dropped: a path can only be deleted once nothing is
+    filed in it, so anything left here is a leftover rather than live data, and
+    ``CASCADE`` is never used — if a table somehow survived, dropping the schema
+    would silently destroy it. Returns the schemas actually dropped.
+    """
+    from ..platform_store import paths as path_store
+
+    schema = path_store.data_schema_for(path_id)
+    db_name = owner_username
+    from .connection import _system_db_config
+
+    cfg = _system_db_config()
+    try:
+        conn = psycopg2.connect(
+            host=cfg["host"],
+            port=cfg["port"],
+            dbname=db_name,
+            user=cfg["username"],
+            password=cfg["password"],
+            connect_timeout=10,
+        )
+    except Exception as exc:  # noqa: BLE001 - the account may have no database yet
+        logger.info("data tables: no database for %s (%s)", owner_username, exc)
+        return []
+    try:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM pg_tables WHERE schemaname = %s", (schema,)
+            )
+            remaining = cur.fetchone()[0]
+            if remaining:
+                logger.warning(
+                    "data tables: not dropping schema %s — it still holds %d table(s)",
+                    schema, remaining,
+                )
+                conn.rollback()
+                return []
+            cur.execute(f'DROP SCHEMA IF EXISTS "{schema}"')
+        conn.commit()
+        logger.info("data tables: dropped schema %s in %s", schema, db_name)
+        return [schema]
+    except Exception:  # noqa: BLE001 - a leftover schema is not worth failing the delete
+        conn.rollback()
+        logger.warning("data tables: could not drop schema %s", schema, exc_info=True)
+        return []
+    finally:
+        conn.close()
+
+
 def sync_registry_path_mirror() -> dict[str, int]:
     """Align the registry's ``path_id`` column with the authoritative bindings.
 
@@ -614,3 +822,65 @@ def sync_registry_path_mirror() -> dict[str, int]:
     if updated:
         logger.info("data tables: aligned %d path mirror(s) with bindings", updated)
     return {"updated": updated}
+
+
+def prune_orphan_table_bindings() -> dict[str, int]:
+    """Delete bindings whose table no longer exists in this deployment's registry.
+
+    A binding row is the authority for "which path holds this table", but it is not
+    foreign-keyed to the registry (the resource may live in another store, as
+    knowledge documents do). Deleting a table used to leave its binding behind, and
+    those orphans were not harmless:
+
+    * the path tree counted them, so a case showed more tables than its list held
+      (the reported "路径数下面的个数和实际对不上");
+    * ``path_is_empty`` saw them, so the case could never be deleted — and with no
+      table visible to move out, the operator had no way to clear it.
+
+    Deletes now release their binding, so this only has to clean deployments that
+    predate that fix. Idempotent, and deliberately scoped to this account database's
+    registry: knowledge documents are handled by their own store's lifecycle.
+
+    Returns ``{"removed": n}``; failures are logged, not raised (this runs on the
+    schema-init path, where a cleanup problem must not block start-up).
+    """
+    try:
+        from ..platform_store import paths as path_store
+    except Exception:  # noqa: BLE001 - nothing to prune without the store
+        return {"removed": 0}
+
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT id FROM {SYSTEM_TABLE_REGISTRY}")
+            live = {str(row[0]) for row in cur.fetchall()}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("data tables: could not read the registry: %s", exc)
+        return {"removed": 0}
+    finally:
+        _put_conn(conn)
+
+    try:
+        bound = path_store.any_bound_resource_ids(path_store.KIND_DATA_TABLE)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("data tables: could not read bindings: %s", exc)
+        return {"removed": 0}
+
+    orphans = sorted(bound - live)
+    removed = 0
+    for resource_id in orphans:
+        try:
+            path_store.unbind_resource(path_store.KIND_DATA_TABLE, resource_id)
+            removed += 1
+        except Exception:  # noqa: BLE001 - one bad row must not stop the rest
+            logger.warning(
+                "data tables: could not drop the orphan binding for %s",
+                resource_id, exc_info=True,
+            )
+    if removed:
+        logger.info(
+            "data tables: removed %d orphan table binding(s) left by earlier "
+            "deletes",
+            removed,
+        )
+    return {"removed": removed}

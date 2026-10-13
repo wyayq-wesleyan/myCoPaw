@@ -167,13 +167,13 @@ def test_resource_belongs_to_exactly_one_path(owner):
     b = P.create_path(owner, "案件二")
     resource = f"{owner}-doc"
 
-    P.bind_resource(a, P.KIND_KNOWLEDGE_SPACE, resource)
-    assert P.path_of_resource(P.KIND_KNOWLEDGE_SPACE, resource) == a
+    P.bind_resource(a, P.KIND_KNOWLEDGE_DOCUMENT, resource)
+    assert P.path_of_resource(P.KIND_KNOWLEDGE_DOCUMENT, resource) == a
 
-    P.bind_resource(b, P.KIND_KNOWLEDGE_SPACE, resource)
-    assert P.path_of_resource(P.KIND_KNOWLEDGE_SPACE, resource) == b
+    P.bind_resource(b, P.KIND_KNOWLEDGE_DOCUMENT, resource)
+    assert P.path_of_resource(P.KIND_KNOWLEDGE_DOCUMENT, resource) == b
     # 旧路径下不再有它。
-    assert P.path_of_resource(P.KIND_KNOWLEDGE_SPACE, resource) != a
+    assert P.path_of_resource(P.KIND_KNOWLEDGE_DOCUMENT, resource) != a
     assert all(
         item["resource_id"] != resource
         for item in P.resources_in_path(a)
@@ -205,7 +205,7 @@ def test_agent_without_binding_sees_nothing(owner):
     不会真正生效。升级时由迁移给现有智能体补绑定以保持原有可见范围。
     """
     P.ensure_root_path(owner)
-    assert P.allowed_resource_ids(f"{owner}-agent", P.KIND_KNOWLEDGE_SPACE) == []
+    assert P.allowed_resource_ids(f"{owner}-agent", P.KIND_KNOWLEDGE_DOCUMENT) == []
 
 
 @requires_platform_db
@@ -216,17 +216,17 @@ def test_two_cases_cannot_see_each_other(owner):
     case1 = P.create_path(owner, "案件一")
     case2 = P.create_path(owner, "案件二")
 
-    P.bind_resource(common, P.KIND_KNOWLEDGE_SPACE, f"{owner}-侦查手段")
-    P.bind_resource(case1, P.KIND_KNOWLEDGE_SPACE, f"{owner}-案件一台账")
-    P.bind_resource(case2, P.KIND_KNOWLEDGE_SPACE, f"{owner}-案件二台账")
+    P.bind_resource(common, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-侦查手段")
+    P.bind_resource(case1, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-案件一台账")
+    P.bind_resource(case2, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-案件二台账")
 
     for pid in (common, case1):
         P.bind_agent(f"{owner}-ag1", pid)
     for pid in (common, case2):
         P.bind_agent(f"{owner}-ag2", pid)
 
-    seen1 = set(P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_SPACE))
-    seen2 = set(P.allowed_resource_ids(f"{owner}-ag2", P.KIND_KNOWLEDGE_SPACE))
+    seen1 = set(P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_DOCUMENT))
+    seen2 = set(P.allowed_resource_ids(f"{owner}-ag2", P.KIND_KNOWLEDGE_DOCUMENT))
 
     assert f"{owner}-案件一台账" in seen1
     assert f"{owner}-案件二台账" not in seen1, "案件一不得看到案件二"
@@ -248,15 +248,15 @@ def test_moving_a_resource_changes_visibility_immediately(owner):
     case2 = P.create_path(owner, "案件二")
     resource = f"{owner}-doc"
 
-    P.bind_resource(case2, P.KIND_KNOWLEDGE_SPACE, resource)
+    P.bind_resource(case2, P.KIND_KNOWLEDGE_DOCUMENT, resource)
     P.bind_agent(f"{owner}-ag1", case1)
-    assert P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_SPACE) == []
+    assert P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_DOCUMENT) == []
 
-    P.bind_resource(case1, P.KIND_KNOWLEDGE_SPACE, resource)
-    assert P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_SPACE) == [resource]
+    P.bind_resource(case1, P.KIND_KNOWLEDGE_DOCUMENT, resource)
+    assert P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_DOCUMENT) == [resource]
 
-    P.bind_resource(case2, P.KIND_KNOWLEDGE_SPACE, resource)
-    assert P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_SPACE) == []
+    P.bind_resource(case2, P.KIND_KNOWLEDGE_DOCUMENT, resource)
+    assert P.allowed_resource_ids(f"{owner}-ag1", P.KIND_KNOWLEDGE_DOCUMENT) == []
 
 
 @requires_platform_db
@@ -268,11 +268,11 @@ def test_granting_a_parent_does_not_expose_children(owner):
     """
     root = P.ensure_root_path(owner)
     case = P.create_path(owner, "案件一")
-    P.bind_resource(root, P.KIND_KNOWLEDGE_SPACE, f"{owner}-根上的")
-    P.bind_resource(case, P.KIND_KNOWLEDGE_SPACE, f"{owner}-案件里的")
+    P.bind_resource(root, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-根上的")
+    P.bind_resource(case, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-案件里的")
 
     P.bind_agent(f"{owner}-ag", root)
-    seen = P.allowed_resource_ids(f"{owner}-ag", P.KIND_KNOWLEDGE_SPACE)
+    seen = P.allowed_resource_ids(f"{owner}-ag", P.KIND_KNOWLEDGE_DOCUMENT)
     assert seen == [f"{owner}-根上的"]
 
 
@@ -280,11 +280,11 @@ def test_granting_a_parent_does_not_expose_children(owner):
 def test_allowed_resources_are_filtered_by_kind(owner):
     """两种资源类型不混淆：知识空间查询不会带出数据表。"""
     path_id = P.ensure_root_path(owner)
-    P.bind_resource(path_id, P.KIND_KNOWLEDGE_SPACE, f"{owner}-space")
+    P.bind_resource(path_id, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-space")
     P.bind_resource(path_id, P.KIND_DATA_TABLE, f"{owner}-table")
     P.bind_agent(f"{owner}-ag", path_id)
 
-    assert P.allowed_resource_ids(f"{owner}-ag", P.KIND_KNOWLEDGE_SPACE) == [
+    assert P.allowed_resource_ids(f"{owner}-ag", P.KIND_KNOWLEDGE_DOCUMENT) == [
         f"{owner}-space",
     ]
     assert P.allowed_resource_ids(f"{owner}-ag", P.KIND_DATA_TABLE) == [
@@ -327,13 +327,13 @@ def test_grant_all_existing_paths_covers_the_whole_tree(owner):
     root = P.ensure_root_path(owner)
     child = P.create_path(owner, "案件一")
     grand = P.create_path(owner, "子案件", parent_id=child)
-    P.bind_resource(grand, P.KIND_KNOWLEDGE_SPACE, f"{owner}-deep")
+    P.bind_resource(grand, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-deep")
 
     granted = P.grant_all_existing_paths(owner, f"{owner}-ag")
     assert granted == 3
     assert set(P.agent_path_ids(f"{owner}-ag")) == {root, child, grand}
     # 深层资源也随之可见（因为它的路径被授权了）。
-    assert P.allowed_resource_ids(f"{owner}-ag", P.KIND_KNOWLEDGE_SPACE) == [
+    assert P.allowed_resource_ids(f"{owner}-ag", P.KIND_KNOWLEDGE_DOCUMENT) == [
         f"{owner}-deep",
     ]
 
@@ -399,12 +399,12 @@ def test_only_empty_paths_can_be_deleted(owner):
     """
     root = P.ensure_root_path(owner)
     case = P.create_path(owner, "案件一")
-    P.bind_resource(case, P.KIND_KNOWLEDGE_SPACE, f"{owner}-doc")
+    P.bind_resource(case, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-doc")
     with pytest.raises(P.PathScopeError, match="还有内容"):
         P.delete_path(case)
 
     # 移走资源后可以删。
-    P.unbind_resource(P.KIND_KNOWLEDGE_SPACE, f"{owner}-doc")
+    P.unbind_resource(P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-doc")
     P.delete_path(case)
     assert P.path_by_id(case) is None
 
@@ -494,7 +494,7 @@ def test_unbound_resource_falls_back_to_the_root(owner):
     """
     root = P.ensure_root_path(owner, "公共")
     assert P.effective_path_of(
-        P.KIND_KNOWLEDGE_SPACE, f"{owner}-未绑定", owner,
+        P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-未绑定", owner,
     ) == root
 
 
@@ -505,7 +505,7 @@ def test_existing_agent_keeps_seeing_public_material(owner):
     P.bind_agent(f"{owner}-ag", root)
     assert P.is_visible_to_agent(
         agent_id=f"{owner}-ag",
-        resource_kind=P.KIND_KNOWLEDGE_SPACE,
+        resource_kind=P.KIND_KNOWLEDGE_DOCUMENT,
         resource_id=f"{owner}-公共资料",
         owner_username=owner,
     )
@@ -525,13 +525,13 @@ def test_binding_material_to_a_case_hides_it_from_old_agents(owner):
     resource = f"{owner}-材料"
     # 未绑定时可见（公共）。
     assert P.is_visible_to_agent(
-        agent_id=f"{owner}-ag-old", resource_kind=P.KIND_KNOWLEDGE_SPACE,
+        agent_id=f"{owner}-ag-old", resource_kind=P.KIND_KNOWLEDGE_DOCUMENT,
         resource_id=resource, owner_username=owner,
     )
     # 绑到案件后就不可见了。
-    P.bind_resource(case, P.KIND_KNOWLEDGE_SPACE, resource)
+    P.bind_resource(case, P.KIND_KNOWLEDGE_DOCUMENT, resource)
     assert not P.is_visible_to_agent(
-        agent_id=f"{owner}-ag-old", resource_kind=P.KIND_KNOWLEDGE_SPACE,
+        agent_id=f"{owner}-ag-old", resource_kind=P.KIND_KNOWLEDGE_DOCUMENT,
         resource_id=resource, owner_username=owner,
     )
 
@@ -541,13 +541,13 @@ def test_case_agent_sees_both_public_and_its_own_case(owner):
     """案件智能体 = 根（公共）+ 本案路径，两者都能看到。"""
     root = P.ensure_root_path(owner, "公共")
     case = P.create_path(owner, "案件一")
-    P.bind_resource(case, P.KIND_KNOWLEDGE_SPACE, f"{owner}-案件材料")
+    P.bind_resource(case, P.KIND_KNOWLEDGE_DOCUMENT, f"{owner}-案件材料")
     P.bind_agent(f"{owner}-ag", root)
     P.bind_agent(f"{owner}-ag", case)
 
     def visible(rid: str) -> bool:
         return P.is_visible_to_agent(
-            agent_id=f"{owner}-ag", resource_kind=P.KIND_KNOWLEDGE_SPACE,
+            agent_id=f"{owner}-ag", resource_kind=P.KIND_KNOWLEDGE_DOCUMENT,
             resource_id=rid, owner_username=owner,
         )
 
@@ -593,6 +593,12 @@ def test_migration_isolates_a_failing_account(monkeypatch):
         "_iter_account_agents",
         lambda: {"acct-a": ["ag1"], "acct-b": ["ag2"]},
     )
+    # The migration also covers accounts that own no agent (they still need a
+    # public area), so the account list must be pinned too — otherwise the count
+    # below would include whatever accounts exist on the machine running the test.
+    monkeypatch.setattr(
+        path_migration, "_iter_accounts", lambda: ["acct-a", "acct-b"],
+    )
 
     def ensure_root(owner, name="默认"):
         if owner == "acct-a":
@@ -611,3 +617,102 @@ def test_migration_isolates_a_failing_account(monkeypatch):
     assert report.accounts == 1  # 只有 acct-b 成功
     assert granted == ["ag2"]  # acct-a 被隔离掉
     assert any("acct-a" in err for err in report.errors)
+
+
+# ---------------------------------------------------------------------------
+# 计数口径必须与列表一致（用户报：树上 10、列表 3）
+# ---------------------------------------------------------------------------
+
+
+@requires_platform_db
+def test_a_binding_whose_resource_is_gone_does_not_count(owner):
+    """归属指向已不存在的资源时，计数必须把它排除。
+
+    用户看到的形态：案件旁显示 10，点进去列表只有 3 条。原因是路径树的计数直接
+    返回归属表的原始行，而列表会把归属 id 与注册表实际存在的行求交集 —— 两套
+    口径对不上，差值就是**孤儿归属**（资源已删、归属没清）。
+
+    ``effective_*_ids_for_path`` 的契约本来就是「*all_resource_ids* 里哪些可达」，
+    非根分支却忽略了入参。这里锁定它必须求交集。
+    """
+    path_id = P.create_path(owner, "计数案件")
+
+    live = [f"t-{uuid.uuid4().hex[:8]}" for _ in range(3)]
+    for tid in live:
+        P.bind_resource(path_id, P.KIND_DATA_TABLE, tid)
+    # 3 个孤儿：绑定了，但不在 all_resource_ids 里（资源已删）
+    for _ in range(7):
+        P.bind_resource(path_id, P.KIND_DATA_TABLE, f"t-{uuid.uuid4().hex[:8]}")
+
+    effective = P.effective_table_ids_for_path(path_id, owner, live) or []
+
+    assert len(effective) == 3, (
+        f"计数把已删除资源也算进去了：得到 {len(effective)}，应为 3（差值即孤儿）"
+    )
+    assert set(effective) == set(live)
+
+
+@requires_platform_db
+def test_root_count_is_exactly_the_live_unbound_set(owner):
+    """根路径：未绑定且仍然存在的才算公共区。"""
+    root = P.ensure_root_path(owner)
+    bound = f"t-{uuid.uuid4().hex[:8]}"
+    unbound = f"t-{uuid.uuid4().hex[:8]}"
+    orphan = f"t-{uuid.uuid4().hex[:8]}"
+    P.bind_resource(root, P.KIND_DATA_TABLE, bound)
+    P.bind_resource(P.create_path(owner, "别处"), P.KIND_DATA_TABLE, orphan)
+
+    # bound 绑在根、unbound 未绑定、orphan 绑在别处但已不存在
+    effective = P.effective_table_ids_for_path(root, owner, [bound, unbound]) or []
+
+    assert set(effective) == {bound, unbound}
+    assert orphan not in effective
+
+
+@requires_platform_db
+def test_orphan_bindings_are_pruned_and_unblock_deletion(owner):
+    """孤儿归属必须能被清理，否则案件永远删不掉。
+
+    孤儿行不仅让计数虚高，还让 ``path_is_empty`` 判定「还有内容」——而界面上没有
+    任何资源可以移走，操作者被困住。启动时的清理负责收拾这类历史数据。
+    """
+    from qwenpaw.data_tables.store import prune_orphan_table_bindings
+
+    path_id = P.create_path(owner, "孤儿清理")
+    # 只存在于归属表、注册表里没有的 id
+    for _ in range(3):
+        P.bind_resource(path_id, P.KIND_DATA_TABLE, f"ghost-{uuid.uuid4().hex[:8]}")
+
+    assert not P.path_is_empty(path_id), "有归属时不应判为空"
+
+    prune_orphan_table_bindings()
+
+    assert P.path_is_empty(path_id), (
+        "孤儿清理后案件应可删除；仍非空说明清理没生效"
+    )
+
+
+@requires_platform_db
+def test_schema_init_runs_the_orphan_cleanup(owner):
+    """孤儿清理必须真的挂在启动路径上，而不是只在测试里手动调用。
+
+    上一条测试直接调 ``prune_orphan_table_bindings``，所以「启动时忘了接这一步」
+    这种回退它抓不到 —— 而升级老部署恰恰依赖启动时自动收拾历史脏数据。
+    """
+    from qwenpaw.data_tables import store as S
+
+    path_id = P.create_path(owner, "启动清理")
+    for _ in range(2):
+        P.bind_resource(path_id, P.KIND_DATA_TABLE, f"ghost-{uuid.uuid4().hex[:8]}")
+    assert not P.path_is_empty(path_id)
+
+    # 重置初始化标记，模拟一次真实的进程启动
+    S._schema_initialized = False
+    try:
+        S.init_data_tables_schema()
+    finally:
+        pass
+
+    assert P.path_is_empty(path_id), (
+        "启动时没有执行孤儿清理：老部署升级后计数仍会虚高、案件仍删不掉"
+    )

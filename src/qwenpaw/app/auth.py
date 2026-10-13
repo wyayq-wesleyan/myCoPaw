@@ -475,6 +475,22 @@ def create_user_account(username: str, password: str, role: str = "user") -> dic
         _save_auth_data(data)
         logger.exception("Failed to provision data database for user '%s'", username)
         raise ValueError("账号创建失败：无法建立对应的数据分析数据库") from exc
+
+    # The account's public area (its root path). Created here rather than left to
+    # the startup migration: an account created while the app is running would
+    # otherwise show an **empty** path tree on both the knowledge and data-space
+    # pages until the next restart, and its agent would be unable to read anything.
+    # Best-effort — a failure must not roll back a working account, because the
+    # tree endpoint recreates the root on first read anyway.
+    try:
+        from ..platform_store import paths as path_store
+
+        path_store.ensure_root_path(username)
+    except Exception:  # noqa: BLE001 - the account itself is already usable
+        logger.warning(
+            "Could not provision the root path for new account %s", username,
+            exc_info=True,
+        )
     return get_user_info(username) or {"username": username, "role": role, "enabled": True}
 
 

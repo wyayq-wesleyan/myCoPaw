@@ -222,13 +222,20 @@ class TestBuiltinDescriptorGovernance:
         duplicated policy name still breaks startup, which is what this pins.
         """
         expected = {
-            "create_data_table": ("CreateDataTable", "file"),
+            # ``internal``: this tool writes a database row and has no filesystem
+            # target. It was previously declared ``file`` with no ``target_param``,
+            # which made the governor try to resolve a path that does not exist —
+            # the other data-table tools (list/describe/query) are all ``internal``
+            # for the same reason.
+            "create_data_table": ("CreateDataTable", "internal"),
+            "move_data_table_to_path": ("MoveDataTableToPath", "internal"),
             "import_data_table": ("ImportDataTable", "file"),
             "create_knowledge_space": ("CreateKnowledgeSpace", "network"),
             "upload_knowledge_document": (
                 "UploadKnowledgeDocument",
                 "network",
             ),
+            "list_paths": ("ListPaths", "internal"),
         }
         for python_name, (policy_name, tool_type) in expected.items():
             assert (

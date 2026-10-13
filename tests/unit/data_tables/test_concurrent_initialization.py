@@ -163,11 +163,15 @@ def test_recover_import_jobs_schedules_pending_jobs(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(importer, "_put_conn", lambda _c: None)
 
     scheduled = []
-    monkeypatch.setattr(
-        importer,
-        "_schedule_job",
-        lambda job_id, table_id, path, filename: scheduled.append(job_id),
-    )
+
+    def _schedule_ok(job_id, table_id, path, filename):
+        # The real ``_schedule_job`` returns whether a runner task was created;
+        # ``recover_import_jobs`` counts only the successes, so a stub that
+        # returns None would read as "nothing was scheduled".
+        scheduled.append(job_id)
+        return True
+
+    monkeypatch.setattr(importer, "_schedule_job", _schedule_ok)
 
     # Must not raise (previously NameError: name 'Path' is not defined).
     count = importer.recover_import_jobs()
@@ -213,6 +217,7 @@ def test_recover_import_jobs_survives_a_failing_schedule(monkeypatch, tmp_path) 
         if job_id == "bad":
             raise RuntimeError("boom")
         scheduled.append(job_id)
+        return True
 
     monkeypatch.setattr(importer, "_schedule_job", _schedule)
 

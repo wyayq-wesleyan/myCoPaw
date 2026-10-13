@@ -4,7 +4,7 @@ import { buildAuthHeaders } from "../authHeaders";
 /**
  * Path scoping: the second isolation dimension inside one account.
  *
- * A path is a node in a tree that knowledge spaces and data tables can belong
+ * A path is a node in a tree that knowledge documents and data tables can belong
  * to, and that agents are granted read access to. The account's root path is its
  * **public area** — resources not filed under any path are visible there, which
  * is why the tree marks it explicitly: "unfiled" means "public", not "isolated".
@@ -22,13 +22,21 @@ export interface PathNode {
   /** Present on `/paths/tree` (the enriched view) only. */
   document_count?: number;
   table_count?: number;
-  space_count?: number;
+  /** How many of this node's documents are still being processed. */
+  pending_count?: number;
+  /** How many of this node's tables have an import still running. */
+  pending_table_count?: number;
   agents?: string[];
   is_public?: boolean;
 }
 
 export interface PathResource {
-  resource_kind: "knowledge_space" | "data_table";
+  /**
+   * What is being filed. Knowledge is filed **per document**, not per space:
+   * a space is an account-wide bucket, so binding one could only move all of an
+   * account's material at once.
+   */
+  resource_kind: "knowledge_document" | "data_table";
   resource_id: string;
 }
 
@@ -100,6 +108,22 @@ async function apiSend<T>(path: string, method: string, body?: unknown): Promise
   return response.json();
 }
 
+/**
+ * Every resource of one kind with the path it belongs to.
+ *
+ * Needed because assigning material is only safe when the user can see what is
+ * already filed where — otherwise a table silently moves between cases.
+ */
+export interface AssignableResource {
+  id: string;
+  name: string;
+  detail: string;
+  /** The path this resource belongs to, or null when unassigned (public). */
+  current_path_id: string | null;
+  in_this_path: boolean;
+  is_public: boolean;
+}
+
 export const pathsApi = {
   /** The plain tree — structure only, cheap. Used by pickers and drag targets. */
   list: () => apiGet<{ tree: PathNode[] }>("/paths"),
@@ -113,6 +137,40 @@ export const pathsApi = {
 
   /** Reverse view: which paths each agent of this account may read. */
   grants: () => apiGet<{ grants: Record<string, string[]> }>("/paths/grants"),
+
+  /**
+   * The paths one agent may read.
+   *
+   * The chat header asks this for the selected agent only, so it can show exactly
+   * what that agent reaches without pulling every agent's grants.
+   */
+  agentGrants: (agentId: string) =>
+    apiGet<{ agent_id: string; path_ids: string[] }>("/paths/agent-grants", {
+      agent_id: agentId,
+    }),
+
+  /**
+   * Replace one agent's granted paths.
+   *
+   * Replaces rather than adds/removes: the header shows checkboxes, and a
+   * half-applied difference between what is displayed and what the agent can read
+   * is the one state this must never be in.
+   */
+  setAgentGrants: (agentId: string, pathIds: string[]) =>
+    apiSend<{ agent_id: string; path_ids: string[] }>(
+      "/paths/agent-grants",
+      "PUT",
+      { agent_id: agentId, path_ids: pathIds },
+    ),
+
+  assignable: (
+    kind: PathResource["resource_kind"],
+    pathId?: string | null,
+  ) =>
+    apiGet<{ kind: string; path_id: string | null; items: AssignableResource[] }>(
+      "/paths/assignable",
+      { kind, path_id: pathId ?? undefined },
+    ),
 
   create: (name: string, parentId?: string | null) =>
     apiSend<{ id: string; name: string; parent_id: string | null }>(
@@ -144,7 +202,18 @@ export const pathsApi = {
       `/paths/${pathId}/resources`,
     ),
 
-  bindResource: (pathId: string, kind: PathResource["resource_kind"], resourceId: string) =>
+  /**
+   * File a resource into a path.
+   *
+   * Passing an empty ``pathId`` returns it to the public area instead: this is
+   * what makes "把选中的文档移回公共区" the same operation as filing it
+   * elsewhere, so the UI needs only one endpoint for both directions.
+   */
+  bindResource: (
+    pathId: string,
+    kind: PathResource["resource_kind"],
+    resourceId: string,
+  ) =>
     apiSend<{ path_id: string; resource_id: string }>(
       `/paths/${pathId}/resources`,
       "PUT",
@@ -154,6 +223,22 @@ export const pathsApi = {
   unbindResource: (pathId: string, kind: string, resourceId: string) =>
     apiSend<{ unbound: boolean }>(
       `/paths/${pathId}/resources/${encodeURIComponent(kind)}/${encodeURIComponent(resourceId)}`,
+      "DELETE",
+    ),
+
+  /**
+   * Return a resource to the public area without naming its current path.
+   *
+   * The listing pages work with documents, not with which path each one sits in,
+   * so "移回公共区" cannot supply a path id. Resolving the owning path server-side
+   * also avoids a stale id silently unbinding the wrong path.
+   */
+  unbindResourceAnyPath: (
+    kind: PathResource["resource_kind"],
+    resourceId: string,
+  ) =>
+    apiSend<{ unbound: boolean }>(
+      `/paths/resources/${encodeURIComponent(kind)}/${encodeURIComponent(resourceId)}`,
       "DELETE",
     ),
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """One-time upgrade into path scoping.
 
-Before paths existed, an account's knowledge spaces and data tables were one flat
+Before paths existed, an account's knowledge documents and data tables were one flat
 bucket, and every agent in that account could reach all of it. Path scoping adds
 a second isolation dimension *inside* an account (separate cases must not see each
 other). This module makes that upgrade a no-op from the user's point of view.
@@ -87,12 +87,33 @@ def _iter_account_agents() -> dict[str, list[str]]:
     return mapping
 
 
+def _iter_accounts() -> list[str]:
+    """Every registered account, whether or not it owns an agent.
+
+    The agent list alone is not enough: an account can exist with no agents (it was
+    created but never used, or its agent was deleted). Such an account still needs
+    its public area — otherwise its path tree renders empty, which is the exact
+    symptom of "a new user has no knowledge/data tree".
+    """
+    try:
+        from ..app.auth import list_users
+
+        return [str(item["username"]) for item in list_users() if item.get("username")]
+    except Exception:  # noqa: BLE001 - fall back to the agent-derived list
+        logger.debug("path-migration: could not enumerate accounts", exc_info=True)
+        return []
+
+
 def migrate_into_path_scoping() -> PathMigrationReport:
     """Ensure each account has a root path and its agents are granted it.
 
     Runs on every startup. It is cheap (two idempotent statements per agent) and
     self-healing: an agent created while the platform was on the old version — or
     one whose config appeared later — is picked up on the next boot.
+
+    Covers **all** registered accounts, not just those owning an agent, because the
+    root path is what makes an account's tree non-empty. Before this, an account
+    with no agents showed an empty tree on both pages (the reported bug).
 
     Never raises. It runs on the startup path, so a failure degrades to a log line;
     the consequence of skipping is only that a new agent starts with no grants
@@ -105,6 +126,11 @@ def migrate_into_path_scoping() -> PathMigrationReport:
         logger.warning("path-migration: could not enumerate agents", exc_info=True)
         report.errors.append("enumerate agents")
         return report
+
+    # Accounts with no agents have no entry in ``mapping``; add them with an empty
+    # agent list so they still get a root path.
+    for account in _iter_accounts():
+        mapping.setdefault(account, [])
 
     for owner, agent_ids in mapping.items():
         try:

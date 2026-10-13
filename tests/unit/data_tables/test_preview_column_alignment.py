@@ -62,9 +62,26 @@ def _patch(monkeypatch, table_row, col_names, rows):
     monkeypatch.setattr(
         preview_api,
         "get_target_connection",
-        lambda _db: _Conn(table_row, col_names, rows),
+        lambda _db, _schema=None: _Conn(table_row, col_names, rows),
     )
     monkeypatch.setattr(preview_api, "put_target_connection", lambda *_a: None)
+
+
+def _captured_schema(monkeypatch, table_row, col_names, rows):
+    """Patch the connection helper and record which schema preview asked for."""
+    seen: list[str | None] = []
+
+    def _conn(db, schema=None):
+        seen.append(schema)
+        return _Conn(table_row, col_names, rows)
+
+    monkeypatch.setattr(
+        preview_api, "_get_conn", lambda: _Conn(table_row, None, None),
+    )
+    monkeypatch.setattr(preview_api, "_put_conn", lambda _c: None)
+    monkeypatch.setattr(preview_api, "get_target_connection", _conn)
+    monkeypatch.setattr(preview_api, "put_target_connection", lambda *_a: None)
+    return seen
 
 
 def _table(columns, **over):
@@ -151,3 +168,71 @@ def test_undeclared_column_has_no_comment(monkeypatch) -> None:
     assert by_name["known"]["comment"] == "只有一列"
     assert by_name["extra"]["comment"] == ""
     assert by_name["id"]["comment"] == ""
+
+
+def test_preview_returns_the_connection_under_the_same_schema(monkeypatch) -> None:
+    """借出与归还必须带同一个 schema —— 否则连接会落到错误的池。
+
+    池按 ``(db_name, schema)`` 分键。借出时按表所属路径的 schema、归还时按默认
+    ``None``，会让限域池一直把这条连接记为已借出（两次查询后该 schema 上就开始
+    报「连接池已满」），同时连接还可能被放进另一个池、把 ``search_path`` 带过去。
+
+    这条测试刻意**不 stub** 归还调用：早期版本把 ``put_target_connection`` 替换成
+    ``lambda *_a: None``，于是「参数少传一个」这种缺陷在测试里永远看不见。
+    """
+    columns = [{"comment": "c", "column_name": "c", "type": "TEXT"}]
+    row = _table(columns)
+    path_id = "11111111-2222-3333-4444-555555555555"
+    schema = f"p_{path_id.replace('-', '')}"
+    monkeypatch.setattr(preview_api, "schema_for_registry_row", lambda _row: schema)
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        preview_api, "_get_conn", lambda: _Conn(row, None, None),
+    )
+    monkeypatch.setattr(preview_api, "_put_conn", lambda _c: None)
+    monkeypatch.setattr(
+        preview_api,
+        "get_target_connection",
+        lambda _db, s=None: _Conn(row, ["id", "c"], [(1, "v")]),
+    )
+    monkeypatch.setattr(
+        preview_api,
+        "put_target_connection",
+        lambda *args: calls.append(args),
+    )
+
+    preview_api._preview_table_sync("t", "admin", 100)
+
+    assert calls, "preview did not return its connection"
+    returned = calls[0]
+    assert returned[0] is not None
+    assert returned[2] == schema, (
+        f"returned under {returned[2]!r} but checked out under {schema!r}"
+    )
+
+
+def test_preview_opens_the_connection_on_the_tables_path_schema(monkeypatch) -> None:
+    """按名读表必须带上该表所属路径的 schema。
+
+    表被归入案件后会物理搬出 ``public``。连接仍按 ``public`` 打开时，预览、
+    详情这类入口会以「relation does not exist」报 500 —— 用户看到的是「转移后
+    这张表打不开了」。这里锁定 schema 被传下去，且未归类时仍是 ``public``。
+    """
+    columns = [{"comment": "c", "column_name": "c", "type": "TEXT"}]
+
+    # Unfiled -> the account's public area.
+    unfiled = _captured_schema(monkeypatch, _table(columns), ["id", "c"], [(1, "v")])
+    preview_api._preview_table_sync("t", "admin", 100)
+    assert unfiled == ["public"]
+
+    # Filed into a case -> that path's schema.
+    path_id = "11111111-2222-3333-4444-555555555555"
+    monkeypatch.setattr(
+        preview_api,
+        "schema_for_registry_row",
+        lambda _row: f"p_{path_id.replace('-', '')}",
+    )
+    filed = _captured_schema(monkeypatch, _table(columns), ["id", "c"], [(1, "v")])
+    preview_api._preview_table_sync("t", "admin", 100)
+    assert filed == [f"p_{path_id.replace('-', '')}"]

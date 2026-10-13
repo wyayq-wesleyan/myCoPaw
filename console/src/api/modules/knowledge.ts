@@ -11,6 +11,12 @@ export interface KnowledgeDocument {
   error?: string | null;
   attempts?: number;
   log_excerpt?: string | null;
+  /** Latest ingest job's error, kept separate from the document's own error. */
+  job_error?: string | null;
+  /** Attempts so far for the latest ingest job (0 = never tried yet). */
+  job_attempts?: number;
+  /** When a backoff re-queue will next be attempted (null = no delay). */
+  job_next_retry_at?: string | null;
   size?: number;
   created_at?: string;
   updated_at?: string;
@@ -170,9 +176,17 @@ export const knowledgeApi = {
       body: JSON.stringify({ query, top_k: 50 }),
     }),
 
-  upload: async (file: File): Promise<KnowledgeDocument> => {
+  /**
+   * Upload one document.
+   *
+   * ``pathId`` files it under that path; omitting it means the account's public
+   * area. It is sent because the console uploads while a path is selected, and the
+   * file must land where the user is looking rather than always in 公共区.
+   */
+  upload: async (file: File, pathId?: string | null): Promise<KnowledgeDocument> => {
     const form = new FormData();
     form.append("file", file);
+    if (pathId) form.append("path_id", pathId);
     const response = await fetch(getApiUrl("/knowledge/documents/upload"), {
       method: "POST",
       headers: buildAuthHeaders(),

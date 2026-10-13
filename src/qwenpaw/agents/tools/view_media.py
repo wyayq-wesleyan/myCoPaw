@@ -199,6 +199,7 @@ async def _probe_multimodal_if_needed(
         # Resolve agent-specific active model (mirrors _get_active_model_info)
         manager = ProviderManager.get_instance()
         active = None
+        agent_id = None
         try:
             from ...app.agent_context import get_current_agent_id
             from ...config.config import load_agent_config
@@ -210,7 +211,9 @@ async def _probe_multimodal_if_needed(
         except Exception:
             pass
         if not active:
-            active = manager.get_active_model()
+            # Same resolution the runtime uses, so the capability probe matches
+            # the model a request will really run on.
+            active = ProviderManager.resolve_default_chat_slot(agent_id)
         if not active:
             return None
 

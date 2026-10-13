@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
-  Badge,
   DatePicker,
   Drawer,
   Empty,
   Input,
+  Modal,
   Popconfirm,
+  Radio,
   Row,
   Select,
   Col,
@@ -24,19 +25,25 @@ import {
   DatabaseOutlined,
   DeleteOutlined,
   FileSearchOutlined,
+  FolderOutlined,
+  GlobalOutlined,
   InfoCircleOutlined,
   ReloadOutlined,
   RetweetOutlined,
   SearchOutlined,
+  SwapOutlined,
+  UnorderedListOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import PathTreePanel, { ALL_PATHS } from "../../features/path-tree/PathTreePanel";
+import { flattenPaths, pathsApi, pathTree, type PathNode } from "../../api/modules/paths";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import {
   knowledgeApi,
   type KnowledgeDocument,
   type KnowledgeDocumentStats,
+  type KnowledgeJobItem,
 } from "../../api/modules/knowledge";
 import styles from "./index.module.less";
 
@@ -75,6 +82,24 @@ const processingStageLabel: Record<string, string> = {
 function getProcessingStageLabel(stage?: string | null): string | null {
   if (!stage || stage === "completed" || stage === "failed") return null;
   return processingStageLabel[stage] || stage;
+}
+
+/**
+ * Render a retry timestamp as a short local description.
+ *
+ * The backend re-queues a failed ingest with a one-hour backoff, so the row
+ * reads "queued" long after the failure. Showing *when* it will be attempted
+ * again is what distinguishes "will be retried shortly" from "stuck forever".
+ */
+function formatRetryTime(value?: string | null): string {
+  if (!value) return "";
+  const target = new Date(value);
+  if (Number.isNaN(target.getTime())) return "";
+  const minutes = Math.round((target.getTime() - Date.now()) / 60000);
+  if (minutes <= 0) return "稍后";
+  if (minutes < 60) return `${minutes} 分钟后`;
+  const hours = Math.round(minutes / 60);
+  return `${hours} 小时后`;
 }
 
 function getFileExtension(filename: string): string {
@@ -402,9 +427,51 @@ export default function KnowledgePage() {
   // Path scope: which path's documents are shown. ALL_PATHS means "no filter",
   // i.e. everything this account can see across its paths.
   const [selectedPath, setSelectedPath] = useState<string>(ALL_PATHS);
+  // Bumped after a transfer so the tree's counts re-read.
+  const [treeRefreshKey, setTreeRefreshKey] = useState(0);
+  // Move-selected-documents dialog.
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<string | null>(null);
+  const [transferPaths, setTransferPaths] = useState<Map<string, PathNode>>(new Map());
+  const [transferring, setTransferring] = useState(false);
+
+  // Jobs drawer: the answer to "what is the background actually doing?", reachable
+  // from the header indicator so the question can be answered without hunting for
+  // which path the pending file was uploaded into.
+  const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
+  const [jobs, setJobs] = useState<KnowledgeJobItem[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
+  // Path id -> display name, fed by the tree so the upload target can be named.
+  const [pathNames, setPathNames] = useState<Map<string, PathNode>>(new Map());
+
+  /** The account's root path id (the public area), from the tree we already have. */
+  const rootPathId = useMemo(() => {
+    for (const node of pathNames.values()) {
+      if (node.is_root) return node.id;
+    }
+    return "";
+  }, [pathNames]);
+
+  /**
+   * Where an upload will land, resolved from the current selection.
+   *
+   * ``ALL_PATHS`` means "no filter", which for an upload can only mean the public
+   * area — so the target is the root path. Naming it explicitly lets the button
+   * and the hint state the destination before the file is chosen, instead of the
+   * user discovering afterwards that it went somewhere unexpected.
+   */
+  const uploadTargetPathId =
+    selectedPath && selectedPath !== ALL_PATHS
+      ? selectedPath
+      : rootPathId;
+  const uploadTargetName =
+    (uploadTargetPathId && pathNames.get(uploadTargetPathId)?.name) || "公共区（未归类）";
+
+
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDocument, setPreviewDocument] = useState<KnowledgeDocument | null>(null);
+
 
   const [statsOpen, setStatsOpen] = useState(false);
   const [statsDocument, setStatsDocument] = useState<KnowledgeDocument | null>(null);
@@ -415,15 +482,30 @@ export default function KnowledgePage() {
     page?: number;
     page_size?: number;
     path_id?: string;
+    /**
+     * Replace the applied filters instead of merging with them.
+     *
+     * "重置" clears every filter at once, and ``setAppliedFilters`` is async, so
+     * relying on the state would still merge the *previous* filters into the
+     * reload. Passing the replacement explicitly makes the reset exact.
+     */
+    filters?: DocumentListFilters;
   }) => {
     try {
       // Resolve the path filter from the argument first, falling back to the
       // current selection: paging and refresh must keep showing the same path the
       // user is looking at, not silently widen back to everything.
+      //
+      // ``path_id`` is destructured *out* of the params rather than merely
+      // overridden later: spreading the raw params first left the sentinel
+      // ``__all__`` in the request (the final spread only adds a key when it has
+      // one, it cannot remove one), and the server answered with an empty page —
+      // which is why 「全部」 showed nothing while the root path worked.
       const pathId = params?.path_id ?? selectedPath;
+      const { path_id: _pathFromParams, filters: explicitFilters, ...rest } = params ?? {};
       const result = await knowledgeApi.listDocuments({
-        ...appliedFilters,
-        ...params,
+        ...(explicitFilters ?? appliedFilters),
+        ...rest,
         page: params?.page ?? page,
         page_size: params?.page_size ?? pageSize,
         ...(pathId && pathId !== ALL_PATHS ? { path_id: pathId } : {}),
@@ -435,6 +517,33 @@ export default function KnowledgePage() {
       message.error(error instanceof Error ? error.message : "无法加载文档列表");
     }
   };
+
+  const fetchJobs = useCallback(async () => {
+    setJobsLoading(true);
+    try {
+      setJobs(await knowledgeApi.listJobs());
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "加载任务列表失败");
+    } finally {
+      setJobsLoading(false);
+    }
+  }, []);
+
+  const openJobs = useCallback(() => {
+    setJobsDrawerOpen(true);
+    void fetchJobs();
+  }, [fetchJobs]);
+
+  /**
+   * Reload the path tree.
+   *
+   * Every mutation that changes *where* a document is or *whether it is
+   * processing* has to call this: the tree shows the per-path counts and the
+   * processing badge, and leaving it stale is exactly the reported bug — a file
+   * uploading in 测试1 while the tree still showed the pre-upload counts and no
+   * badge.
+   */
+  const refreshTree = useCallback(() => setTreeRefreshKey((n) => n + 1), []);
 
   const refresh = async () => {
     setLoading(true);
@@ -470,6 +579,12 @@ export default function KnowledgePage() {
       pathEffectReady.current = true;
       return;
     }
+    // The selection belongs to the list that was on screen. Keeping it across a
+    // path switch leaves checkboxes ticked for rows that are no longer displayed,
+    // and a batch action would then hit files the user can no longer see. Clearing
+    // it — together with the filters that were entered for the previous path —
+    // makes the whole right-hand side describe the newly selected path.
+    setSelectedRowKeys([]);
     // Nothing to filter when the knowledge service is unavailable: the request
     // could only fail, and the failure would surface as an error toast on every
     // click. The tree is rendered read-only in that state.
@@ -481,11 +596,28 @@ export default function KnowledgePage() {
 
   /* ── Polling for active jobs ───────────────────────────────── */
 
+  // The interval must call the *current* loader, not the one captured when the
+  // effect ran. `loadDocuments` closes over `selectedPath`/`page`/filters, so an
+  // interval created while 全部 was selected kept re-requesting "all documents"
+  // after the user switched to a case — the path request fired once and was then
+  // overwritten by unfiltered ones, making the tree selection look ignored.
+  const loadDocumentsRef = useRef(loadDocuments);
+  loadDocumentsRef.current = loadDocuments;
+  const refreshTreeRef = useRef(refreshTree);
+  refreshTreeRef.current = refreshTree;
+
+  // Poll while the *account* has work in flight, not while the current page shows
+  // a pending row. Keying this off `documents` meant polling stopped the moment
+  // the user switched to a path that had nothing pending — so a job started under
+  // another path never finished updating here, and the header indicator froze.
   useEffect(() => {
-    if (!documents.some((d) => d.status === "queued" || d.status === "processing")) return;
-    const timer = window.setInterval(() => void loadDocuments(), 2500);
+    if (pendingCount <= 0) return;
+    const timer = window.setInterval(() => {
+      void loadDocumentsRef.current();
+      refreshTreeRef.current();
+    }, 2500);
     return () => window.clearInterval(timer);
-  }, [documents]);
+  }, [pendingCount]);
 
   /* ── Query / Filter ────────────────────────────────────────── */
 
@@ -534,13 +666,10 @@ export default function KnowledgePage() {
     setStatusFilter(undefined);
     setAppliedFilters({});
     setPage(1);
-    void knowledgeApi.listDocuments({ page: 1, page_size: pageSize })
-      .then((result) => {
-        setDocuments(result.items);
-        setDocumentTotal(result.total);
-        setPendingCount(result.pending_count || 0);
-      })
-      .catch((error) => message.error(error instanceof Error ? error.message : "无法加载文档列表"));
+    // Delegates to loadDocuments so the path filter is preserved: resetting the
+    // *filters* must not silently reset the *path*, or the table would show every
+    // path's documents while the tree still highlights the selected one.
+    void loadDocuments({ page: 1, path_id: selectedPath, filters: {} });
   };
 
   /* ── Upload ────────────────────────────────────────────────── */
@@ -552,6 +681,7 @@ export default function KnowledgePage() {
     try {
       await knowledgeApi.reprocessDocument(doc.id);
       await loadDocuments();
+      refreshTree();
       message.success("已加入重新处理队列");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "重新处理失败");
@@ -566,6 +696,7 @@ export default function KnowledgePage() {
     try {
       await knowledgeApi.deleteDocument(doc.id);
       await loadDocuments();
+      refreshTree();
       message.success("文件已删除");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "删除失败");
@@ -578,9 +709,66 @@ export default function KnowledgePage() {
       const result = await knowledgeApi.deleteDocuments(selectedRowKeys as string[]);
       setSelectedRowKeys([]);
       await loadDocuments();
+      refreshTree();
       message.success(`已删除 ${result.deleted} 个文件`);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "批量删除失败");
+    }
+  };
+
+  /* ── Transfer selected documents between paths ─────────────── */
+
+  /**
+   * Move the selected documents to a path (or back to the public area).
+   *
+   * Transferring is per **document**, which is the unit that makes case isolation
+   * usable: an account's knowledge lives in one space, so a space-level move could
+   * only shift everything at once. Filing happens one document at a time, so a
+   * partial failure is reported rather than swallowed.
+   */
+  const transferSelected = async (targetPathId: string | null) => {
+    const ids = selectedRowKeys as string[];
+    if (ids.length === 0) return;
+    setTransferring(true);
+    let moved = 0;
+    let failed = 0;
+    for (const documentId of ids) {
+      try {
+        if (targetPathId) {
+          await pathsApi.bindResource(targetPathId, "knowledge_document", documentId);
+        } else {
+          // Public area: the document's current path is unknown to this page, so
+          // any existing binding is removed by id rather than by guessing which
+          // path holds it.
+          await pathsApi.unbindResourceAnyPath("knowledge_document", documentId);
+        }
+        moved += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setTransferring(false);
+    setTransferOpen(false);
+    setSelectedRowKeys([]);
+    await loadDocuments();
+    if (failed === 0) {
+      message.success(`已将 ${moved} 个文件转移`);
+    } else {
+      message.warning(`${moved} 个成功，${failed} 个失败`);
+    }
+    // The tree's counts changed, so refresh it too.
+    refreshTree();
+  };
+
+  /** Open the transfer dialog, loading the path tree to choose from. */
+  const openTransfer = async () => {
+    setTransferTarget(null);
+    setTransferOpen(true);
+    try {
+      const result = await pathTree();
+      setTransferPaths(flattenPaths(result.tree || []));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "路径列表读取失败");
     }
   };
 
@@ -635,17 +823,44 @@ export default function KnowledgePage() {
       sorter: (a: KnowledgeDocument, b: KnowledgeDocument) => (a.size || 0) - (b.size || 0),
     },
     {
-      title: <Badge count={pendingCount} overflowCount={999} offset={[8, 0]}><span>状态</span></Badge>,
+      // No numeric badge on this column: a count here is not attributable to a
+      // path, so it appeared while viewing a case that had nothing processing —
+      // which is precisely what users reported as wrong. Per-path progress is
+      // shown on the path tree instead.
+      title: "状态",
       dataIndex: "status",
       key: "status",
       width: 180,
       render: (status: KnowledgeDocument["status"], record: KnowledgeDocument) => {
         const meta = statusMeta[status];
         const stage = getProcessingStageLabel(record.processing_stage);
+        // A queued document is not necessarily "waiting for the worker": a
+        // failed attempt is re-queued with a one-hour backoff, so the row sits
+        // in `queued` while the worker is idle and nothing is being processed.
+        // Labelling that "等待 Worker" told the user the queue was about to be
+        // picked up when in fact it had already failed once, and the recorded
+        // reason was never shown anywhere.
+        const retryWaiting =
+          status === "queued" && (record.job_attempts ?? 0) > 0;
+        const reason = record.job_error || record.error || undefined;
         return (
           <Space direction="vertical" size={2}>
-            <Tag color={meta.color}>{meta.label}</Tag>
-            {stage ? <Typography.Text type="secondary">{stage}</Typography.Text> : null}
+            {retryWaiting ? (
+              <Tooltip title={reason}>
+                <Tag color="warning">等待重试</Tag>
+              </Tooltip>
+            ) : (
+              <Tag color={meta.color}>{meta.label}</Tag>
+            )}
+            {retryWaiting ? (
+              <Typography.Text type="secondary">
+                {record.job_next_retry_at
+                  ? `预计 ${formatRetryTime(record.job_next_retry_at)} 再次尝试`
+                  : "首次尝试失败，等待重试"}
+              </Typography.Text>
+            ) : stage ? (
+              <Typography.Text type="secondary">{stage}</Typography.Text>
+            ) : null}
           </Space>
         );
       },
@@ -737,9 +952,28 @@ export default function KnowledgePage() {
             <Typography.Text>将业务资料变为可追溯、可关联、可供智能体检索的本地知识。</Typography.Text>
           </div>
         </div>
-        <Tooltip title="刷新列表">
-          <Button type="text" icon={<ReloadOutlined />} onClick={() => void refresh()} />
-        </Tooltip>
+        <Space>
+          {/* Background-work entry point. Always present so the job list is
+              reachable at any time (checking what happened to an earlier upload
+              is a normal thing to do), and it turns into a live indicator while
+              something is actually running. It deliberately lives outside the
+              path filter: the work is account-wide, so switching paths must not
+              hide it. */}
+          <Tooltip title="查看处理任务列表">
+            <Button
+              type="text"
+              size="small"
+              icon={<UnorderedListOutlined />}
+              onClick={openJobs}
+              aria-label="处理任务列表"
+            >
+              任务
+            </Button>
+          </Tooltip>
+          <Tooltip title="刷新列表">
+            <Button type="text" icon={<ReloadOutlined />} onClick={() => void refresh()} />
+          </Tooltip>
+        </Space>
       </header>
 
       <div className={styles.body}>
@@ -752,7 +986,8 @@ export default function KnowledgePage() {
             value={selectedPath}
             onChange={setSelectedPath}
             countKind="document"
-            refreshKey={documentTotal}
+            refreshKey={treeRefreshKey}
+            onTreeLoaded={(nodes) => setPathNames(flattenPaths(nodes))}
           />
         </aside>
 
@@ -808,6 +1043,14 @@ export default function KnowledgePage() {
           <Col>
             <Space>
               {selectedRowKeys.length > 0 && (
+                <Button
+                  icon={<SwapOutlined />}
+                  onClick={() => void openTransfer()}
+                >
+                  转移到路径 ({selectedRowKeys.length})
+                </Button>
+              )}
+              {selectedRowKeys.length > 0 && (
                 <Popconfirm
                   title={`确定删除选中的 ${selectedRowKeys.length} 个文件？`}
                   onConfirm={batchDelete}
@@ -835,11 +1078,18 @@ export default function KnowledgePage() {
                     let fail = 0;
                     for (const f of fileList.slice()) {
                       if (f.size > MAX_FILE_SIZE) { fail++; continue; }
-                      try { await knowledgeApi.upload(f); success++; } catch { fail++; }
+                      // Upload straight into the path the user is looking at.
+                      // Without this the file became public no matter which path
+                      // was selected (the picker above says where it will go).
+                      try {
+                        await knowledgeApi.upload(f, uploadTargetPathId);
+                        success++;
+                      } catch { fail++; }
                     }
                     await loadDocuments();
+                    refreshTree();
                     setUploading(false);
-                    if (fail === 0) message.success(`${success} 个文件已上传`);
+                    if (fail === 0) message.success(`${success} 个文件已归入「${uploadTargetName}」`);
                     else message.warning(`${success} 个成功，${fail} 个失败`);
                     window.setTimeout(() => { uploadBatchGuard.current = false; }, 0);
                   })();
@@ -847,7 +1097,7 @@ export default function KnowledgePage() {
                 }}
                 disabled={uploading || Boolean(uploadBlockReason)}
               >
-                <Tooltip title={uploadBlockReason || "上传资料"}>
+                <Tooltip title={uploadBlockReason || `上传资料（归入「${uploadTargetName}」）`}>
                   <Button
                     type="primary"
                     icon={<UploadOutlined />}
@@ -864,9 +1114,9 @@ export default function KnowledgePage() {
         <div className={styles.hint}>
           {uploadBlockReason
             ? `当前无法上传：${uploadBlockReason}`
-            : uploadNotice
-              ? uploadNotice
-            : "支持 PDF、DOC/DOCX、XLS/XLSX、CSV、TXT、Markdown、JSON，单文件不超过 10GB。"}
+            : `上传的文件将归入「${uploadTargetName}」${uploadTargetPathId ? "，只有挂载了该路径的智能体才能检索到它" : "（账号下所有智能体可见）；如需归入其他路径，请先在左侧选中该路径"}。${
+                uploadNotice ? ` ${uploadNotice}` : ""
+              }`}
         </div>
       </div>
 
@@ -925,6 +1175,112 @@ export default function KnowledgePage() {
           onClose={() => { setStatsOpen(false); setStatsDocument(null); }}
         />
       )}
+
+      {/* ── Transfer selected documents ─────────────────────────── */}
+      <Modal
+        title={`将 ${selectedRowKeys.length} 个文件转移到`}
+        open={transferOpen}
+        onCancel={() => setTransferOpen(false)}
+        onOk={() => void transferSelected(transferTarget)}
+        okText="转移"
+        cancelText="取消"
+        confirmLoading={transferring}
+        destroyOnHidden
+      >
+        <Typography.Paragraph type="secondary">
+          转移后只有挂载了目标路径的智能体才能检索到这些文件。
+          选择「公共区（未归类）」则移回公共区，账号下所有智能体可见。
+        </Typography.Paragraph>
+        <Radio.Group
+          value={transferTarget ?? ""}
+          onChange={(event) =>
+            setTransferTarget(event.target.value === "" ? null : String(event.target.value))
+          }
+          style={{ display: "flex", flexDirection: "column", gap: 8 }}
+        >
+          <Radio value="">
+            <GlobalOutlined /> 公共区（未归类）
+          </Radio>
+          {[...transferPaths.values()]
+            .filter((node) => !node.is_root)
+            .map((node) => (
+              <Radio key={node.id} value={node.id}>
+                <FolderOutlined /> {node.name}
+              </Radio>
+            ))}
+        </Radio.Group>
+        {[...transferPaths.values()].filter((node) => !node.is_root).length === 0 && (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+            还没有子路径。请先在左侧路径树中新建一条路径，再转移文件。
+          </Typography.Paragraph>
+        )}
+      </Modal>
+
+      {/* ── Jobs Drawer ─────────────────────────────────────────── */}
+      <Drawer
+        title="处理任务列表"
+        open={jobsDrawerOpen}
+        onClose={() => setJobsDrawerOpen(false)}
+        width={760}
+        extra={
+          <Tooltip title="刷新任务状态">
+            <Button type="text" icon={<ReloadOutlined />} onClick={() => void fetchJobs()} />
+          </Tooltip>
+        }
+      >
+        <Table<KnowledgeJobItem>
+          dataSource={jobs}
+          rowKey="id"
+          loading={jobsLoading}
+          size="small"
+          locale={{ emptyText: <Empty description="暂无任务" /> }}
+          pagination={{ pageSize: 20, showTotal: (total) => `共 ${total} 条` }}
+          columns={[
+            {
+              title: "文件名",
+              dataIndex: "filename",
+              key: "filename",
+              ellipsis: true,
+            },
+            {
+              title: "状态",
+              dataIndex: "status",
+              key: "status",
+              width: 120,
+              render: (status: KnowledgeJobItem["status"]) => {
+                const meta = statusMeta[status];
+                return <Tag color={meta.color}>{meta.label}</Tag>;
+              },
+            },
+            {
+              title: "尝试次数",
+              dataIndex: "attempts",
+              key: "attempts",
+              width: 90,
+              align: "right" as const,
+            },
+            {
+              title: "更新时间",
+              dataIndex: "updated_at",
+              key: "updated_at",
+              width: 170,
+              render: (value?: string) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm:ss") : "-"),
+            },
+            {
+              title: "失败原因",
+              dataIndex: "error",
+              key: "error",
+              ellipsis: true,
+              render: (value?: string | null) =>
+                value ? (
+                  <Typography.Text type="danger">{value}</Typography.Text>
+                ) : (
+                  <Typography.Text type="secondary">-</Typography.Text>
+                ),
+            },
+          ]}
+        />
+      </Drawer>
     </section>
   );
 }

@@ -11,7 +11,19 @@ import hashlib
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 
+try:  # psycopg2 renamed nothing here, but keep the import defensive for stubs
+    from psycopg2.pool import PoolError
+except ImportError:  # pragma: no cover - older/alternative drivers
+    PoolError = Exception  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
+
+# How long a checkout may wait for a busy pool before giving up. See
+# ``_checkout_with_wait``: the per-(account, path) pool is deliberately small, so
+# short waits are the normal case under concurrency.
+_POOL_WAIT_SECONDS = float(
+    os.getenv("QWENPAW_DATA_TABLES_POOL_WAIT_SECONDS", "15") or 15,
+)
 
 # Upper bound on simultaneously open per-account pools. With ``maxconn`` 2 this
 # keeps the worst case at 2 * _MAX_LIVE_POOLS plus the metadata pool, well under
@@ -226,10 +238,49 @@ def get_target_connection(db_name: str, schema=None):
             _target_pool[key] = pool
             _target_pool_order.append(key)
             _reclaim_idle_pools(keep=key)
-        conn = pool.getconn()
+    # Check out **outside** the lock. ``put_target_connection`` needs the same
+    # lock to find the pool, so waiting here while holding it would stop another
+    # thread from returning the very connection we are waiting for — every
+    # concurrent reader then stalls until the timeout.
+    conn = _checkout_with_wait(pool, key)
     if search_path_sql:
+        # Re-assert on every checkout: ``SET`` is session state that survives a
+        # transaction, so a connection whose search_path was changed by an earlier
+        # statement must not hand that scope to the next borrower.
         _pin_search_path(conn, search_path_sql)
     return conn
+
+
+def _checkout_with_wait(pool: ThreadedConnectionPool, key: tuple[str, str]):
+    """Check out a connection, waiting briefly when the pool is at its ceiling.
+
+    ``psycopg2``'s ``getconn()`` raises ``PoolError("connection pool exhausted")``
+    the instant ``maxconn`` connections are in use. The ceiling is small (2) so
+    that many accounts x paths stay under the server's connection limit, which
+    means ordinary concurrency — three people opening the same case's table, or
+    a listing next to a preview — hit it and surfaced as an HTTP 500.
+
+    Queries here are short (a preview is a ``LIMIT`` select), so waiting a moment
+    for a connection to come back is both correct and cheap; failing fast only
+    turns a few milliseconds of queueing into a user-visible error. The wait is
+    bounded so a genuinely stuck query still fails instead of hanging forever.
+    """
+    deadline = time.monotonic() + _POOL_WAIT_SECONDS
+    while True:
+        try:
+            return pool.getconn()
+        except PoolError as exc:
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "data tables: pool %s still exhausted after %.0fs; "
+                    "refusing instead of waiting longer",
+                    key, _POOL_WAIT_SECONDS,
+                )
+                raise PoolError(
+                    f"连接池已满（{key[0]}/{key[1] or '默认'}）：等待 "
+                    f"{_POOL_WAIT_SECONDS:.0f}s 仍无空闲连接，请稍后重试或减少并发"
+                ) from exc
+            time.sleep(0.05)
 
 
 def _pin_search_path(conn, schema: str) -> None:
@@ -257,15 +308,59 @@ def _pin_search_path(conn, schema: str) -> None:
         raise
 
 
-def put_target_connection(conn, db_name: str, schema=None):
-    """Return a connection. The key must match the one used to check it out.
+def _schema_key_from_connection(conn) -> str:
+    """Recover the schema fragment of a pooled connection's key from the connection.
 
-    Defaulting ``schema`` to ``None`` keeps existing callers (metadata and import
-    paths, which never scope to a schema) working unchanged, while a path-scoped
-    caller passes the same schema it checked out with.
+    A pool is built with ``options="-c search_path=<schema>"``, so the connection
+    itself records which pool it came from — no side table and no attribute
+    assignment on the psycopg2 object (the extension type rejects both) needed.
+    A connection built without the option returns ``""``: the unscoped pool.
+
+    Returns the schema fragment, or ``""`` when it cannot be read (a closed or
+    non-pooled connection), which is also the unscoped key.
     """
-    schema_key, _ = _normalize_search_path(schema)
-    key = (db_name, schema_key)
+    try:
+        options = conn.get_dsn_parameters().get("options") or ""
+    except Exception:  # noqa: BLE001 - a closed/foreign conn has no dsn
+        return ""
+    marker = "search_path="
+    index = options.find(marker)
+    if index < 0:
+        return ""
+    value = options[index + len(marker):].strip()
+    if not value:
+        return ""
+    # libpq options are space-separated; our search_path values use bare commas,
+    # so the first token is the whole value (it never contains a space).
+    return value.split()[0]
+
+
+def put_target_connection(conn, db_name: str, schema=None):
+    """Return a connection to the pool it was checked out from.
+
+    **The key is recovered from the connection, not from the arguments.** The
+    pool is keyed by ``(db_name, schema)`` and the schema is part of the
+    connection's startup options, so a caller that scoped its checkout but
+    forgot to repeat ``schema`` here still returns it to the right pool. An
+    earlier revision keyed the lookup off the declared argument alone, and three
+    call sites did exactly that: the scoped pool kept counting the connection as
+    borrowed (so it exhausted after two queries, which surfaced as intermittent
+    tool failures) while the connection could also land in the *unscoped* pool
+    and hand its ``search_path`` to an unrelated borrower.
+
+    ``schema`` is still accepted and cross-checked when given: a disagreement
+    means a caller bug, so it is logged rather than silently tolerated.
+    """
+    derived = _schema_key_from_connection(conn)
+    if schema is not None:
+        declared, _ = _normalize_search_path(schema)
+        if declared != derived:
+            logger.error(
+                "data tables: connection returned under schema %r but was opened "
+                "on %r; using the connection's own scope (%s)",
+                declared, derived, db_name,
+            )
+    key = (db_name, derived)
     with _pool_lock:
         pool = _target_pool.get(key)
     if pool is not None:
@@ -378,10 +473,33 @@ def init_user_tables(db_name: str, table_name: str, columns: list[dict]) -> None
 
 
 def drop_table(db_name: str, table_name: str) -> None:
+    """Drop a table from wherever it physically lives in this account's database.
+
+    Deliberately not ``DROP TABLE IF EXISTS "name"`` on an unqualified name: the
+    search path only reaches ``public``, so a table filed into a case (which lives
+    in that path's schema) would not be found. ``IF EXISTS`` would then make this
+    look successful while leaving the physical table — and its data — behind in
+    the path schema. Dropping across the account's own schemas also cleans up any
+    table filed before storage moved.
+
+    Only ``public`` and the UUID-derived ``p_*`` schemas are touched, so a
+    same-named table belonging to someone else can never be dropped.
+    """
+    from .store import ROOT_SCHEMA
+
     conn = get_target_connection(db_name)
     try:
         with conn.cursor() as cur:
-            cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+            cur.execute(
+                "SELECT schemaname FROM pg_tables WHERE tablename = %s "
+                "AND (schemaname = %s OR schemaname LIKE %s)",
+                (table_name, ROOT_SCHEMA, "p\\_%"),
+            )
+            schemas = [row[0] for row in cur.fetchall()]
+            for schema in schemas:
+                # Identifier cannot be parameterised; both parts come from
+                # ``pg_tables`` (or from a UUID-derived constant), not from input.
+                cur.execute(f'DROP TABLE IF EXISTS "{schema}"."{table_name}"')
             conn.commit()
     except Exception:
         conn.rollback()
@@ -390,8 +508,8 @@ def drop_table(db_name: str, table_name: str) -> None:
         put_target_connection(conn, db_name)
 
 
-def truncate_table(db_name: str, table_name: str) -> None:
-    conn = get_target_connection(db_name)
+def truncate_table(db_name: str, table_name: str, schema: str | None = None) -> None:
+    conn = get_target_connection(db_name, schema)
     try:
         with conn.cursor() as cur:
             cur.execute(f'TRUNCATE TABLE "{table_name}"')
@@ -400,4 +518,6 @@ def truncate_table(db_name: str, table_name: str) -> None:
         conn.rollback()
         raise
     finally:
-        put_target_connection(conn, db_name)
+        # ``schema`` must be repeated: the pool key is (db_name, schema), and a
+        # table filed into a case is only reachable through its own schema.
+        put_target_connection(conn, db_name, schema)
