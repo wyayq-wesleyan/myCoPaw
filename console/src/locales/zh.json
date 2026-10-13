@@ -144,7 +144,8 @@
     "plugins": "插件",
     "backups": "备份",
     "pluginManager": "插件管理",
-    "accountUsage": "账号用量统计"
+    "accountUsage": "账号用量统计",
+    "data-analysis": "数据空间"
   },
   "os": {
     "console": "控制台",
@@ -641,8 +642,8 @@
       }
     },
     "model": "模型",
-    "modelHelp": "为此智能体指定特定的 LLM 模型。留空则使用全局默认模型。",
-    "modelPlaceholder": "使用全局默认",
+    "modelHelp": "为此智能体指定特定的 LLM 模型。留空则由你的账号有权使用的第一个模型作答。",
+    "modelPlaceholder": "由账号可用模型自动选择",
     "noConfiguredModels": "暂无已配置的模型",
     "modelColumn": "模型",
     "copyTooltip": "复制智能体配置",
@@ -2792,9 +2793,9 @@
     "enableAction": "启用 →"
   },
   "modelConfig": {
-    "promptTitle": "需要配置 LLM 模型，配置模型后在 Chat 页面选择",
-    "promptMessage": "聊天功能需要 LLM 模型才能运行。请先配置模型，配置完成后在 Chat 页面顶部的模型选择器中选择即可使用。",
-    "configureButton": "配置模型",
+    "promptTitle": "当前账号还没有可用的对话模型",
+    "promptMessage": "请联系管理员为你的账号授权至少一个模型。授权后即可直接开始对话，无需其他设置。",
+    "configureButton": "查看模型服务",
     "skipButton": "跳过",
     "chatDisabledTitle": "聊天已禁用",
     "chatDisabledMessage": "聊天功能已禁用，因为未配置模型。请配置模型以启用聊天功能。",
@@ -3800,30 +3801,30 @@
       "stop": "停止"
     },
     "gotoSettings": "智能体 Loop 设置",
-    "selectorTitle": "Loop 模式",
-    "selectorHint": "选择智能体接下来的工作方式",
-    "selectorAria": "选择 Loop 模式",
+    "selectorTitle": "这次想让它怎么帮你？",
+    "selectorHint": "不同模式决定它怎么帮你干活，下面有例子",
+    "selectorAria": "选择工作方式",
     "builtInModes": "内置",
     "customModes": "自定义与插件",
     "starting": "正在启动",
     "running": "运行中",
     "awaiting_user": "等待你的回复",
-    "activePersistentDescription": "该模式会在当前会话中持续生效，直到任务结束或重新开始会话。",
-    "activeCustomDescription": "该自定义模式会持续生效，直到使用 /mode off、/clear 或 /new。",
-    "loadError": "部分 Loop 模式加载失败。",
+    "activePersistentDescription": "当前工作方式会一直生效，直到这件事做完或你重开一个对话。",
+    "activeCustomDescription": "当前工作方式会一直生效，直到你输入 /mode off、/clear 或 /new。",
+    "loadError": "部分工作方式没能加载出来。",
     "retry": "重试",
     "modes": {
       "default": {
         "name": "默认",
-        "description": "标准的受控智能体 Loop。"
+        "description": "随手一问一答，答完就结束。例：帮我翻译这段话、算一下这个表格的总数"
       },
       "goal": {
         "name": "目标",
-        "description": "持续推进一个具体且可验证的目标。"
+        "description": "认准一件事，反复做到完成为止。例：读完这批合同，把所有风险条款找出来并附上页码"
       },
       "mission": {
         "name": "任务",
-        "description": "运行结构化、可持续的多步骤任务。"
+        "description": "大工程：先拆成步骤给你确认，再分头去做并逐项验证。例：给系统加上登录功能"
       }
     }
   },

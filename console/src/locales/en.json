@@ -858,8 +858,8 @@
       }
     },
     "model": "Model",
-    "modelHelp": "Assign a specific LLM model to this agent. Leave empty to use the global default.",
-    "modelPlaceholder": "Use global default",
+    "modelHelp": "Assign a specific LLM model to this agent. Leave empty to use the first model your account is authorized to use.",
+    "modelPlaceholder": "Auto: first authorized model",
     "noConfiguredModels": "No configured models",
     "modelColumn": "Model",
     "copyTooltip": "Copy agent configuration",
@@ -2933,9 +2933,9 @@
     "enableAction": "Enable →"
   },
   "modelConfig": {
-    "promptTitle": "LLM Model Required — Select in Chat After Configuration",
-    "promptMessage": "Chat requires an LLM model to function. Please configure a model first, then select it from the model selector at the top of the Chat page.",
-    "configureButton": "Configure Model",
+    "promptTitle": "No model is available for your account",
+    "promptMessage": "Ask your administrator to grant your account access to at least one model. Once granted you can start chatting right away — nothing else needs to be set up.",
+    "configureButton": "View Model Services",
     "skipButton": "Skip",
     "chatDisabledTitle": "Chat Disabled",
     "chatDisabledMessage": "Chat functionality is disabled because no model is configured. Please configure a model to enable chat.",
@@ -3781,30 +3781,30 @@
       "stop": "Stop"
     },
     "gotoSettings": "Agent Loop Settings",
-    "selectorTitle": "Loop mode",
-    "selectorHint": "Choose how the agent should continue",
-    "selectorAria": "Select loop mode",
+    "selectorTitle": "How should it help this time?",
+    "selectorHint": "Pick how the agent should work — examples below",
+    "selectorAria": "Choose how it works",
     "builtInModes": "Built-in",
     "customModes": "Custom and plugins",
     "starting": "Starting",
     "running": "Running",
     "awaiting_user": "Waiting for your reply",
-    "activePersistentDescription": "This mode remains active for the conversation until it finishes or you start over.",
-    "activeCustomDescription": "This custom mode remains active until you use /mode off, /clear, or /new.",
-    "loadError": "Some loop modes could not be loaded.",
+    "activePersistentDescription": "It keeps working this way until the job is done or you start a new conversation.",
+    "activeCustomDescription": "It keeps working this way until you type /mode off, /clear or /new.",
+    "loadError": "Some ways of working could not be loaded.",
     "retry": "Retry",
     "modes": {
       "default": {
         "name": "Default",
-        "description": "The standard guarded agent loop."
+        "description": "One question, one answer — then it stops. e.g. translate this paragraph, count the rows in this sheet"
       },
       "goal": {
         "name": "Goal",
-        "description": "Work persistently toward a concrete, verifiable goal."
+        "description": "Keeps working on one clear outcome until it is finished. e.g. read all these contracts and list every risky clause with its page number"
       },
       "mission": {
         "name": "Mission",
-        "description": "Run a structured, persistent multi-step task."
+        "description": "A big job: it first lays out the steps for your approval, then works through them and checks each one. e.g. add login to the system"
       }
     }
   },

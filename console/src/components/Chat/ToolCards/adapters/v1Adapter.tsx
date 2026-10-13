@@ -25,6 +25,8 @@ import GenericToolCard from "../cards/GenericToolCard";
 const STREAM_INPUT_PREVIEW_CHARS = 4 * 1024;
 const ERROR_STATUSES = new Set(["failed", "rejected", "canceled"]);
 const TOOL_ERROR_STATES = new Set(["error", "interrupted", "denied"]);
+/** Run statuses that mean the turn is over, so no tool in it can still run. */
+const TERMINAL_STATUSES = new Set(["completed", "canceled", "failed"]);
 
 /**
  * Derive the tool execution status from V1 message data.
@@ -32,12 +34,43 @@ const TOOL_ERROR_STATES = new Set(["error", "interrupted", "denied"]);
  * Checks the tool-execution-layer `state` (nested inside resultItem.data)
  * first — it reflects the real outcome of the tool call. Falls back to
  * message-level `status` for delivery state.
+ *
+ * A missing result no longer implies "still running". Replaying a finished
+ * conversation renders every historical tool call as a spinner forever
+ * otherwise, because its input message outlives its output one and the merged
+ * card never sees a result. Two independent signals say the call is over:
+ *
+ *  * the run status is terminal — the same classification the SDK itself uses
+ *    (``maybeGenerating``), and the backend stamps it on history but not while
+ *    streaming;
+ *  * the input message carries a ``state`` of its own, i.e. the backend
+ *    recorded an outcome for this call even though the output block is absent
+ *    (tool calls whose results were never persisted).
  */
 function deriveToolStatus(
   resultItem: Record<string, unknown> | undefined,
   data: Record<string, unknown>,
+  callItem?: Record<string, unknown>,
 ): ToolCallStatus {
-  if (!resultItem) return "calling";
+  const rawStatus =
+    (data.status as string) || (resultItem?.status as string) || "";
+
+  if (!resultItem) {
+    // The call's own state is checked first: a run can complete overall while
+    // this particular call errored, and "error" must not be masked by the
+    // run-level "completed".
+    const callState =
+      ((callItem?.data ?? {}) as Record<string, unknown>).state as
+        | string
+        | undefined;
+    if (callState) {
+      return TOOL_ERROR_STATES.has(callState) ? "error" : "done";
+    }
+    if (TERMINAL_STATUSES.has(rawStatus)) {
+      return rawStatus === "completed" ? "done" : "error";
+    }
+    return "calling";
+  }
 
   const resultData = (resultItem?.data ?? {}) as Record<string, unknown>;
   const toolState = resultData.state as string;
@@ -45,8 +78,6 @@ function deriveToolStatus(
     return "error";
   }
 
-  const rawStatus =
-    (data.status as string) || (resultItem.status as string) || "";
   if (rawStatus === "completed") return "done";
   if (ERROR_STATUSES.has(rawStatus)) return "error";
   return "calling";
@@ -118,9 +149,11 @@ function parseV1Props(v1Props: Record<string, unknown>): {
   // Extract result from content[1].data.output
   const result = resultData.output;
 
-  // No output content → tool hasn't executed yet → always "calling".
+  // No output content → the tool has no recorded result yet. Whether that
+  // means "still running" or "finished without a result" is decided by
+  // deriveToolStatus from the run status / call state, not by this alone.
   // Message-level status on *_call messages reflects delivery, not execution.
-  const status = deriveToolStatus(resultItem, data);
+  const status = deriveToolStatus(resultItem, data, callItem);
 
   // Extract id — prefer call_id which carries the ToolCallBlock.id
   // (e.g. "toolu_…" / "call_…") from the AgentScope SSE stream.
@@ -145,6 +178,9 @@ function parseV1Props(v1Props: Record<string, unknown>): {
 
   return {
     content: toolCallContent,
+    // Derived from the same status the card renders, so a terminal card can
+    // never be treated as streaming — that is what kept spinners turning on
+    // already-finished historical tool calls.
     isStreaming: status === "calling",
   };
 }

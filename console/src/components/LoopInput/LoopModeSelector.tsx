@@ -10,9 +10,11 @@ import {
   Target,
 } from "lucide-react";
 import { Popover, Tooltip } from "antd";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
+
+import { authApi } from "../../api/modules/auth";
 
 import {
   DEFAULT_LOOP_MODE,
@@ -47,6 +49,15 @@ export function LoopModeSelector() {
   const catalogLoading = useLoopStore((state) => state.catalogLoading);
   const catalogError = useLoopStore((state) => state.catalogError);
   const setSelectedMode = useLoopStore((state) => state.setSelectedMode);
+  // Loop settings live on an administrator-only page, so ordinary accounts must
+  // not be offered a shortcut that would take them to a page they cannot open.
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    authApi
+      .getCurrentUser()
+      .then((user) => setIsAdmin(user.role === "admin"))
+      .catch(() => {});
+  }, []);
 
   const selectedMode =
     availableModes.find((mode) => mode.id === selectedModeId) ??
@@ -137,22 +148,26 @@ export function LoopModeSelector() {
           <div className={styles.menuTitle}>{t("loop.selectorTitle")}</div>
           <div className={styles.menuHint}>{t("loop.selectorHint")}</div>
         </div>
-        <Tooltip title={t("loop.gotoSettings")}>
-          <button
-            aria-label={t("loop.gotoSettings")}
-            className={styles.settingsButton}
-            onClick={() => {
-              setOpen(false);
-              navigate("/agent-config?tab=agentLoop");
-            }}
-            type="button"
-          >
-            <Settings2 size={16} />
-          </button>
-        </Tooltip>
+        {isAdmin ? (
+          <Tooltip title={t("loop.gotoSettings")}>
+            <button
+              aria-label={t("loop.gotoSettings")}
+              className={styles.settingsButton}
+              onClick={() => {
+                setOpen(false);
+                navigate("/agent-config?tab=agentLoop");
+              }}
+              type="button"
+            >
+              <Settings2 size={16} />
+            </button>
+          </Tooltip>
+        ) : null}
       </div>
       {renderGroup(t("loop.builtInModes"), builtInModes)}
-      {renderGroup(t("loop.customModes"), extendedModes)}
+      {/* Empty for an ordinary account (the server returns built-ins only), and
+          rendering the header anyway would advertise modes that are not there. */}
+      {extendedModes.length > 0 ? renderGroup(t("loop.customModes"), extendedModes) : null}
       {catalogError ? (
         <div className={styles.menuError}>
           <span>{t("loop.loadError")}</span>

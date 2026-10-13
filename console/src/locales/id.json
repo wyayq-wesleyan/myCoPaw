@@ -579,8 +579,8 @@
     "selectBuiltin": "Bawaan",
     "selectNone": "Tidak ada",
     "model": "Model",
-    "modelHelp": "Tetapkan model LLM khusus untuk agen ini. Kosongkan untuk memakai default global.",
-    "modelPlaceholder": "Gunakan default global",
+    "modelHelp": "Tetapkan model LLM khusus untuk agen ini. Kosongkan untuk memakai model pertama yang diizinkan untuk akun Anda.",
+    "modelPlaceholder": "Otomatis: model pertama yang diizinkan",
     "noConfiguredModels": "Tidak ada model yang dikonfigurasi",
     "modelColumn": "Model",
     "copyTooltip": "Salin konfigurasi agen",
@@ -825,9 +825,9 @@
     "enableAction": "Aktifkan →"
   },
   "modelConfig": {
-    "promptTitle": "Model LLM Diperlukan - Pilih di Chat Setelah Konfigurasi",
-    "promptMessage": "Chat memerlukan model LLM agar berfungsi. Konfigurasi model terlebih dahulu, lalu pilih dari pemilih model di bagian atas halaman Chat.",
-    "configureButton": "Konfigurasi Model",
+    "promptTitle": "Tidak ada model yang tersedia untuk akun Anda",
+    "promptMessage": "Minta administrator memberikan akses ke setidaknya satu model untuk akun Anda. Setelah diberikan, Anda dapat langsung mulai mengobrol.",
+    "configureButton": "Lihat Layanan Model",
     "skipButton": "Lewati",
     "chatDisabledTitle": "Chat Dinonaktifkan",
     "chatDisabledMessage": "Fungsi chat dinonaktifkan karena tidak ada model yang dikonfigurasi.",
@@ -2788,30 +2788,30 @@
   },
   "loop": {
     "gotoSettings": "Pengaturan Loop Agen",
-    "selectorTitle": "Mode Loop",
-    "selectorHint": "Pilih cara agen melanjutkan pekerjaan",
-    "selectorAria": "Pilih mode Loop",
+    "selectorTitle": "Kali ini mau dibantu bagaimana?",
+    "selectorHint": "Pilih cara agen bekerja — contohnya di bawah",
+    "selectorAria": "Pilih cara kerja",
     "builtInModes": "Bawaan",
     "customModes": "Kustom dan plugin",
     "starting": "Memulai",
     "running": "Sedang berjalan",
     "awaiting_user": "Menunggu balasan Anda",
-    "activePersistentDescription": "Mode ini tetap aktif dalam percakapan hingga selesai atau percakapan diatur ulang.",
-    "activeCustomDescription": "Mode kustom ini tetap aktif hingga Anda menggunakan /mode off, /clear, atau /new.",
-    "loadError": "Beberapa mode Loop tidak dapat dimuat.",
+    "activePersistentDescription": "Cara kerja ini berlaku sampai pekerjaan selesai atau Anda memulai percakapan baru.",
+    "activeCustomDescription": "Cara kerja ini berlaku sampai Anda mengetik /mode off, /clear, atau /new.",
+    "loadError": "Sebagian cara kerja gagal dimuat.",
     "retry": "Coba lagi",
     "modes": {
       "default": {
         "name": "Default",
-        "description": "Loop agen terkontrol standar."
+        "description": "Satu tanya satu jawab, lalu selesai. Contoh: terjemahkan paragraf ini, hitung baris tabel ini"
       },
       "goal": {
         "name": "Tujuan",
-        "description": "Bekerja secara berkelanjutan menuju tujuan yang konkret dan dapat diverifikasi."
+        "description": "Mengerjakan satu hal sampai benar-benar selesai. Contoh: baca semua kontrak ini dan daftar semua klausul berisiko beserta nomor halamannya"
       },
       "mission": {
-        "name": "Misi",
-        "description": "Jalankan tugas multi-langkah yang terstruktur dan berkelanjutan."
+        "name": "Tugas",
+        "description": "Pekerjaan besar: susun langkah dulu untuk Anda setujui, lalu dikerjakan dan diverifikasi. Contoh: tambahkan fitur login ke sistem"
       }
     }
   },

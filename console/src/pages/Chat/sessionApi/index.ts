@@ -928,13 +928,18 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
   onSessionCreated: ((sessionId: string) => void) | null = null;
 
   /**
-   * When reconnecting to a running conversation, the backend history may not
-   * include the latest user message (it's only persisted after generation
-   * completes). If generating, look up the cached data from sessionStorage
-   * and patch it into the message list (including any attachments).
+   * Re-insert the pending user message when the fetched history does not
+   * contain it yet.
    *
-   * When not generating the conversation is done — clear the cached entry
-   * once the fetched history contains the pending text.
+   * The backend persists the user turn with the reply, so right after sending
+   * (or after a reload mid-turn) the fetched history can still be missing it.
+   * The cached text/content is patched in so the question never disappears.
+   *
+   * Whether it is *already* persisted is decided by the client message id the
+   * browser stamped on the send, falling back to the text for legacy entries.
+   * That check runs in both generating and idle states — see the comment in the
+   * body for why skipping it while generating put the question below its own
+   * answer.
    *
    * Returns true when an unconfirmed pending message was patched in (the
    * history is incomplete and must not be treated as canonical).
@@ -950,31 +955,35 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
       return false;
     }
 
-    // When the chat is idle, clear the cache only after the fetched
-    // history actually contains the pending text. Clearing
-    // unconditionally lost the last message in two windows: POST sent
-    // but the run not registered yet (status still "idle"), and
-    // generation completed but the memory flush not finished.
-    if (!generating) {
-      let lastUserText = "";
-      let lastUserClientMessageId: string | undefined;
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role !== ROLE_USER) continue;
-        const input = messages[i]?.cards?.[0]?.data?.input?.[0];
-        lastUserText = extractTextFromContent(input?.content);
-        lastUserClientMessageId = extractClientMessageId(input?.metadata);
-        break;
-      }
-      const persistenceConfirmed = cached.clientMessageId
-        ? lastUserClientMessageId === cached.clientMessageId
-        : lastUserText.trim() === cached.text.trim();
-      if (persistenceConfirmed) {
-        clearPendingUserMessage(backendSessionId);
-        return false;
-      }
-      // History is missing the turn — fall through and patch it in,
-      // keeping the cache until a later fetch confirms persistence.
+    // Has the pending turn already been persisted? This must be answered in
+    // BOTH states, not just when idle.
+    //
+    // Clearing the cache unconditionally on idle lost the last message in two
+    // windows: POST sent but the run not registered yet (status still "idle"),
+    // and generation completed but the memory flush not finished.
+    //
+    // Conversely, skipping the check while generating duplicated it: the reply
+    // is already in the history by then, so the pending question was appended
+    // *below* its own answer — the question appeared twice, the lower copy
+    // with no timestamp. Reloading mid-turn hit this exactly.
+    let lastUserText = "";
+    let lastUserClientMessageId: string | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== ROLE_USER) continue;
+      const input = messages[i]?.cards?.[0]?.data?.input?.[0];
+      lastUserText = extractTextFromContent(input?.content);
+      lastUserClientMessageId = extractClientMessageId(input?.metadata);
+      break;
     }
+    const persistenceConfirmed = cached.clientMessageId
+      ? lastUserClientMessageId === cached.clientMessageId
+      : lastUserText.trim() === cached.text.trim();
+    if (persistenceConfirmed) {
+      clearPendingUserMessage(backendSessionId);
+      return false;
+    }
+    // History is missing the turn — patch it in, keeping the cache until a
+    // later fetch confirms persistence.
 
     // Use the full content array (with images/files) when available;
     // fall back to text-only for legacy entries.

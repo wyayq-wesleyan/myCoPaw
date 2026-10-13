@@ -29,7 +29,7 @@ export const DEFAULT_LOOP_MODE: LoopModeInfo = {
   id: "default",
   name: "default",
   slash_command: "",
-  description: "The standard guarded agent loop.",
+  description: "One question, one answer — then it stops.",
   source: "builtin",
 };
 

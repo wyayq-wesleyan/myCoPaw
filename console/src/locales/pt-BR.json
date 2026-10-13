@@ -683,8 +683,8 @@
     "noPoolSkills": "No skills available in pool",
     "addSkillsToAgent": "Adicionar Skills",
     "model": "Modelo",
-    "modelHelp": "Assign a specific LLM model to this agent. Leave empty to use the global default.",
-    "modelPlaceholder": "Use global Padrao",
+    "modelHelp": "Atribua um modelo LLM específico a este agente. Deixe vazio para usar o primeiro modelo autorizado para a sua conta.",
+    "modelPlaceholder": "Automático: primeiro modelo autorizado",
     "noConfiguredModels": "Nao configured Modelos",
     "modelColumn": "Modelo",
     "copyTooltip": "Copiar configuracao do agente",
@@ -2581,9 +2581,9 @@
     "enableAction": "Ativar →"
   },
   "modelConfig": {
-    "promptTitle": "LLM Model Required — Select in Chat After Configuration",
-    "promptMessage": "Chat requires an LLM model to function. Please configure a model first, then select it from the model selector at the top of the Chat page.",
-    "configureButton": "Configure Modelo",
+    "promptTitle": "Nenhum modelo disponível para a sua conta",
+    "promptMessage": "Peça ao administrador para conceder à sua conta acesso a pelo menos um modelo. Após a concessão, você já pode conversar — nada mais precisa ser configurado.",
+    "configureButton": "Ver Serviços de Modelo",
     "skipButton": "Skip",
     "chatDisabledTitle": "Chat Desativado",
     "chatDisabledMessage": "Chat functionality is disabled because no model is configured. Please configure a model to enable chat.",
@@ -3451,30 +3451,30 @@
   },
   "loop": {
     "gotoSettings": "Configurações de Loop do Agente",
-    "selectorTitle": "Modo de Loop",
-    "selectorHint": "Escolha como o agente deve continuar",
-    "selectorAria": "Selecionar modo de Loop",
+    "selectorTitle": "Como ele deve ajudar desta vez?",
+    "selectorHint": "Escolha como o agente deve trabalhar — exemplos abaixo",
+    "selectorAria": "Escolher como trabalhar",
     "builtInModes": "Integrados",
     "customModes": "Personalizados e plugins",
     "starting": "Iniciando",
     "running": "Em execução",
     "awaiting_user": "Aguardando sua resposta",
-    "activePersistentDescription": "Este modo permanece ativo na conversa até terminar ou a conversa ser reiniciada.",
-    "activeCustomDescription": "Este modo personalizado permanece ativo até usar /mode off, /clear ou /new.",
-    "loadError": "Não foi possível carregar alguns modos de Loop.",
+    "activePersistentDescription": "Ele continua assim até o trabalho terminar ou você iniciar uma nova conversa.",
+    "activeCustomDescription": "Ele continua assim até você digitar /mode off, /clear ou /new.",
+    "loadError": "Algumas formas de trabalhar não foram carregadas.",
     "retry": "Tentar novamente",
     "modes": {
       "default": {
         "name": "Padrão",
-        "description": "O Loop de agente controlado padrão."
+        "description": "Uma pergunta, uma resposta — e para. Ex.: traduzir este trecho, contar as linhas desta planilha"
       },
       "goal": {
-        "name": "Objetivo",
-        "description": "Trabalhe continuamente em um objetivo concreto e verificável."
+        "name": "Meta",
+        "description": "Insiste em um resultado até concluir. Ex.: ler todos estes contratos e listar as cláusulas de risco com a página"
       },
       "mission": {
-        "name": "Missão",
-        "description": "Execute uma tarefa estruturada e persistente em várias etapas."
+        "name": "Tarefa",
+        "description": "Trabalho grande: monta o passo a passo para você aprovar e depois executa, verificando cada etapa. Ex.: adicionar login ao sistema"
       }
     }
   },

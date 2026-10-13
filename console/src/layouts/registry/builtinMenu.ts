@@ -67,7 +67,7 @@ export const BUILTIN_MENU: MenuItem[] = [
   {
     id: "core.data-analysis",
     location: "primary.agentScoped",
-    label: navLabel("nav.data-analysis", "数据分析"),
+    label: navLabel("nav.data-analysis", "数据空间"),
     icon: SparkDataLine,
     route: "core.data-analysis",
     order: 6,

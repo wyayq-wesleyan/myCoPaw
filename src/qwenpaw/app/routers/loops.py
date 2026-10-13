@@ -51,24 +51,59 @@ BUILTIN_LOOPS = (
         id="default",
         name="default",
         slash_command="",
-        description="The standard guarded agent loop.",
+        description="One question, one answer — then it stops. e.g. translate this paragraph",
         source="builtin",
     ),
     LoopModeInfo(
         id="goal",
         name="goal",
         slash_command="goal",
-        description="Set a goal and work until it is done.",
+        description="Keeps working on one clear outcome until it is finished. e.g. read all these contracts and list every risky clause",
         source="builtin",
     ),
     LoopModeInfo(
         id="mission",
         name="mission",
         slash_command="mission",
-        description="Run a persistent multi-step mission.",
+        description="A big job: it first lays out the steps for your approval, then works through them. e.g. add login to the system",
         source="builtin",
     ),
 )
+
+
+def _loop_admin(request: Request) -> bool:
+    """Whether this caller may use Loop modes beyond the three built-ins.
+
+    "Loop 模式" (custom + plugin modes and their settings) stays with the
+    administrator; ordinary accounts use 默认 / 目标 / 任务 only, running under the
+    gates and limits the administrator configured. So the split is *which modes are
+    visible and usable*, not which settings exist.
+
+    With authentication disabled there is a single account and it *is* the
+    administrator, so the answer is yes — the same convention the other
+    admin-guarded endpoints here use (``if is_auth_enabled(): ...``).
+    """
+    from ..auth import is_auth_enabled
+    from ..user_space import get_request_username, is_admin_user
+
+    if not is_auth_enabled():
+        return True
+    return is_admin_user(get_request_username(request))
+
+
+def _require_loop_admin(request: Request) -> None:
+    """Reject non-administrators from changing Loop mode definitions.
+
+    Enforced here as well as in the UI: the console hides the settings entry for
+    ordinary accounts, but hiding a control is not access control — these endpoints
+    were reachable by any authenticated caller, so a normal account could have
+    created or deleted custom Loop modes.
+    """
+    if not _loop_admin(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Loop 模式由管理员统一配置。",
+        )
 
 
 def _session_context_state(
@@ -87,9 +122,17 @@ def _session_context_state(
 
 @router.get("", response_model=list[LoopModeInfo])
 async def list_loops(request: Request) -> list[LoopModeInfo]:
-    """List built-in, custom, and plugin-provided loops."""
+    """List the loop modes this caller may use.
+
+    Everyone gets the three built-ins (默认 / 目标 / 任务). Custom and plugin modes
+    are the administrator's Loop setup and are only listed to an administrator —
+    filtered here rather than only in the UI, so a normal account cannot select a
+    mode it is not meant to run.
+    """
     workspace = await get_agent_for_request(request)
     catalog, _ = _build_loop_catalog(workspace)
+    if not _loop_admin(request):
+        return [mode for mode in catalog if mode.source == "builtin"]
     return catalog
 
 
@@ -182,6 +225,7 @@ async def create_custom_mode(
     mode: CustomLoopModeConfig,
 ) -> CustomLoopModeConfig:
     """Validate and append one complete custom mode."""
+    _require_loop_admin(request)
     workspace = await get_agent_for_request(request)
     modes = list(workspace.config.running.loop.custom_modes)
     if any(item.id == mode.id for item in modes):
@@ -199,6 +243,7 @@ async def update_custom_mode(
     mode: CustomLoopModeConfig,
 ) -> CustomLoopModeConfig:
     """Atomically replace one custom mode."""
+    _require_loop_admin(request)
     if mode.id != mode_id:
         raise HTTPException(status_code=422, detail="Mode ID cannot change")
     workspace = await get_agent_for_request(request)
@@ -214,6 +259,7 @@ async def update_custom_mode(
 @router.delete("/custom/{mode_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_custom_mode(request: Request, mode_id: str) -> None:
     """Delete one saved custom mode."""
+    _require_loop_admin(request)
     workspace = await get_agent_for_request(request)
     modes = list(workspace.config.running.loop.custom_modes)
     index = _find_mode(modes, mode_id)
@@ -231,6 +277,7 @@ async def duplicate_custom_mode(
     mode_id: str,
 ) -> CustomLoopModeConfig:
     """Create an available copy with unique identity and command."""
+    _require_loop_admin(request)
     workspace = await get_agent_for_request(request)
     modes = list(workspace.config.running.loop.custom_modes)
     source = modes[_find_mode(modes, mode_id)]

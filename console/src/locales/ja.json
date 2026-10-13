@@ -347,8 +347,8 @@
     "switchedToDefault": "デフォルトエージェントに自動切り替えしました",
     "cannotSwitchToDisabled": "このエージェントは無効化されています。管理ページで有効化してください",
     "model": "モデル",
-    "modelHelp": "このエージェントに特定の LLM モデルを割り当てます。空欄の場合はグローバルデフォルトが使用されます。",
-    "modelPlaceholder": "グローバルデフォルト",
+    "modelHelp": "このエージェントに特定の LLM モデルを割り当てます。空欄の場合は、お使いのアカウントで利用権限のある最初のモデルが使用されます。",
+    "modelPlaceholder": "アカウントで利用可能な最初のモデル",
     "noConfiguredModels": "設定済みのモデルがありません",
     "modelColumn": "モデル",
     "initialSkills": "初期スキル",
@@ -2337,9 +2337,9 @@
     "enableAction": "有効化 →"
   },
   "modelConfig": {
-    "promptTitle": "LLMモデルが必要です — 設定後にChatページで選択",
-    "promptMessage": "チャット機能にはLLMモデルが必要です。まずモデルを設定し、設定完了後にChatページ上部のモデルセレクターで選択してください。",
-    "configureButton": "モデルを設定",
+    "promptTitle": "このアカウントで利用できる対話モデルがありません",
+    "promptMessage": "管理者にアカウントへ少なくとも1つのモデルの利用権限を付与してもらってください。付与後はそのままチャットを開始できます。",
+    "configureButton": "モデルサービスを表示",
     "skipButton": "スキップ",
     "chatDisabledTitle": "チャット無効",
     "chatDisabledMessage": "モデルが設定されていないためチャット機能が無効です。チャットを有効にするにはモデルを設定してください。",
@@ -3396,30 +3396,30 @@
   },
   "loop": {
     "gotoSettings": "エージェント Loop 設定",
-    "selectorTitle": "Loop モード",
-    "selectorHint": "エージェントの進め方を選択",
-    "selectorAria": "Loop モードを選択",
+    "selectorTitle": "今回はどう動かしますか？",
+    "selectorHint": "どのやり方で動かすかを選びます（下に例があります）",
+    "selectorAria": "動き方を選ぶ",
     "builtInModes": "組み込み",
     "customModes": "カスタムとプラグイン",
     "starting": "開始中",
     "running": "実行中",
     "awaiting_user": "返信待ち",
-    "activePersistentDescription": "このモードは完了するか会話をリセットするまで有効です。",
-    "activeCustomDescription": "このカスタムモードは /mode off、/clear、/new のいずれかを使用するまで有効です。",
-    "loadError": "一部の Loop モードを読み込めませんでした。",
+    "activePersistentDescription": "この動き方は、作業が終わるか新しい会話を始めるまで続きます。",
+    "activeCustomDescription": "この動き方は /mode off、/clear、/new を入力するまで続きます。",
+    "loadError": "一部の動き方を読み込めませんでした。",
     "retry": "再試行",
     "modes": {
       "default": {
         "name": "デフォルト",
-        "description": "標準の制御されたエージェント Loop。"
+        "description": "一問一答で、答え終わったら終了。例：この文章を翻訳して、表の行数を数えて"
       },
       "goal": {
         "name": "目標",
-        "description": "具体的で検証可能な目標に向かって継続的に取り組みます。"
+        "description": "一つのことを、終わるまで続けてやります。例：契約書を全部読み、リスクのある条項をページ番号付きで挙げて"
       },
       "mission": {
-        "name": "ミッション",
-        "description": "構造化された複数ステップのタスクを継続的に実行します。"
+        "name": "タスク",
+        "description": "大きな作業：まず手順を示して確認を取り、それから分担して実行・検証。例：システムにログイン機能を追加"
       }
     }
   },

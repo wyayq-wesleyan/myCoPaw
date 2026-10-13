@@ -575,7 +575,9 @@
       "safety": "An toàn",
       "commit": "Commit"
     },
-    "summary": { "total": "điểm" },
+    "summary": {
+      "total": "điểm"
+    },
     "snapshotDialog": {
       "title": "Tạo ảnh chụp",
       "session": "Phiên",
@@ -1978,30 +1980,30 @@
   },
   "loop": {
     "gotoSettings": "Cài đặt Loop Agent",
-    "selectorTitle": "Chế độ Loop",
-    "selectorHint": "Chọn cách agent tiếp tục công việc",
-    "selectorAria": "Chọn chế độ Loop",
+    "selectorTitle": "Lần này muốn nó giúp thế nào?",
+    "selectorHint": "Chọn cách trợ lý làm việc — ví dụ ở bên dưới",
+    "selectorAria": "Chọn cách làm việc",
     "builtInModes": "Tích hợp",
     "customModes": "Tùy chỉnh và plugin",
     "starting": "Đang bắt đầu",
     "running": "Đang chạy",
     "awaiting_user": "Đang chờ bạn trả lời",
-    "activePersistentDescription": "Chế độ này duy trì trong cuộc trò chuyện cho đến khi hoàn tất hoặc cuộc trò chuyện được đặt lại.",
-    "activeCustomDescription": "Chế độ tùy chỉnh này duy trì cho đến khi dùng /mode off, /clear hoặc /new.",
-    "loadError": "Không thể tải một số chế độ Loop.",
+    "activePersistentDescription": "Cách làm việc này giữ nguyên cho đến khi xong việc hoặc bạn mở cuộc trò chuyện mới.",
+    "activeCustomDescription": "Cách làm việc này giữ nguyên cho đến khi bạn gõ /mode off, /clear hoặc /new.",
+    "loadError": "Một số cách làm việc không tải được.",
     "retry": "Thử lại",
     "modes": {
       "default": {
         "name": "Mặc định",
-        "description": "Loop agent được kiểm soát tiêu chuẩn."
+        "description": "Hỏi một câu, trả lời một câu rồi dừng. Ví dụ: dịch đoạn này, đếm số dòng của bảng"
       },
       "goal": {
         "name": "Mục tiêu",
-        "description": "Liên tục hướng tới một mục tiêu cụ thể và có thể kiểm chứng."
+        "description": "Theo đuổi một việc đến khi hoàn thành. Ví dụ: đọc hết hợp đồng, liệt kê các điều khoản rủi ro kèm số trang"
       },
       "mission": {
         "name": "Nhiệm vụ",
-        "description": "Chạy tác vụ nhiều bước có cấu trúc và liên tục."
+        "description": "Việc lớn: lập các bước để bạn duyệt trước, rồi mới làm và kiểm tra từng bước. Ví dụ: thêm chức năng đăng nhập"
       }
     }
   }

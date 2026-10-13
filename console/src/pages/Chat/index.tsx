@@ -30,6 +30,7 @@ import { buildAuthHeaders } from "../../api/authHeaders";
 import { providerApi } from "../../api/modules/provider";
 import type { ProviderInfo, ModelInfo, SkillSpec } from "../../api/types";
 import ModelSelector from "./ModelSelector";
+import ChatPathScope from "./ChatPathScope";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useAgentStore } from "../../stores/agentStore";
 import {
@@ -3112,6 +3113,8 @@ export default function ChatPage() {
             />
             <ChatHeaderTitle />
             <span style={{ flex: 1 }} />
+            <ChatPathScope kind="knowledge" />
+            <ChatPathScope kind="data" />
             {usesQwenPawBackend ? (
               <ModelSelector />
             ) : backendCapabilities?.model_selection ? (
@@ -3169,7 +3172,10 @@ export default function ChatPage() {
         ) : undefined,
         prefix: (
           <>
-            {usesQwenPawBackend && isAdmin && <LoopModeSelector />}
+            {/* Shown to every account. The mode list itself is filtered by the
+                server, so an ordinary account sees 默认 / 目标 / 任务 while the
+                administrator's Loop modes stay theirs to configure. */}
+            {usesQwenPawBackend && <LoopModeSelector />}
             {pluginSenderPrefix}
           </>
         ),

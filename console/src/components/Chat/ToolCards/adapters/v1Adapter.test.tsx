@@ -115,3 +115,69 @@ describe("adaptCardForV1", () => {
     expect(props.content.status).toBe("calling");
   });
 });
+
+/**
+ * A finished conversation must not render its historical tool calls as
+ * running. The input message outlives the output one, so a call whose result
+ * is missing (never persisted, or its output block dropped) previously fell
+ * into `!resultItem → "calling"` and spun forever on reload.
+ */
+describe("deriveToolStatus on historical tool calls", () => {
+  function renderStatus(data: Record<string, unknown>) {
+    const spy = vi.fn(() => <div>card</div>);
+    const Wrapped = adaptCardForV1(spy as any);
+    render(<Wrapped {...(data as any)} />);
+    return (spy.mock.calls[0] as any)?.[0] as any;
+  }
+
+  const callOnly = (extra: Record<string, unknown> = {}) => ({
+    data: {
+      content: [
+        {
+          delta: false,
+          data: { call_id: "call-1", name: "execute_shell_command", arguments: "{}" },
+        },
+      ],
+      ...extra,
+    },
+  });
+
+  it("marks a call without a result as done when the run already completed", () => {
+    const props = renderStatus(callOnly({ status: "completed" }));
+
+    expect(props.content.status).toBe("done");
+    // The spinner is driven by isStreaming; it must not be true here.
+    expect(props.isStreaming).toBe(false);
+  });
+
+  it("keeps a partial call running while the run is still in progress", () => {
+    const props = renderStatus(callOnly({ status: "in_progress" }));
+
+    expect(props.content.status).toBe("calling");
+    expect(props.isStreaming).toBe(true);
+  });
+
+  it("marks a result-less call done when the call block carries a state", () => {
+    // The backend recorded an outcome even though the output block is gone.
+    const data = callOnly({ status: "completed" });
+    (data.data.content[0].data as Record<string, unknown>).state = "success";
+
+    const props = renderStatus(data);
+
+    expect(props.content.status).toBe("done");
+  });
+
+  it("still reports an errored result-less call as an error", () => {
+    const data = callOnly({ status: "completed" });
+    (data.data.content[0].data as Record<string, unknown>).state = "interrupted";
+
+    expect(renderStatus(data).content.status).toBe("error");
+  });
+
+  it("treats a canceled run as terminal rather than running", () => {
+    const props = renderStatus(callOnly({ status: "canceled" }));
+
+    expect(props.content.status).toBe("error");
+    expect(props.isStreaming).toBe(false);
+  });
+});

@@ -159,6 +159,54 @@ describe("patchLastUserMessage — pending cache lifecycle", () => {
     );
   });
 
+  it("does not duplicate the prompt when reloading mid-turn", async () => {
+    // Reloading while the reply streams: the backend already persisted the
+    // user turn together with the reply, so the pending question must NOT be
+    // appended a second time. Appending put the question below its own answer,
+    // and the lower copy had no timestamp.
+    seedSessionList("chat-mid-turn");
+    sessionApi.setLastUserMessage(
+      "chat-mid-turn",
+      "你看一下工作空间",
+      undefined,
+      "client-mid",
+    );
+    await mockGetChat({
+      messages: [
+        userMsg("u1", "你看一下工作空间", "client-mid"),
+        assistantMsg("a1", "正在分析…"),
+      ],
+      status: "running",
+    } as ChatHistory);
+
+    const session = await sessionApi.getSession("chat-mid-turn");
+    expect(userCardTexts(session)).toEqual(["你看一下工作空间"]);
+    // Persistence is confirmed, so the cache no longer needs to patch it in.
+    expect(sessionStorage.getItem(`${STORAGE_PREFIX}chat-mid-turn`)).toBe(null);
+  });
+
+  it("still patches mid-turn when the fetched history lacks the prompt", async () => {
+    // The reply is streaming but the turn is not in the history yet (the
+    // question must not vanish just because we are generating).
+    seedSessionList("chat-mid-turn-missing");
+    sessionApi.setLastUserMessage(
+      "chat-mid-turn-missing",
+      "第一个问题",
+      undefined,
+      "client-missing",
+    );
+    await mockGetChat({
+      messages: [assistantMsg("a1", "no user turn here")],
+      status: "running",
+    } as ChatHistory);
+
+    const session = await sessionApi.getSession("chat-mid-turn-missing");
+    expect(userCardTexts(session)).toContain("第一个问题");
+    expect(
+      sessionStorage.getItem(`${STORAGE_PREFIX}chat-mid-turn-missing`),
+    ).not.toBe(null);
+  });
+
   it("attaches the client id without dropping existing metadata", () => {
     expect(
       attachClientMessageId(
