@@ -4,6 +4,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Reloading this module (``importlib.reload``) re-executes it in the same
+# namespace, which would otherwise hand out a *new* ``EnvVarLoader`` class
+# object. Eleven modules import that class by value, so they would keep pointing
+# at the previous class: patching ``constant.EnvVarLoader`` afterwards — as the
+# tool-guard tests do to control the environment — would silently stop reaching
+# them, and the constants tests' own reloads would leave the rest of the process
+# holding a stale class. Captured before the class statement rebinds the name and
+# restored at the end of the module.
+_PREVIOUS_ENV_VAR_LOADER = globals().get("EnvVarLoader")
+
 # Load .env file from project root before reading any env vars
 _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 if _env_path.exists():
@@ -397,17 +407,27 @@ LLM_ACQUIRE_TIMEOUT = EnvVarLoader.get_float(
 
 # Maximum upstream wait (seconds) for the first content-bearing stream chunk.
 # Set to 0 to disable the first-content timeout.
+#
+# Defaults to 5 minutes because this deployment runs self-hosted models: a
+# local model asked to continue a long agentic context can spend minutes
+# processing the prompt before its first token. The old 30s default killed
+# those runs with "produced no content", which reads as a product failure
+# rather than a slow model.
 LLM_STREAM_FIRST_CONTENT_TIMEOUT = EnvVarLoader.get_float(
     "QWENPAW_LLM_STREAM_FIRST_CONTENT_TIMEOUT",
-    30.0,
+    300.0,
     min_value=0.0,
 )
 
 # Maximum upstream wait (seconds) between later content-bearing stream chunks.
 # Set to 0 to disable the steady-state idle timeout.
+#
+# Matches the first-content budget: once generation has started, a self-hosted
+# model can still stall for a long time on a heavy step. A shorter budget here
+# would just move the same failure one phase later.
 LLM_STREAM_IDLE_TIMEOUT = EnvVarLoader.get_float(
     "QWENPAW_LLM_STREAM_IDLE_TIMEOUT",
-    30.0,
+    300.0,
     min_value=0.0,
 )
 
@@ -468,3 +488,9 @@ TRUNCATION_NOTICE_MARKER = "<<<TRUNCATED>>>"
 MEDIA_UNSUPPORTED_PLACEHOLDER = (
     "[Media content removed - model does not support this media type]"
 )
+
+# Keep ``EnvVarLoader`` the same object across reloads (see the note at the top of
+# the module). Callers that already imported it by value keep working, and the
+# module-level constants above are still recomputed from the current environment.
+if _PREVIOUS_ENV_VAR_LOADER is not None:
+    EnvVarLoader = _PREVIOUS_ENV_VAR_LOADER

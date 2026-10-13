@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import os
 import shutil
 from contextlib import AsyncExitStack
@@ -22,6 +23,8 @@ from .core import (
     ACPSessionError,
 )
 from .node_runtime import build_acp_process_env
+
+logger = logging.getLogger(__name__)
 
 MessageHandler = Callable[[dict[str, Any], bool], Awaitable[None]]
 
@@ -162,7 +165,20 @@ class ACPService:
             conversations = list(self._sessions.values())
             self._sessions.clear()
         for conversation in conversations:
-            await self._close_conversation(conversation)
+            # Isolate each teardown. Without this, one conversation whose
+            # ``_close_conversation`` raised — its ``finally`` kills a process tree
+            # and closes an async exit stack, both of which can throw — aborted the
+            # loop, so every *remaining* session kept its CLI subprocess alive for
+            # the life of the process. The map was already cleared, so nothing
+            # could reach those sessions afterwards either.
+            try:
+                await self._close_conversation(conversation)
+            except Exception:  # noqa: BLE001 - one bad session must not leak the rest
+                logger.warning(
+                    "acp: failed to close a session during shutdown; "
+                    "continuing with the remaining ones",
+                    exc_info=True,
+                )
 
     async def get_session(
         self,
@@ -431,8 +447,19 @@ class ACPService:
             # Fix #4615: Handle orphan processes for ACP executed directly
             # by binary.
             # Force kill the entire process tree to prevent resource leaks.
-            _kill_process_tree(conversation.process.pid)
-            await conversation.exit_stack.aclose()
+            #
+            # Both steps are guarded: this block runs on the error path too, and
+            # a raise here would replace the original exception *and* skip the
+            # exit-stack cleanup (leaking the remaining resources) — the same
+            # "cleanup that masks the real failure" shape as elsewhere.
+            try:
+                _kill_process_tree(conversation.process.pid)
+            except Exception:  # noqa: BLE001 - teardown must not raise
+                logger.debug("acp: could not kill the process tree", exc_info=True)
+            try:
+                await conversation.exit_stack.aclose()
+            except Exception:  # noqa: BLE001 - teardown must not raise
+                logger.debug("acp: exit stack cleanup failed", exc_info=True)
 
     @staticmethod
     def _prompt_blocks_to_models(blocks: list[dict[str, Any]]) -> list[Any]:

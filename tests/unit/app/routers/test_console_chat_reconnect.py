@@ -98,6 +98,50 @@ def test_reconnect_without_active_run_returns_empty_sse(
     assert console_workspace.console_channel.stream_calls == []
 
 
+def test_empty_input_is_rejected_instead_of_streaming_nothing(
+    client,
+    console_workspace,
+):
+    """无内容请求必须 400，而不是开一个永远没有输出的流。
+
+    这条锁定的是排查中真实遇到的形态：把内部形状 ``content_parts`` 当作 HTTP
+    请求体发过来时，解析结果是空输入。旧行为是照常建会话、开 SSE、立刻以 200
+    结束（0 字节），用户看到的和「卡住」完全一样，服务端也几乎没有留痕。
+    """
+    response = client.post(
+        "/api/console/chat",
+        json={
+            "session_id": "console:default",
+            "user_id": "default",
+            "channel": "console",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "content" in response.json()["detail"]
+    # 不得开始任何 run。
+    assert console_workspace.console_channel.stream_calls == []
+
+
+def test_reconnect_without_input_is_still_allowed(
+    client,
+    console_workspace,
+):
+    """重连本来就不带输入，不能被上一条校验挡住。"""
+    response = client.post(
+        "/api/console/chat",
+        json={
+            "reconnect": True,
+            "session_id": "console:default",
+            "user_id": "default",
+            "channel": "console",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("content-type", "").startswith("text/event-stream")
+
+
 def test_extract_payload_preserves_user_message_metadata():
     payload = _extract_session_and_payload(
         AgentRequest(

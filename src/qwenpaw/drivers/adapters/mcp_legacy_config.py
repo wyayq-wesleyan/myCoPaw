@@ -141,11 +141,27 @@ async def migrate_legacy_mcp_if_needed(
 
 
 def _persist_mcp_migration_version(ws: Any) -> None:
-    """Persist the bumped MCPConfig.migration_version back to agent.json."""
-    from ...config.config import save_agent_config
+    """Persist the bumped MCPConfig.migration_version back to agent.json.
 
+    **Read-modify-write, not a blind save of the workspace snapshot.**
+    ``ws._config`` was loaded when this workspace started, so saving it whole
+    would revert every field the user changed through the API in the meantime —
+    the migration finishes a moment after startup, which is exactly when a
+    freshly created agent is being renamed or reconfigured. The watermark is the
+    only field this step owns, so re-read the current config (under the same lock
+    the API writers use) and change only that.
+    """
+    from ...config.config import load_agent_config, save_agent_config
+    from ...config.utils import _agent_config_lock
+
+    with _agent_config_lock:
+        current = load_agent_config(ws.agent_id)
+        current.mcp.migration_version = CURRENT_MCP_MIGRATION_VERSION
+        save_agent_config(ws.agent_id, current)
+    # Keep the workspace's own snapshot consistent so a later step in this
+    # process does not re-run the (idempotent) migration.
     # pylint: disable=protected-access
-    save_agent_config(ws.agent_id, ws._config)
+    ws._config.mcp.migration_version = CURRENT_MCP_MIGRATION_VERSION
 
 
 async def _migrate_one_client(

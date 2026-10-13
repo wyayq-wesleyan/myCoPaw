@@ -53,6 +53,7 @@ from ....platform_store import (
     put_conn,
 )
 from ....platform_store.migrations import ALL_MIGRATIONS
+from ....utils.text_safety import strip_nuls
 from ..types import LogEntry
 
 logger = logging.getLogger(__name__)
@@ -154,22 +155,32 @@ class HistoryStore:
         entry: LogEntry,
         dedup_key: str | None,
     ) -> tuple:
-        """Build the row values shared by single and batched appends."""
+        """Build the row values shared by single and batched appends.
+
+        NUL scrubbing happens *before* JSON encoding. ``json.dumps`` escapes a
+        NUL into the ASCII sequence ``\\u0000``, which no string-level strip can
+        see — so stripping after encoding let the NUL survive the round trip and
+        reappear in the loaded text. Every structured value is cleaned first,
+        then serialized, then the plain text columns are cleaned too.
+
+        PostgreSQL text columns reject NUL outright, so without this one
+        embedded NUL in tool output aborts the whole turn's persistence.
+        """
         return (
-            session_id,
-            agent_id,
+            strip_nuls(session_id),
+            strip_nuls(agent_id),
             entry.kind,
-            entry.role,
-            entry.name,
-            entry.content,
-            entry.tool_call_id,
-            _to_json(entry.tool_input),
-            entry.tool_state,
-            entry.headline,
-            _to_json(entry.blocks),
-            _to_json(entry.metadata or None),
+            strip_nuls(entry.role),
+            strip_nuls(entry.name),
+            strip_nuls(entry.content),
+            strip_nuls(entry.tool_call_id),
+            _to_json(strip_nuls(entry.tool_input)),
+            strip_nuls(entry.tool_state),
+            strip_nuls(entry.headline),
+            _to_json(strip_nuls(entry.blocks)),
+            _to_json(strip_nuls(entry.metadata or None)) if entry.metadata else None,
             entry.created_at or datetime.now(timezone.utc).isoformat(),
-            dedup_key,
+            strip_nuls(dedup_key),
         )
 
     def _alloc_seqs(self, cur, count: int) -> list[int]:
@@ -338,19 +349,23 @@ class HistoryStore:
             "tool_input = %s",
         ]
         values: list[Any] = [
-            content,
-            headline,
-            _to_json(blocks),
-            tool_call_id,
-            name,
-            tool_state,
-            _to_json(tool_input),
+            strip_nuls(content),
+            strip_nuls(headline),
+            _to_json(strip_nuls(blocks)),
+            strip_nuls(tool_call_id),
+            strip_nuls(name),
+            strip_nuls(tool_state),
+            _to_json(strip_nuls(tool_input)),
         ]
         if metadata is not _UNSET:
             assignments.append("metadata = %s")
             # The schema canonically represents empty metadata as SQL NULL,
             # matching the insert path.
-            values.append(_to_json(metadata or None))
+            values.append(_to_json(strip_nuls(metadata) or None))
+        # A refreshed row carries the turn's grown tool output, so it needs the
+        # same NUL scrubbing as the insert path — PostgreSQL rejects NUL in a
+        # text column regardless of which statement supplies it.
+        values = strip_nuls(values)
         conn = get_conn()
         try:
             with conn.cursor() as cur:
@@ -878,11 +893,27 @@ class HistoryStore:
 
 
 def _to_json(value) -> str | None:
+    """Encode a structured column, removing NULs before they get escaped.
+
+    ``json.dumps`` renders a NUL as the ASCII escape ``\\u0000``, which survives
+    a string-level strip and comes back as a real NUL on load. Cleaning here —
+    the last step before encoding — keeps callers from having to remember the
+    ordering.
+    """
     if value is None:
         return None
+    value = strip_nuls(value)
     if isinstance(value, str):
         return value
     return json.dumps(value, default=str)
+
+
+# PostgreSQL text columns cannot store NUL (0x00): ``psycopg2`` refuses the
+# value client-side with ``ValueError: A string literal cannot contain NUL
+# (0x00) characters.`` before the server ever sees it. Forensics tool output
+# routinely carries embedded NULs, so every written row is scrubbed — see
+# ``qwenpaw.utils.text_safety`` for why they are stripped rather than escaped.
+
 
 
 def _loads(value: Any) -> Any:

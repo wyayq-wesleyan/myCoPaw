@@ -465,3 +465,24 @@ def isolated_secret_dir(monkeypatch, tmp_path):
         None,
     )
     return secret_dir
+
+
+@pytest.fixture(autouse=True)
+def isolated_replay_dir(monkeypatch, tmp_path_factory):
+    """Keep chat-replay files out of the developer's real working directory.
+
+    ``TaskTracker.attach`` falls back to the on-disk replay when a run is not in
+    memory, so any test that exercises a reconnect reads and writes
+    ``WORKING_DIR/chat_replays``. That made the console reconnect tests depend on
+    whatever a previous run (or the developer's own session) had left behind, and
+    silently wrote test fixtures into real user state. Point the directory at a
+    per-test temp dir instead.
+
+    Deliberately *not* ``tmp_path``: several tests list ``tmp_path`` itself as a
+    directory under test, and any extra entry there changes what they see.
+    """
+    from qwenpaw.app import task_tracker as _task_tracker_module
+
+    replay_dir = tmp_path_factory.mktemp("chat_replays")
+    monkeypatch.setattr(_task_tracker_module, "_REPLAY_DIR", replay_dir)
+    return replay_dir

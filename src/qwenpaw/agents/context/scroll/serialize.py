@@ -9,7 +9,10 @@ from typing import Any
 
 from agentscope.message import Msg
 
-from ....constant import QWENPAW_MESSAGE_TAG_KEY
+from ....constant import (
+    QWENPAW_CLIENT_MESSAGE_ID_KEY,
+    QWENPAW_MESSAGE_TAG_KEY,
+)
 from ....utils.tool_call_extra import TOOL_CALL_EXTRAS_METADATA_KEY
 from ..types import LogEntry
 
@@ -292,12 +295,25 @@ def msg_to_entries(msg: Msg) -> list[LogEntry]:
         # Persist only protocol metadata required to reconstruct the turn:
         # runtime tags distinguish synthetic stubs from real requests, while
         # provider tool-call extras preserve signatures for exact archives.
+        #
+        # The console's ``client_message_id`` belongs on this list too. The
+        # browser stamps every send with it and, when it reloads a session,
+        # uses it to decide whether the pending user message it is holding has
+        # already been persisted. Dropping it here meant that check could never
+        # succeed, so the pending question was re-inserted on every fetch and
+        # the last question appeared twice — once above the reply and once
+        # below it, the lower copy with no timestamp.
         persisted_metadata: dict[str, Any] = {}
         msg_meta = getattr(msg, "metadata", None)
         if isinstance(msg_meta, dict):
             tag = msg_meta.get(QWENPAW_MESSAGE_TAG_KEY)
             if tag:
                 persisted_metadata[QWENPAW_MESSAGE_TAG_KEY] = str(tag)
+            client_message_id = msg_meta.get(QWENPAW_CLIENT_MESSAGE_ID_KEY)
+            if client_message_id:
+                persisted_metadata[QWENPAW_CLIENT_MESSAGE_ID_KEY] = str(
+                    client_message_id,
+                )
             tool_call_extras = msg_meta.get(
                 TOOL_CALL_EXTRAS_METADATA_KEY,
             )

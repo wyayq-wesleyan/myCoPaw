@@ -44,7 +44,12 @@ POOL_WAIT_SECONDS = 15.0
 STATEMENT_TIMEOUT_MS = 60000
 
 _pool: ThreadedConnectionPool | None = None
-_pool_lock = threading.Lock()
+# Re-entrant on purpose. ``get_conn``'s wait branch re-resolves the pool while
+# holding this lock (the pool it was waiting on may have been discarded), and
+# ``_get_pool`` acquires the same lock when it has to reopen. With a plain
+# ``Lock`` the thread would block on itself forever *while holding the lock*,
+# freezing every later platform query too — verified by reproducing the hang.
+_pool_lock = threading.RLock()
 # Set once a connection attempt has failed, so health checks and log noise stay
 # proportionate instead of retrying on every request.
 _last_error: str | None = None

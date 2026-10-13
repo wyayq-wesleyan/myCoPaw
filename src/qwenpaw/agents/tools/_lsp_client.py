@@ -139,10 +139,25 @@ class LspClient:  # pylint: disable=too-many-instance-attributes
     # ---- lifecycle ------------------------------------------------
 
     def start(self) -> None:
-        """Spawn the server and run ``initialize`` (idempotent)."""
+        """Spawn the server and run ``initialize`` (idempotent, self-healing).
+
+        **A dead server is replaced, not reused.** ``_read_loop`` clears waiters
+        when the process exits but cannot clear ``_proc``, so without this check a
+        crashed language server (OOM kill, a bad project config) left ``_proc``
+        non-None and every later ``start()`` returned immediately — the pool then
+        handed out a client whose pipes are broken, so every LSP call for that
+        (project, language) failed until the process restarted or the entry
+        happened to be evicted. Respawning here makes the failure recoverable.
+        """
         with self._lock:
             if self._proc is not None:
-                return
+                if self._proc.poll() is None:
+                    return
+                # Exited: drop it so the spawn path below runs again. The reader
+                # thread has already drained its waiters (or will on the next
+                # read), and a fresh process gets a fresh reader.
+                self._proc = None
+
             try:
                 self._proc = (
                     subprocess.Popen(  # pylint: disable=consider-using-with

@@ -43,6 +43,7 @@ from ..platform_store import (
     put_conn,
 )
 from ..platform_store.migrations import AUDIT_MIGRATIONS
+from ..utils.text_safety import strip_nuls
 
 from .policy import GovernanceDecision, ToolCallSpec
 
@@ -206,16 +207,21 @@ class AuditLog:
                             "(ts, workspace_dir, agent_id, session_id, "
                             "tool_name, target, decision, reason, extra) "
                             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                            (
-                                _now_unix_ms(),
-                                workspace_dir,
-                                tc_spec.agent_id,
-                                tc_spec.session_id,
-                                tc_spec.tool_name,
-                                tc_spec.target,
-                                str(decision.action.value),
-                                decision.reason,
-                                "{}",
+                            # ``target``/``reason`` can quote tool output or
+                            # paths carrying a NUL, which PostgreSQL text
+                            # columns reject outright.
+                            strip_nuls(
+                                (
+                                    _now_unix_ms(),
+                                    workspace_dir,
+                                    tc_spec.agent_id,
+                                    tc_spec.session_id,
+                                    tc_spec.tool_name,
+                                    tc_spec.target,
+                                    str(decision.action.value),
+                                    decision.reason,
+                                    "{}",
+                                ),
                             ),
                         )
                     conn.commit()

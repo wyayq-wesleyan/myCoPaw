@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -113,6 +114,54 @@ class _BackgroundTask:
 
 _bg_tasks: Dict[str, _BackgroundTask] = {}
 _bg_lock = asyncio.Lock()
+
+# Retention for finished background tasks. ``bg.result`` holds the task's whole
+# model output, and the map used to be append-only — every submitted task stayed
+# resident for the life of the process, so a long-running server grew without
+# bound and held old answers in memory. The result still has to outlive the run
+# (the caller polls ``/chat/task/{id}`` after submitting), so finished entries are
+# kept for a TTL and pruned on the next submit, matching how ``task_tracker``
+# retains completed runs and ``console_push_store`` prunes by age and count.
+_BG_TASK_TTL_SECONDS = max(
+    60.0, float(os.getenv("QWENPAW_CONSOLE_BG_TASK_TTL_SECONDS", "3600") or 3600),
+)
+_MAX_BG_TASKS = max(
+    16, int(os.getenv("QWENPAW_CONSOLE_MAX_BG_TASKS", "200") or 200),
+)
+
+
+def _prune_bg_tasks_locked() -> None:
+    """Drop finished tasks past the TTL, then the oldest if still over the cap.
+
+    Runs while ``_bg_lock`` is held. Running tasks are never evicted: their
+    ``asyncio_task`` is what a later poll reports on, and cancelling it to free
+    memory would turn housekeeping into a user-visible failure.
+    """
+    now = time.time()
+    finished = [
+        (tid, bg)
+        for tid, bg in _bg_tasks.items()
+        if bg.finished_at is not None
+        and now - bg.finished_at > _BG_TASK_TTL_SECONDS
+    ]
+    for tid, _bg in finished:
+        _bg_tasks.pop(tid, None)
+
+    if len(_bg_tasks) <= _MAX_BG_TASKS:
+        return
+    # Still over the cap (a burst of submissions, or a very high TTL): evict
+    # oldest-finished first, which is the order they stopped being pollable.
+    by_age = sorted(
+        (
+            (bg.finished_at, tid)
+            for tid, bg in _bg_tasks.items()
+            if bg.finished_at is not None
+        ),
+    )
+    for _finished_at, tid in by_age:
+        if len(_bg_tasks) <= _MAX_BG_TASKS:
+            break
+        _bg_tasks.pop(tid, None)
 
 
 class MarkInboxReadRequest(BaseModel):
@@ -361,6 +410,17 @@ async def post_console_chat(
     )
     tracker = workspace.task_tracker
     is_reconnect = _is_reconnect_request(request_data)
+
+    # A body with no input (e.g. the internal ``content_parts`` shape posted to
+    # this HTTP entry) parses into an empty payload. The turn then runs with
+    # nothing to answer: the stream opens, yields nothing, and closes with a
+    # 200 — indistinguishable from a hung request. Fail loudly instead.
+    # Reconnects legitimately carry no input, so only new sends are checked.
+    if not is_reconnect and not native_payload["content_parts"]:
+        raise HTTPException(
+            status_code=400,
+            detail="No message content in request: expected input[0].content.",
+        )
 
     if is_reconnect:
         queue = await tracker.attach(chat.id)
@@ -859,6 +919,13 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
 
     task_id = f"task-{uuid.uuid4().hex[:12]}"
     native_payload = _extract_session_and_payload(request_data)
+    # Same guard as the streaming entry: an input-less body would create a chat
+    # and start a task that can never produce an answer.
+    if not native_payload["content_parts"]:
+        raise HTTPException(
+            status_code=400,
+            detail="No message content in request: expected input[0].content.",
+        )
     session_id = console_channel.resolve_session_id(
         sender_id=native_payload["sender_id"],
         channel_meta=native_payload["meta"],
@@ -1042,6 +1109,7 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
         asyncio.create_task(_timeout_guard())
 
     async with _bg_lock:
+        _prune_bg_tasks_locked()
         _bg_tasks[task_id] = bg
 
     return {"task_id": task_id}

@@ -210,7 +210,7 @@ def test_delete_refuses_when_resources_are_attached(account):
         api.bind_resource(
             req, path_id,
             api.BindResourceRequest(
-                resource_kind=P.KIND_KNOWLEDGE_SPACE, resource_id="space-x",
+                resource_kind=P.KIND_KNOWLEDGE_DOCUMENT, resource_id="space-x",
             ),
         ),
     )
@@ -220,7 +220,7 @@ def test_delete_refuses_when_resources_are_attached(account):
     assert excinfo.value.status_code == 400
     assert "还有内容" in excinfo.value.detail
 
-    _run(api.unbind_resource(req, path_id, P.KIND_KNOWLEDGE_SPACE, "space-x"))
+    _run(api.unbind_resource(req, path_id, P.KIND_KNOWLEDGE_DOCUMENT, "space-x"))
 
 
 @requires_platform_db
@@ -246,23 +246,58 @@ def test_delete_refuses_while_an_agent_is_attached(account):
 
 @requires_platform_db
 def test_bind_and_unbind_resource(account):
+    """Knowledge documents bind/unbind through the router.
+
+    Uses a document id here rather than a table: binding a *data table* now has a
+    physical side effect and therefore requires a real table (covered in
+    ``tests/unit/data_tables/test_table_path_move.py``).
+    """
     req = _Req(account[0])
     created = account[1]
     path_id = _make_path(req, created, f"资源-{uuid.uuid4().hex[:6]}")
-    resource_id = f"resource-{uuid.uuid4().hex[:6]}"
+    resource_id = f"doc-{uuid.uuid4().hex[:6]}"
 
     _run(
         api.bind_resource(
             req, path_id,
             api.BindResourceRequest(
-                resource_kind=P.KIND_DATA_TABLE, resource_id=resource_id,
+                resource_kind=P.KIND_KNOWLEDGE_DOCUMENT, resource_id=resource_id,
             ),
         ),
     )
     listed = _run(api.list_path_resources(req, path_id))["resources"]
-    assert {"resource_kind": P.KIND_DATA_TABLE, "resource_id": resource_id} in listed
+    assert {"resource_kind": P.KIND_KNOWLEDGE_DOCUMENT, "resource_id": resource_id} in listed
 
-    _run(api.unbind_resource(req, path_id, P.KIND_DATA_TABLE, resource_id))
+    _run(api.unbind_resource(req, path_id, P.KIND_KNOWLEDGE_DOCUMENT, resource_id))
+    assert _run(api.list_path_resources(req, path_id))["resources"] == []
+
+
+@requires_platform_db
+def test_binding_an_unknown_table_is_rejected_without_a_stray_binding(account):
+    """不存在的表：给出 404，且不留下半成品归属。
+
+    绑定数据表会真的搬动数据，所以必须先确认表存在。这里同时锁定两件事：
+    - 不存在的 id（或非 UUID 字符串）不能把数据库的类型错误暴露成 500；
+    - 失败时不能留下「归属已写、数据没搬」的状态 —— 那种表既对案件不可达
+      （物理还在 public），又对所有持根智能体可见，正是要避免的泄漏方向。
+    """
+    req = _Req(account[0])
+    created = account[1]
+    path_id = _make_path(req, created, f"坏表-{uuid.uuid4().hex[:6]}")
+
+    with pytest.raises(HTTPException) as excinfo:
+        _run(
+            api.bind_resource(
+                req, path_id,
+                api.BindResourceRequest(
+                    resource_kind=P.KIND_DATA_TABLE,
+                    resource_id=f"resource-{uuid.uuid4().hex[:6]}",
+                ),
+            ),
+        )
+    assert excinfo.value.status_code == 404
+
+    # Nothing was recorded, so the path is still empty (and deletable).
     assert _run(api.list_path_resources(req, path_id))["resources"] == []
 
 
