@@ -40,6 +40,12 @@ from .utils.message_request_normalizer import (
 from ..exceptions import ProviderError, ModelFormatterError
 from ..providers import ProviderManager
 from ..providers.capping_formatter import MAX_INLINE_MEDIA_BYTES
+from ..utils.image_resize import (
+    get_max_image_pixels,
+    image_pixel_limit_hint,
+    resize_base64_image,
+)
+from ..utils.io_utils import run_sync_io
 from ..utils.tool_call_extra import tool_call_extras_for_provider
 from ..providers.retry_chat_model import (
     RetryChatModel,
@@ -1018,6 +1024,96 @@ def _fixup_media_list(items: list) -> None:
                 _fixup_media_list(output)
 
 
+def _resize_base64_images(items: list, max_pixels: int) -> int:
+    """Resize base64 images in a copied request message tree.
+
+    Walks the same shapes as :func:`_fixup_media_list` (top-level blocks plus
+    blocks nested in ``tool_result`` output) so a screenshot returned by a tool
+    is bounded like one the user attached.
+
+    Resize failures propagate: silently sending an oversized image unchanged
+    would defeat the point and leave the provider's 400 to explain it.
+    """
+    resized_count = 0
+    for block in items:
+        btype = (
+            block.get("type")
+            if isinstance(block, dict)
+            else getattr(block, "type", None)
+        )
+        if btype == "image":
+            source = (
+                block.get("source")
+                if isinstance(block, dict)
+                else getattr(block, "source", None)
+            )
+            source_type = (
+                source.get("type")
+                if isinstance(source, dict)
+                else getattr(source, "type", None)
+            )
+            data = (
+                source.get("data", "")
+                if isinstance(source, dict)
+                else getattr(source, "data", "")
+            ) or ""
+            if source_type == "base64" and data:
+                resized_data, changed = resize_base64_image(
+                    str(data),
+                    max_pixels,
+                )
+                if changed:
+                    if isinstance(source, dict):
+                        source["data"] = resized_data
+                    else:
+                        source.data = resized_data
+                    resized_count += 1
+
+        nested = None
+        if btype == "tool_result":
+            nested = (
+                block.get("output")
+                if isinstance(block, dict)
+                else getattr(block, "output", None)
+            )
+        elif btype == "hint":
+            nested = (
+                block.get("hint")
+                if isinstance(block, dict)
+                else getattr(block, "hint", None)
+            )
+        if isinstance(nested, list):
+            resized_count += _resize_base64_images(nested, max_pixels)
+    return resized_count
+
+
+def _resize_base64_images_in_messages(msgs: list, max_pixels: int) -> int:
+    """Synchronously resize images across copied request messages."""
+    resized_count = 0
+    for msg in msgs:
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            resized_count += _resize_base64_images(content, max_pixels)
+    return resized_count
+
+
+async def _resize_request_images(msgs: list) -> int:
+    """Resize oversized images in request copies when explicitly enabled.
+
+    Disabled by default (``QWENPAW_MAX_IMAGE_PIXELS`` unset), and runs on a
+    worker thread because decoding and resampling are CPU-bound and would
+    otherwise block the event loop for the whole request.
+    """
+    max_pixels = get_max_image_pixels()
+    if max_pixels <= 0:
+        return 0
+    return await run_sync_io(
+        _resize_base64_images_in_messages,
+        msgs,
+        max_pixels,
+    )
+
+
 # pylint: disable-next=too-many-statements
 def _create_file_block_support_formatter(
     base_formatter_class: Type[FormatterBase],
@@ -1132,6 +1228,12 @@ def _create_file_block_support_formatter(
                 base_formatter_class,
                 self,
             )
+
+            # Bound oversized base64 images on this request-local copy before
+            # anything else touches it. Opt-in via QWENPAW_MAX_IMAGE_PIXELS: the
+            # bytes would otherwise reach the provider as-is, and the provider's
+            # own rejection is the only signal the operator gets.
+            await _resize_request_images(normalized_msgs)
 
             has_reasoning = False
             # Tool-call IDs are required to be unique within one assistant
@@ -1516,7 +1618,24 @@ def create_model_and_formatter(
     if slot is not None and slot.provider_id and slot.model:
         model_slot = slot
 
-    # Create chat model from agent-specific or global config
+    if not (model_slot and model_slot.provider_id and model_slot.model):
+        # Nothing was chosen for this agent, so fall back to the account's first
+        # authorized model (administrators no longer pin a global default).
+        # Resolution is shared with the API layer so the model the UI shows
+        # preselected is the one that actually runs. Accessed via getattr so a
+        # stubbed manager without the new method still works.
+        resolver = getattr(ProviderManager, "resolve_default_chat_slot", None)
+        if callable(resolver):
+            try:
+                model_slot = resolver(agent_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Could not resolve a default model for agent %s",
+                    agent_id,
+                    exc_info=True,
+                )
+
+    # Create chat model from agent-specific or resolved default config
     if model_slot and model_slot.provider_id and model_slot.model:
         # Use agent-specific model
         manager = ProviderManager.get_instance()

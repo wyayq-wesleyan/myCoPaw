@@ -53,6 +53,15 @@ export function AgentModal({
         const hasModels =
           (p.models?.length ?? 0) + (p.extra_models?.length ?? 0) > 0;
         if (!hasModels) return false;
+        // Credentials are only visible to an administrator (the API strips them
+        // for everyone else), so this "is the provider configured?" check can only
+        // be applied by an admin. For an ordinary account it would reject every
+        // built-in provider — whose `api_key` is always empty here — and hide
+        // models the administrator explicitly granted, making it impossible to
+        // choose a permitted model. Their provider list is already narrowed
+        // server-side to entries with at least one authorized model, so "has
+        // models" is the whole test that is both meaningful and safe.
+        if (!isAdmin) return true;
         if (p.require_api_key === false) return !!p.base_url;
         if (p.is_custom) return !!p.base_url;
         if (p.require_api_key ?? true) return !!p.api_key;
@@ -66,7 +75,7 @@ export function AgentModal({
         ),
       }))
       .filter((p) => p.models.length > 0);
-  }, [providers]);
+  }, [providers, isAdmin]);
 
   const availableModels = useMemo(() => {
     if (!selectedProviderId) return [];
@@ -174,7 +183,7 @@ export function AgentModal({
             editingAgent
               ? t("agent.modelHelp")
               : globalActiveModel?.active_llm
-                ? `默认模型：${globalActiveModel.active_llm.provider_id} / ${globalActiveModel.active_llm.model}`
+                ? `账号可用模型：${globalActiveModel.active_llm.provider_id} / ${globalActiveModel.active_llm.model}`
                 : "仅显示管理员为当前账号授权的模型。"
           }
         >
@@ -186,7 +195,6 @@ export function AgentModal({
               allowClear={!!editingAgent}
               onClear={editingAgent ? handleClearModel : undefined}
               loading={loadingProviders}
-              disabled={!isAdmin}
               style={{ width: "45%", gap: "8px" }}
               showSearch
               optionFilterProp="label"
@@ -226,7 +234,7 @@ export function AgentModal({
                   ? t("models.model")
                   : t("agent.modelPlaceholder")
               }
-              disabled={!selectedProviderId || !isAdmin}
+              disabled={!selectedProviderId}
               style={{ width: "55%" }}
               showSearch
               optionFilterProp="label"

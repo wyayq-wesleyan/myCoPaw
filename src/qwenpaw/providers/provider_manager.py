@@ -2609,3 +2609,39 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
                 message=f"Active provider '{model.provider_id}' not found.",
             )
         return provider.get_chat_model_instance(model.model)
+
+    @staticmethod
+    def resolve_default_chat_slot(agent_id: str | None) -> ModelSlotConfig | None:
+        """Resolve the model a conversation runs on when nothing is configured.
+
+        Administrators no longer pin a global default, so the starting model is
+        the first one the owning account is authorized to use. The legacy
+        global slot is only consulted when the agent has no known owner —
+        which is the authentication-disabled single-user mode, where there is
+        no per-account entitlement to filter by. Keeping that path means an
+        install without accounts behaves exactly as before.
+
+        Returns ``None`` when the account owns no usable model; callers turn
+        that into a configuration error rather than silently picking a model
+        the account is not entitled to.
+        """
+        try:
+            from ..app.user_space import agent_owner_username, first_allowed_model
+
+            owner = agent_owner_username(agent_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Could not resolve the owner of agent %s",
+                agent_id,
+                exc_info=True,
+            )
+            owner = None
+
+        if owner:
+            owned = first_allowed_model(owner)
+            if not owned:
+                return None
+            provider_id, model_id = owned
+            return ModelSlotConfig(provider_id=provider_id, model=model_id)
+
+        return ProviderManager.get_instance().get_active_model()

@@ -114,11 +114,14 @@ class ModelCommandHandler(BaseControlCommandHandler):
         active_model = agent_config.active_model
 
         if active_model is None or not active_model.provider_id:
-            # Fallback to global active model
+            # Fall back to the account's first authorized model — the same
+            # resolution the runtime uses, since no administrator-pinned
+            # default exists any more.
             from ....providers.provider_manager import ProviderManager
 
-            manager = ProviderManager.get_instance()
-            active_model = manager.get_active_model()
+            active_model = ProviderManager.resolve_default_chat_slot(
+                context.agent_id,
+            )
 
             if active_model is None or not active_model.provider_id:
                 return (
@@ -128,7 +131,7 @@ class ModelCommandHandler(BaseControlCommandHandler):
                     "then use `/model <provider>:<model>` to select one."
                 )
 
-            source = "global default"
+            source = "authorized default"
         else:
             source = "agent-specific"
 
@@ -155,7 +158,9 @@ class ModelCommandHandler(BaseControlCommandHandler):
         # Get current active model
         active_model = workspace.config.active_model
         if active_model is None:
-            active_model = manager.get_active_model()
+            active_model = ProviderManager.resolve_default_chat_slot(
+                context.agent_id,
+            )
 
         # Get all provider infos
         all_provider_infos = await manager.list_provider_info()
@@ -322,13 +327,11 @@ class ModelCommandHandler(BaseControlCommandHandler):
         )
 
     async def _reset_model(self, context: ControlContext) -> str:
-        """Reset to global default model.
+        """Clear the agent's model so it follows the authorized default.
 
-        Args:
-            context: Control command context
-
-        Returns:
-            Success message
+        There is no administrator-pinned global default any more: clearing the
+        slot means the conversation runs on the account's first authorized
+        model, which is exactly what an unchanged agent does.
         """
         from ....config.config import save_agent_config
         from ....providers.provider_manager import ProviderManager
@@ -336,15 +339,15 @@ class ModelCommandHandler(BaseControlCommandHandler):
         workspace = context.workspace
         agent_config = workspace.config
 
-        # Get global active model
-        manager = ProviderManager.get_instance()
-        global_model = manager.get_active_model()
-
-        if global_model is None or not global_model.provider_id:
+        # Refuse when the account has no usable model at all: clearing the slot
+        # would leave the agent unable to answer with no way to recover from
+        # the chat UI.
+        fallback = ProviderManager.resolve_default_chat_slot(context.agent_id)
+        if fallback is None or not fallback.provider_id:
             return (
                 "**Reset Failed**\n\n"
-                "No global default model is configured.\n\n"
-                "Please configure a model in the web console first."
+                "No authorized model is available.\n\n"
+                "Please ask an administrator to grant you access to a model."
             )
 
         # Clear agent-specific model (use None to indicate using global)
@@ -362,15 +365,15 @@ class ModelCommandHandler(BaseControlCommandHandler):
 
         logger.info(
             f"/model reset: agent={agent_config.id} "
-            f"using global model={global_model.provider_id}:"
-            f"{global_model.model}",
+            f"using authorized default={fallback.provider_id}:"
+            f"{fallback.model}",
         )
 
         return (
             f"**Model Reset**\n\n"
-            f"Agent now uses global default model:\n"
-            f"Provider: `{global_model.provider_id}`\n"
-            f"Model: `{global_model.model}`"
+            f"Agent now uses your first authorized model:\n"
+            f"Provider: `{fallback.provider_id}`\n"
+            f"Model: `{fallback.model}`"
         )
 
     async def _show_model_info(  # pylint: disable=unused-argument

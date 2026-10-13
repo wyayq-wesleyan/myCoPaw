@@ -697,18 +697,9 @@ async def create_agent(
     active_model = (
         request.active_model if request.backend == "qwenpaw" else None
     )
-    if request.backend == "qwenpaw" and (
-        not active_model or not active_model.provider_id
-    ):
-        try:
-            from ...providers import ProviderManager
-
-            global_model = ProviderManager.get_instance().get_active_model()
-            if global_model and global_model.provider_id:
-                active_model = global_model
-        except Exception:
-            pass
-
+    # No administrator-pinned default exists any more: an agent created without
+    # an explicit model stays unset and resolves the account's first authorized
+    # model at request time, which also keeps it following entitlement changes.
     if (
         active_model
         and not is_model_allowed(
@@ -795,6 +786,22 @@ async def create_agent(
                 )
 
     logger.info(f"Created new agent: {new_id} (name={request.name})")
+
+    # Path scope: a new agent starts with the account's public area (the root
+    # path), which is the same reach the account as a whole has for unfiled
+    # material. Without this a freshly created agent would see *nothing* — the
+    # scope check is fail-closed — and the user would have to discover the chat
+    # header's path selector before the agent could read anything at all.
+    if username:
+        try:
+            from ...platform_store import paths as path_store
+
+            path_store.grant_root_to_agent(username, new_id)
+        except Exception:  # noqa: BLE001 - agent creation must not fail on this
+            logger.warning(
+                "Could not grant the root path to new agent %s", new_id,
+                exc_info=True,
+            )
 
     if http_request is not None:
         manager = _get_multi_agent_manager(http_request)
@@ -951,6 +958,20 @@ async def copy_agent(
         request.copy_skills,
         request.copy_jobs,
     )
+
+    # Same starting scope as a newly created agent: the account's public area.
+    # A copy is a *new* agent, and access is per agent — inheriting the source
+    # agent's case grants would hand the copy cases it was never given.
+    if username:
+        try:
+            from ...platform_store import paths as path_store
+
+            path_store.grant_root_to_agent(username, new_id)
+        except Exception:  # noqa: BLE001 - copying must not fail on this
+            logger.warning(
+                "Could not grant the root path to copied agent %s", new_id,
+                exc_info=True,
+            )
 
     if http_request is not None:
         manager = _get_multi_agent_manager(http_request)
@@ -1286,6 +1307,23 @@ async def delete_agent(
     del config.agents.profiles[agentId]
     config.agents.agent_order = _normalized_agent_order(config)
     save_config(config)
+
+    # Path grants are keyed by agent id, so a deleted agent's rows would linger
+    # forever. They grant nothing while the agent is gone, but they are a leak —
+    # and if the same id is ever reused (the ``*_default`` ids are derived from
+    # the account, not random), the new agent would silently inherit the old
+    # agent's access to cases. Removing them keeps "grants exist ⇒ the agent
+    # exists" true.
+    try:
+        from ...platform_store import paths as path_store
+
+        for path_id in path_store.agent_path_ids(agentId):
+            path_store.unbind_agent(agentId, path_id)
+    except Exception:  # noqa: BLE001 - the agent is already deleted
+        logger.warning(
+            "Could not clear path grants for deleted agent %s", agentId,
+            exc_info=True,
+        )
 
     return {"success": True, "agent_id": agentId}
 

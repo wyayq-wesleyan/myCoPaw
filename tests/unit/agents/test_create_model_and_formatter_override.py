@@ -231,3 +231,50 @@ def test_no_override_uses_active_model():
         )
 
     assert model.identifier == "default-provider/default-model"
+
+
+def test_no_configured_model_uses_the_accounts_first_authorized_model(
+    monkeypatch,
+    _patch_dependencies,
+):
+    """An agent without its own model runs on the authorized default.
+
+    This closes the loop between resolution and use: without the factory
+    consulting ``resolve_default_chat_slot`` the request would die with
+    "No active model configured" even though the account owns usable models.
+    """
+    monkeypatch.setattr(
+        config_module,
+        "load_agent_config",
+        lambda _agent_id: SimpleNamespace(
+            active_model=None,
+            running=_patched_load_agent_config("x").running,
+        ),
+    )
+    resolver_calls = []
+    manager = SimpleNamespace(
+        get_provider=lambda provider_id: SimpleNamespace(
+            id=provider_id,
+            get_chat_model_instance=lambda model_name: _FakeChatModel(
+                f"{provider_id}/{model_name}",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        model_factory,
+        "ProviderManager",
+        SimpleNamespace(
+            get_instance=lambda: manager,
+            resolve_default_chat_slot=lambda agent_id: (
+                resolver_calls.append(agent_id)
+                or ModelSlotConfig(provider_id="local", model="first-authorized")
+            ),
+        ),
+    )
+
+    with patch.object(model_factory, "RetryConfig") as retry_cls:
+        retry_cls.return_value = "rc"
+        model, _ = model_factory.create_model_and_formatter(agent_id="agent-1")
+
+    assert model.identifier == "local/first-authorized"
+    assert resolver_calls == ["agent-1"]

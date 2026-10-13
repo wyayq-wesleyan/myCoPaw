@@ -27,7 +27,11 @@ from ..auth import (
     is_auth_enabled,
     require_admin_access,
 )
-from ..user_space import get_request_username, is_model_allowed
+from ..user_space import (
+    first_allowed_model,
+    get_request_username,
+    is_model_allowed,
+)
 from ..utils import schedule_agent_reload
 from ...config.config import load_agent_config, save_agent_config
 from ...providers.provider import ProviderInfo, ModelInfo
@@ -108,23 +112,20 @@ def _active_models_info(
     manager: ProviderManager,
     active_llm: ModelSlotConfig | None,
     username: str | None = None,
+    allow_implicit_fallback: bool = True,
 ) -> ActiveModelsInfo:
-    """Build active-model metadata using the runtime context resolver."""
+    """Normalise a model slot and report the context window it implies.
+
+    An unauthorized slot is never reported — otherwise an administrator-only
+    model would leak into a regular user's chat selector after that user's
+    entitlement changed. With ``allow_implicit_fallback`` the empty result is
+    then filled with the account's first authorized model, which is how a
+    conversation starts when nobody configured anything.
+    """
     effective_max_input_length = None
-    if (
-        username
-        and active_llm
-        and active_llm.provider_id
-        and active_llm.model
-        and not is_model_allowed(
-            username,
-            active_llm.provider_id,
-            active_llm.model,
-        )
-    ):
-        # Do not leak an administrator-only model into a regular user's chat
-        # selector after that user's model entitlement has been changed.
-        active_llm = None
+    active_llm = _slot_if_authorized(active_llm, username)
+    if active_llm is None and allow_implicit_fallback:
+        active_llm = _implicit_default_model(username)
     if active_llm and active_llm.provider_id and active_llm.model:
         provider = manager.get_provider(active_llm.provider_id)
         if provider is not None:
@@ -135,6 +136,39 @@ def _active_models_info(
         active_llm=active_llm,
         effective_max_input_length=effective_max_input_length,
     )
+
+
+def _implicit_default_model(username: str | None) -> ModelSlotConfig | None:
+    """Return the model a conversation starts on when nothing is configured.
+
+    Administrators no longer pin a default model, so an account that has not
+    chosen one yet runs on the first model it is authorized to use. Returning
+    ``None`` means the account has no usable model at all, which the chat page
+    surfaces as "ask your administrator".
+    """
+    resolved = first_allowed_model(username)
+    if not resolved:
+        return None
+    provider_id, model_id = resolved
+    return ModelSlotConfig(provider_id=provider_id, model=model_id)
+
+
+def _slot_if_authorized(
+    slot: ModelSlotConfig | None,
+    username: str | None,
+) -> ModelSlotConfig | None:
+    """Keep a configured slot only when this account may actually use it.
+
+    The legacy global slot was chosen by an administrator and may point at a
+    model a regular account cannot access. Treating that as "nothing
+    configured" (rather than failing) is what lets the account still start a
+    conversation on its own first authorized model.
+    """
+    if not slot or not slot.provider_id or not slot.model:
+        return None
+    if username and not is_model_allowed(username, slot.provider_id, slot.model):
+        return None
+    return slot
 
 
 class ProviderConfigRequest(BaseModel):
@@ -790,12 +824,16 @@ async def get_active_models(
 ) -> ActiveModelsInfo:
     """Get active model by scope.
 
-    - effective: agent-specific first, otherwise global fallback
-    - global: ProviderManager global model only
+    - effective: agent-specific first, then the account's first authorized model
+    - global: the account's first authorized model
     - agent: a specific agent's configured model only
     """
     username = get_request_username(request)
     if scope == "global":
+        # No administrator-pinned default exists any more, so this reports the
+        # account's first authorized model. A legacy global value is still
+        # honoured when it is authorized, so existing installs keep the model
+        # they were already running.
         return _active_models_info(
             manager,
             manager.get_active_model(),
@@ -841,9 +879,12 @@ async def get_active_models(
             exc_info=True,
         )
 
-    global_model = manager.get_active_model()
-    logger.info("Returning global model: %s", global_model)
-    return _active_models_info(manager, global_model, username)
+    # Nothing was explicitly chosen, so ``_active_models_info`` fills in the
+    # first authorized model. That is what makes a brand-new conversation
+    # usable without an administrator setting a default.
+    fallback = manager.get_active_model()
+    logger.info("Returning fallback model: %s", fallback)
+    return _active_models_info(manager, fallback, username)
 
 
 @router.put(

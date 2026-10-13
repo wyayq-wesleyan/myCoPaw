@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Input, Modal } from "@agentscope-ai/design";
+import { Button, Input } from "@agentscope-ai/design";
 import { PlusOutlined, SearchOutlined, SyncOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import type { ProviderInfo } from "../../../api/types/provider";
@@ -10,7 +10,6 @@ import {
   CustomProviderModal,
   LoadingState,
   ModelManageModal,
-  ModelsSection,
   ProviderCard,
   ProviderConfigModal,
 } from "./components";
@@ -20,6 +19,10 @@ import styles from "./index.module.less";
  * The offline edition intentionally has one provider surface: administrator
  * configured OpenAI-compatible services on the intranet. The official
  * provider catalogue is neither rendered nor registered by the backend.
+ *
+ * There is deliberately no "default chat model" setting: a conversation starts
+ * on the first model the account is authorized to use, and the user can switch
+ * per conversation from the chat page.
  */
 function ModelsPage() {
   const { t } = useTranslation();
@@ -31,7 +34,6 @@ function ModelsPage() {
     useState<ProviderInfo | null>(null);
   const [modelsModalProvider, setModelsModalProvider] =
     useState<ProviderInfo | null>(null);
-  const [llmModalOpen, setLlmModalOpen] = useState(false);
 
   useEffect(() => {
     const providerId = searchParams.get("provider");
@@ -79,7 +81,6 @@ function ModelsPage() {
       <ProviderCard
         key={provider.id}
         provider={provider}
-        activeModels={activeModels}
         onSaved={refreshProvidersSilently}
         onOpenConfig={setConfigModalProvider}
         onOpenModels={setModelsModalProvider}
@@ -103,31 +104,6 @@ function ModelsPage() {
                   className={styles.providersPageHeader}
                 />
                 <div className={styles.headerRight}>
-                  <div
-                    className={[
-                      styles.llmPill,
-                      activeModels?.active_llm
-                        ? styles.llmPillOn
-                        : styles.llmPillOff,
-                    ].join(" ")}
-                    onClick={() => setLlmModalOpen(true)}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <span
-                      className={
-                        activeModels?.active_llm
-                          ? styles.llmPillDot
-                          : styles.llmPillDotOff
-                      }
-                    />
-                    <span className={styles.llmPillLabel}>默认对话模型:</span>
-                    <span className={styles.llmPillValue}>
-                      {activeModels?.active_llm?.provider_id || "未设置"} /{" "}
-                      {activeModels?.active_llm?.model || "未设置"}
-                    </span>
-                    <span className={styles.llmPillEdit}>设置</span>
-                  </div>
                   <div className={styles.searchRow}>
                     <Input
                       placeholder="搜索已配置服务"
@@ -187,24 +163,6 @@ function ModelsPage() {
               onClose={() => setAddProviderOpen(false)}
               onSaved={fetchAll}
             />
-
-            <Modal
-              open={llmModalOpen}
-              title="默认对话模型"
-              footer={null}
-              onCancel={() => setLlmModalOpen(false)}
-              destroyOnClose
-              width={520}
-            >
-              <ModelsSection
-                providers={configuredProviders}
-                activeModels={activeModels}
-                onSaved={() => {
-                  fetchAll();
-                  setLlmModalOpen(false);
-                }}
-              />
-            </Modal>
 
             {configModalProvider && (
               <ProviderConfigModal

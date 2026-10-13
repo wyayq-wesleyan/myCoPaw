@@ -850,89 +850,6 @@
 
 /* ---- LLM Floating Pill ---- */
 
-.llmPill {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 14px;
-  border-radius: 20px;
-  cursor: pointer;
-  user-select: none;
-  transition:
-    box-shadow 0.2s,
-    background 0.2s;
-  margin: 0;
-  border: 1.5px solid transparent;
-}
-
-.llmPillOn {
-  background: linear-gradient(135deg, #ecfdf5, #d1fae5, #fff);
-  border-color: #6ee7b7;
-  box-shadow: 0 1px 6px rgba(16, 185, 129, 0.12);
-
-  &:hover {
-    box-shadow: 0 2px 10px rgba(16, 185, 129, 0.2);
-  }
-}
-
-.llmPillOff {
-  background: linear-gradient(135deg, #fef2f2, #fee2e2, #fff);
-  border-color: #fca5a5;
-  box-shadow: 0 1px 6px rgba(239, 68, 68, 0.12);
-
-  &:hover {
-    box-shadow: 0 2px 10px rgba(239, 68, 68, 0.2);
-  }
-}
-
-.llmPillDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #10b981;
-  flex-shrink: 0;
-}
-
-.llmPillDotOff {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ef4444;
-  flex-shrink: 0;
-}
-
-.llmPillLabel {
-  font-size: 13px;
-  color: #6b7280;
-  white-space: nowrap;
-}
-
-.llmPillValue {
-  font-size: 13px;
-  font-weight: 600;
-  color: #1f2937;
-  white-space: nowrap;
-}
-
-.llmPillEdit {
-  font-size: 12px;
-  color: #6366f1;
-  font-weight: 500;
-  margin-left: 4px;
-  white-space: nowrap;
-}
-
-.defaultLlmBody {
-  padding: 16px 0 0;
-}
-
-.llmDescription {
-  font-size: 13px;
-  color: #9ca3af;
-  margin: 0 0 16px;
-  line-height: 1.5;
-}
-
 /* ---- Panel Section (grouped containers) ---- */
 
 .panelSection {
@@ -1015,105 +932,6 @@
 }
 
 /* ---- Model Slot Sections ---- */
-
-.slotSection {
-  padding: 24px;
-  margin: 20px;
-  background: #ffffff;
-  border-radius: 6px;
-  border: 1px solid #e8e8e8;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-  transition: all 0.2s ease-in-out;
-
-  &:hover {
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-    border-color: #d9d9d9;
-  }
-}
-
-.slotHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.slotTitle {
-  font-size: 18px;
-  font-weight: 600;
-  color: #1a1a1a;
-}
-
-.slotDescription {
-  margin: 8px 0 0;
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.slotCurrent {
-  font-size: 13px;
-  color: #52c41a;
-  font-family: "SF Mono", "Menlo", monospace;
-  background: #f6ffed;
-  padding: 4px 12px;
-  border-radius: 20px;
-  border: 1px solid #b7eb8f;
-}
-
-.slotForm {
-  display: flex;
-  gap: 20px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-
-  @media (max-width: 768px) {
-    flex-direction: column;
-    gap: 16px;
-    align-items: stretch;
-  }
-}
-
-.slotField {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 200px;
-
-  @media (max-width: 768px) {
-    min-width: unset;
-    width: 100%;
-  }
-}
-
-.slotActionField {
-  flex: 0 0 auto;
-  min-width: 120px;
-}
-
-.slotLabel {
-  font-size: 14px;
-  color: #666;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.visuallyHiddenLabel {
-  visibility: hidden;
-}
-
-.slotActions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 24px;
-  padding-top: 20px;
-  border-top: 1px solid #f0f0f0;
-}
 
 /* ---- Section Header Row (title + button) ---- */
 
@@ -2096,46 +1914,6 @@
     color: rgba(255, 255, 255, 0.3);
   }
 
-  .llmPillOn {
-    background: linear-gradient(
-      135deg,
-      rgba(16, 185, 129, 0.1),
-      rgba(16, 185, 129, 0.05),
-      rgba(255, 255, 255, 0.03)
-    );
-    border-color: rgba(16, 185, 129, 0.4);
-    box-shadow: 0 1px 6px rgba(16, 185, 129, 0.15);
-
-    &:hover {
-      box-shadow: 0 2px 10px rgba(16, 185, 129, 0.25);
-    }
-  }
-  .llmPillOff {
-    background: linear-gradient(
-      135deg,
-      rgba(239, 68, 68, 0.1),
-      rgba(239, 68, 68, 0.05),
-      rgba(255, 255, 255, 0.03)
-    );
-    border-color: rgba(239, 68, 68, 0.4);
-    box-shadow: 0 1px 6px rgba(239, 68, 68, 0.15);
-
-    &:hover {
-      box-shadow: 0 2px 10px rgba(239, 68, 68, 0.25);
-    }
-  }
-  .llmPillLabel {
-    color: rgba(255, 255, 255, 0.5);
-  }
-  .llmPillValue {
-    color: rgba(255, 255, 255, 0.85);
-  }
-  .llmPillEdit {
-    color: #a5b4fc;
-  }
-  .llmDescription {
-    color: rgba(255, 255, 255, 0.45);
-  }
   .panelSection {
     background: rgba(255, 255, 255, 0.03);
     border-color: rgba(255, 255, 255, 0.06);
@@ -2172,39 +1950,6 @@
   }
 
   /* Slot section (LLM 顶部选择区) */
-  .slotSection {
-    background: #2a2a2a;
-    border-color: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-
-    &:hover {
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-      border-color: rgba(255, 255, 255, 0.15);
-    }
-  }
-
-  .slotHeader {
-    border-bottom-color: rgba(255, 255, 255, 0.08);
-  }
-
-  .slotTitle {
-    color: rgba(255, 255, 255, 0.85);
-  }
-
-  .slotCurrent {
-    color: #52c41a;
-    background: rgba(82, 196, 26, 0.1);
-    border-color: rgba(82, 196, 26, 0.3);
-  }
-
-  .slotLabel {
-    color: rgba(255, 255, 255, 0.5);
-  }
-
-  .slotActions {
-    border-top-color: rgba(255, 255, 255, 0.08);
-  }
-
   /* Advanced config */
   .advancedConfigSection {
     border-top-color: rgba(255, 255, 255, 0.08);
@@ -2416,25 +2161,6 @@
     padding: 12px 16px;
   }
 
-  .llmPill {
-    justify-content: space-between;
-    width: 100%;
-    padding: 6px 10px;
-    font-size: 13px;
-  }
-
-  .llmPillLabel {
-    font-size: 13px;
-  }
-
-  .llmPillValue {
-    font-size: 12px;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .searchRow {
     margin: 0;
     width: 100%;
@@ -2606,21 +2332,6 @@
   .modalFooterRight {
     width: 100%;
     justify-content: center;
-  }
-
-  .slotSection {
-    padding: 16px;
-  }
-
-  .slotHeader {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
-
-  .slotActions {
-    flex-wrap: wrap;
-    gap: 6px;
   }
 
   .emptyConfigured {

@@ -723,6 +723,65 @@ def is_model_allowed(username: str | None, provider_id: str, model_id: str) -> b
     )
 
 
+def first_allowed_model(username: str | None) -> tuple[str, str] | None:
+    """Return the first chat model this account is authorized to use.
+
+    There is no administrator-configured default model any more: a conversation
+    starts on whichever authorized model comes first, and the user can switch
+    afterwards. "First" is defined by the same order the chat selector presents
+    models in — built-in providers, then custom ones, in registration order,
+    with each provider's own models before its extra models — so the model a
+    user sees preselected is the one the backend actually runs.
+    """
+    if not username:
+        return None
+    try:
+        from ..providers import ProviderManager
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not import ProviderManager for %s", username)
+        return None
+
+    from ..providers.model_type import infer_model_type
+
+    manager = ProviderManager.get_instance()
+    providers = [
+        *manager.builtin_providers.values(),
+        *manager.custom_providers.values(),
+    ]
+    for provider in providers:
+        for model in [*provider.models, *provider.extra_models]:
+            # Providers saved before purpose metadata existed have no explicit
+            # type; infer it the same way the provider listing does so an
+            # embedding model is never chosen as the chat default.
+            model_type = model.model_type
+            if model.model_type_source is None:
+                model_type = infer_model_type(model.id, model.name)
+            if model_type != "chat":
+                continue
+            if is_model_allowed(username, provider.id, model.id):
+                return provider.id, model.id
+    return None
+
+
+def agent_owner_username(agent_id: str | None) -> str | None:
+    """Return the account that owns ``agent_id``, if it can be determined.
+
+    Runtime model resolution only knows the agent, not the caller, so the owner
+    has to come from the agent profile. ``None`` means no owner is recorded —
+    either an authentication-disabled install or a profile that predates
+    ownership tracking — in which case entitlements cannot be applied.
+    """
+    if not agent_id:
+        return None
+    try:
+        config = load_config()
+        profile = config.agents.profiles.get(agent_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not load agent profile for %s", agent_id)
+        return None
+    return getattr(profile, "owner_username", None) if profile else None
+
+
 def user_agent_ids(config, username: str | None) -> list[str]:
     # Authentication-disabled callers retain the historical unrestricted
     # behavior. Every authenticated account, including administrators, sees
@@ -866,6 +925,22 @@ def ensure_user_default_agent(username: str | None) -> str | None:
     state["default_agent_id"] = agent_id
     state["agent_order"] = [agent_id]
     save_user_state(username, state)
+    # Grant the account's public area (root path) to the new agent, so a fresh
+    # account can read the shared material it just gained. Without this the agent
+    # starts with **no** grants, and since the scope check is fail-closed it would
+    # answer "no accessible knowledge/data" for a brand-new user — which reads as
+    # "the product is broken", not as "you have not mounted anything yet".
+    # Child paths stay ungranted, which is what keeps a per-case path isolated.
+    try:
+        from ..platform_store import paths as path_store
+
+        path_store.grant_root_to_agent(username, agent_id)
+    except Exception:  # noqa: BLE001 - agent creation must still succeed
+        logger.warning(
+            "Could not grant the public area to new agent %s", agent_id,
+            exc_info=True,
+        )
+
     logger.info("Created isolated default agent %s for %s", agent_id, username)
     return agent_id
 
@@ -916,6 +991,66 @@ def assign_unowned_agents_to_admin(username: str) -> None:
 
 
 def delete_user_data(username: str) -> None:
-    """Remove only the user's isolated state after its agents are deleted."""
+    """Remove only the user's isolated state after its agents are deleted.
+
+    Includes the account's **path tree**: paths are keyed by owner, so leaving them
+    behind would strand a deleted account's structure in the store forever — and
+    because a ``*_default`` agent id is derived from the account, a re-created
+    account with the same name could inherit the old tree's grants.
+    """
     shutil.rmtree(get_user_root(username), ignore_errors=True)
     shutil.rmtree(USER_STATE_ROOT / _slug(username), ignore_errors=True)
+    _delete_account_paths(username)
+
+
+def _delete_account_paths(username: str) -> None:
+    """Delete one account's paths and every binding that referenced them.
+
+    Best-effort: this runs after the account record is already gone, so a failure
+    must not raise (the account is deleted either way; the leftover is logged).
+    """
+    try:
+        from ..platform_store import get_conn, put_conn
+
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                # Bindings reference the paths, so they go first — their FK would
+                # otherwise block the delete. The agent grants would cascade, but
+                # removing them explicitly keeps the whole effect in one place.
+                cur.execute(
+                    'DELETE FROM "platform".resource_bindings rb '
+                    'USING "platform".paths p '
+                    "WHERE rb.path_id = p.id AND p.owner_username = %s",
+                    (username,),
+                )
+                cur.execute(
+                    'DELETE FROM "platform".agent_path_bindings ab '
+                    'USING "platform".paths p '
+                    "WHERE ab.path_id = p.id AND p.owner_username = %s",
+                    (username,),
+                )
+                # A self-referencing FK forbids removing a parent while a child
+                # still points at it; the CTE collects the whole subtree before any
+                # DELETE runs, so the order inside the statement is safe.
+                cur.execute(
+                    'WITH RECURSIVE tree AS ('
+                    '  SELECT id FROM "platform".paths WHERE owner_username = %s'
+                    '  UNION ALL'
+                    '  SELECT c.id FROM "platform".paths c'
+                    '    JOIN tree ON c.parent_id = tree.id'
+                    ')'
+                    'DELETE FROM "platform".paths WHERE id IN (SELECT id FROM tree)',
+                    (username,),
+                )
+            conn.commit()
+            logger.info("Deleted the path tree for account %s", username)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            put_conn(conn)
+    except Exception:  # noqa: BLE001 - the account is already deleted
+        logger.warning(
+            "Could not delete the path tree for %s", username, exc_info=True,
+        )

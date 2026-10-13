@@ -77,7 +77,7 @@ const MENU_OPTIONS = [
   ["core.heartbeat", "心跳"],
   ["core.files", "文件"],
   ["core.knowledge", "知识空间"],
-  ["core.data-analysis", "数据分析"],
+  ["core.data-analysis", "数据空间"],
   ["core.skills", "技能"],
   ["core.tools", "工具"],
   ["core.mcp", "MCP"],

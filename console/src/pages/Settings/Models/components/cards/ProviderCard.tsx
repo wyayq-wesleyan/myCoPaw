@@ -1,11 +1,10 @@
 import React from "react";
-import type { ProviderInfo, ActiveModelsInfo } from "../../../../../api/types";
+import type { ProviderInfo } from "../../../../../api/types";
 import { LocalProviderCard } from "./LocalProviderCard";
 import { RemoteProviderCard } from "./RemoteProviderCard";
 
 interface ProviderCardProps {
   provider: ProviderInfo;
-  activeModels: ActiveModelsInfo | null;
   onSaved: () => void;
   onOpenConfig: (provider: ProviderInfo) => void;
   onOpenModels: (provider: ProviderInfo) => void;
