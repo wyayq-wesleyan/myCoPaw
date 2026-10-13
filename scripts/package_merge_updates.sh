@@ -40,6 +40,11 @@ tar -xzf "${PART_DIR}/knowledge.tar.gz" -C "${STAGE_DIR}"
 # single upload also keeps logs landing on the host. Do not extract deploy/
 # over an existing production directory without comparing resource limits.
 cp "${ROOT_DIR}/deploy/code-mount-entrypoint.sh" "${STAGE_DIR}/deploy/"
+# Both architectures travel. Production is x86_64 while a developer machine is
+# often arm64, and the files differ only in which image tag the compose defaults
+# to — shipping just one silently hands the other platform the wrong default the
+# moment the file is copied over.
+cp "${ROOT_DIR}/deploy/docker-compose.code-mount.amd64.yml" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/docker-compose.code-mount.arm64.yml" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/entrypoint.sh" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/config/supervisord.conf.template" "${STAGE_DIR}/deploy/config/"
