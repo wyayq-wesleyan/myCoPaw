@@ -396,7 +396,12 @@ def run() -> None:
     # the previous holder of this id is gone, so those jobs are reclaimed
     # immediately instead of waiting out the heartbeat grace window.
     try:
-        recovered = store.recover_interrupted_jobs(reclaim_owner=worker_id)
+        # 带上 attempts 上限：一个会让进程崩溃的文档不该被无限恢复，
+        # 否则每次重启都会先领到它，队列永久停摆。
+        recovered = store.recover_interrupted_jobs(
+            reclaim_owner=worker_id,
+            max_attempts=MAX_ATTEMPTS,
+        )
         if recovered:
             logger.warning("recovered %d interrupted knowledge jobs", recovered)
     except Exception:
@@ -444,7 +449,9 @@ def run() -> None:
                 if now - last_recovery_at >= RECOVERY_SWEEP_INTERVAL_SECONDS:
                     last_recovery_at = now
                     try:
-                        orphaned = store.recover_interrupted_jobs()
+                        orphaned = store.recover_interrupted_jobs(
+                            max_attempts=MAX_ATTEMPTS,
+                        )
                         if orphaned:
                             logger.warning(
                                 "recovered %d orphaned knowledge job(s) (dead owner)",

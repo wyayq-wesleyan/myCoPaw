@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -202,7 +203,14 @@ class MinerUParser:
         if not self.available:
             raise ParseError("MinerU is not available. Install it in the image and set MINERU_COMMAND.")
         with tempfile.TemporaryDirectory(prefix="huizhi-mineru-") as output_dir:
-            command = self.command.format(input=str(path), output=output_dir)
+            # 模板来自 MINERU_COMMAND，以 shell=True 执行，因此路径必须按 shell
+            # 规则转义：文件名里的 ``$(...)``、反引号、分号在双引号内仍会被解释。
+            # 调用方已用 _safe_filename 清洗过，这里是第二道防线——MINERU_COMMAND
+            # 也可以被改成不带引号的模板。
+            command = self.command.format(
+                input=shlex.quote(str(path)),
+                output=shlex.quote(output_dir),
+            )
             try:
                 result = _run_child(
                     command,

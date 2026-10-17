@@ -133,9 +133,14 @@ class Settings:
             ),
             api_key=_env("KNOWLEDGE_API_KEY"),
             worker_interval=max(0.2, float(_env("KNOWLEDGE_WORKER_INTERVAL", "1"))),
-            # Existing deployments may still have the old 100 MB setting in
-            # .env. Knowledge uploads are intentionally large-file capable.
-            max_file_mb=max(10240, int(_env("KNOWLEDGE_MAX_FILE_MB", "10240"))),
+            # 上限以 .env 为准，10 GiB 只是**未设置时**的默认值。
+            #
+            # 原先是 `max(10240, int(env))`，即环境变量只能调大不能调小：运维写
+            # `KNOWLEDGE_MAX_FILE_MB=100`，实际生效是 10240，配置静默失效。这不只是
+            # 「认知不一致」——上传会把整个文件读进内存（parsers.py 的轻量解析器），
+            # 10 GB 的文件足以把 worker 打 OOM，而运营方以为自己已经限到 100 MB。
+            # 想放大文件就显式写大值（如 10240），不要靠默认值兜底。
+            max_file_mb=max(1, int(_env("KNOWLEDGE_MAX_FILE_MB", "10240"))),
             parser_backend=_env("PARSER_BACKEND", "auto").lower(),
             mineru_command=_env("MINERU_COMMAND"),
             mineru_timeout_seconds=max(60, int(_env("MINERU_TIMEOUT_SECONDS", "900"))),

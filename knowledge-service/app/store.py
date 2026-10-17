@@ -903,6 +903,7 @@ class Store:
         self,
         grace_seconds: int | None = None,
         reclaim_owner: str | None = None,
+        max_attempts: int | None = None,
     ) -> int:
         """Requeue jobs left in ``processing`` by a worker that stopped.
 
@@ -946,12 +947,76 @@ class Store:
             seconds=self.HEARTBEAT_RETENTION_SECONDS,
         )
         with self._connect() as db:
+            # 先处理「已经重试太多次」的那批：一个会让 worker 进程崩溃的文档
+            # （OOM、原生库 segfault）每次重启都会被恢复逻辑立刻重新排队，而
+            # claim_job 按 created_at 取最旧，它永远排在最前 —— 队列就此停摆，
+            # 其它上传全部卡在「等待 Worker」，看起来像永久卡死。
+            # requeue_stale_jobs 早就有这个判断，恢复路径漏了。
+            if max_attempts is not None:
+                give_up_note = (
+                    f"任务在多次重启后仍未完成（attempts >= {max_attempts}），"
+                    "已停止自动恢复。请检查该文档是否会让解析进程崩溃。"
+                )
+                exhausted = db.execute(
+                    """
+                    UPDATE jobs SET status = 'failed', stage = 'failed', updated_at = %s,
+                        next_retry_at = NULL,
+                        error = %s,
+                        log_excerpt = COALESCE(log_excerpt, %s)
+                    WHERE status = 'processing'
+                      AND attempts >= %s
+                      AND (
+                            (owner_worker_id IS NOT NULL AND NOT EXISTS (
+                                SELECT 1 FROM worker_heartbeats h
+                                WHERE h.worker_id = jobs.owner_worker_id
+                                  AND h.updated_at > %s
+                            ))
+                         OR (owner_worker_id IS NULL
+                             AND jobs.updated_at < %s
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM worker_heartbeats h
+                                 WHERE h.job_id = jobs.id
+                                   AND h.updated_at > %s
+                             ))
+                         OR (%s::text IS NOT NULL AND owner_worker_id = %s)
+                      )
+                    RETURNING id, document_id
+                    """,
+                    (
+                        timestamp,
+                        give_up_note,
+                        give_up_note,
+                        max_attempts,
+                        cutoff,
+                        cutoff,
+                        cutoff,
+                        reclaim_owner,
+                        reclaim_owner,
+                    ),
+                ).fetchall()
+                for row in exhausted:
+                    db.execute(
+                        """UPDATE documents SET status = 'failed',
+                               processing_stage = 'failed', updated_at = %s, error = %s
+                           WHERE id = %s""",
+                        (timestamp, give_up_note, row["document_id"]),
+                    )
+
+            # attempts 守卫在 Python 侧拼：%s::int IS NULL 在参数为整数时会被推断成
+            # unknown，PostgreSQL 对 `attempts < unknown` 的判定与直觉不符——实测
+            # 会把正常任务也一起挡掉。空串表示不加限制。
+            attempts_guard = (
+                f"AND attempts < {int(max_attempts)}"
+                if max_attempts is not None
+                else ""
+            )
             requeued = db.execute(
                 """
                 UPDATE jobs SET status = 'queued', stage = 'queued', updated_at = %s,
                     next_retry_at = NULL,
                     error = COALESCE(error, '任务因服务重启中断，已自动恢复')
                 WHERE status = 'processing'
+                  {attempts_guard}
                   AND (
                         (owner_worker_id IS NOT NULL AND NOT EXISTS (
                             SELECT 1 FROM worker_heartbeats h
@@ -968,7 +1033,7 @@ class Store:
                      OR (%s::text IS NOT NULL AND owner_worker_id = %s)
                   )
                 RETURNING id, document_id
-                """,
+                """.format(attempts_guard=attempts_guard),
                 (timestamp, cutoff, cutoff, cutoff, reclaim_owner, reclaim_owner),
             ).fetchall()
             # Reset only the documents whose own job was actually reclaimed:

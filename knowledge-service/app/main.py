@@ -175,6 +175,17 @@ _PARSE_CONCURRENCY = max(
 )
 _PARSE_SLOTS = asyncio.Semaphore(_PARSE_CONCURRENCY)
 
+# 把「实际生效」的关键上限打进启动日志。这几个值曾经被静默覆盖过
+# （`max(10240, env)` 让 .env 里的 100 MB 失效），运维看日志就能当场发现。
+logger.info(
+    "knowledge: limits in effect — max_file_mb=%d, parse_concurrency=%d, "
+    "parser_backend=%s, mineru_timeout=%ss",
+    settings.max_file_mb,
+    _PARSE_CONCURRENCY,
+    settings.parser_backend,
+    settings.mineru_timeout_seconds,
+)
+
 app = FastAPI(title="汇智知识服务", version="0.1.4", lifespan=lifespan)
 
 
@@ -335,7 +346,13 @@ async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
       failing. Requests past the limit wait their turn instead of making the
       situation worse.
     """
-    suffix = Path(file.filename or "").suffix.lower()
+    # 文件名必须清洗后再落盘。原先是直接拿 ``file.filename`` 拼路径，两个后果：
+    # 绝对路径会让 ``Path(tmp_dir) / name`` **丢弃临时目录**（写到任意位置），
+    # ``../`` 可以逃出临时目录；而这个路径随后会被插进 shell=True 的 MinerU
+    # 命令模板（``$(...)`` / 反引号在双引号内仍会执行），等于把上传者提供的
+    # 字符串交给了 shell。上传端点一直用的是 ``_safe_filename``，这里漏了。
+    filename = _safe_filename(file.filename or "upload")
+    suffix = Path(filename).suffix.lower()
     supported = {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".xls", ".json"}
     if suffix not in supported:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
@@ -345,7 +362,7 @@ async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
 
     async with _PARSE_SLOTS:
         with tempfile.TemporaryDirectory(prefix="huizhi-parse-") as tmp_dir:
-            tmp_path = Path(tmp_dir) / (file.filename or f"upload{suffix}")
+            tmp_path = Path(tmp_dir) / filename
             tmp_path.write_bytes(data)
             try:
                 result = await asyncio.to_thread(
