@@ -22,6 +22,18 @@ export function isEmbeddingEnabled(config?: Partial<EmbeddingModelConfig>) {
   return config.backend === "ollama";
 }
 
+/**
+ * Whether the `dimensions` parameter will actually be sent.
+ *
+ * Only the OpenAI-compatible backends accept it. Fingerprinting the raw
+ * `use_dimensions` flag made the UI report a "service changed" for backends
+ * that ignore the flag, forcing an unnecessary reload. Mirrors
+ * `embedding_model.py::_effective_use_dimensions`.
+ */
+function effectiveUseDimensions(config: Partial<EmbeddingModelConfig>) {
+  return config.backend === "openai" && !!config.use_dimensions;
+}
+
 export function getEmbeddingServiceFingerprint(
   config?: Partial<EmbeddingModelConfig>,
 ) {
@@ -32,6 +44,6 @@ export function getEmbeddingServiceFingerprint(
     config.base_url?.trim().replace(/\/+$/, "") || "",
     config.model_name?.trim() || "",
     config.dimensions || 0,
-    !!config.use_dimensions,
+    effectiveUseDimensions(config),
   ]);
 }
