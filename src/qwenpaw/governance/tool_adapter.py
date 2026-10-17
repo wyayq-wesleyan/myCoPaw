@@ -109,7 +109,7 @@ class PolicyGuardedTool:
     """Governance policy-checked tool wrapper.
 
     Dynamically inherits from FunctionTool, implementing:
-    - check_permissions: calls assert_policy() + audit() for policy decision
+    - check_permissions: calls assert_policy() + audit_async() (off the loop)
     - __call__: overrides to handle sandbox execution + violation retry
 
     .. warning:: Known limitation — dynamic anonymous class
@@ -249,7 +249,7 @@ async def _policy_tool_check_permissions(
     Flow:
         1. Construct ToolCallSpec(tool_name, target, agent_id, session_id)
         2. governor.assert_policy(tool_call) → GovernanceDecision
-        3. governor.audit(tool_call, decision)
+        3. governor.audit_async(tool_call, decision)  # off the event loop
         4. Map to PermissionDecision
     """
     from agentscope.permission import PermissionBehavior, PermissionDecision
@@ -308,7 +308,10 @@ async def _policy_tool_check_permissions(
     tc_spec = self._build_tc_spec()
 
     decision = governor.assert_policy(tc_spec)
-    governor.audit(tc_spec, decision)
+    # Off the event loop: `record()` does a synchronous INSERT + commit and can
+    # wait 15 s for a platform-pool slot. On the loop that froze every user
+    # (see ResourceGovernor.audit_async).
+    await governor.audit_async(tc_spec, decision)
 
     # Cache the decision + tc_spec for __call__ to use
     self._qp_policy_decision = decision
@@ -440,7 +443,7 @@ async def _policy_tool_call(
     )
 
     # Record the ASK escalation (sandbox violation → ask user)
-    governor.audit(
+    await governor.audit_async(
         tc_spec,
         GovernanceDecision(
             action=GovernanceAction.ASK,
@@ -709,7 +712,7 @@ async def _ask_user_approval(
         action=GovernanceAction.ALLOW if approved else GovernanceAction.DENY,
         reason=(f"User Approve ({scope_label})" if approved else "User Deny"),
     )
-    governor.audit(tc_spec, approval_decision)
+    await governor.audit_async(tc_spec, approval_decision)
 
     summary = format_findings_summary(guard_result)
     if decision == ApprovalDecision.APPROVED:

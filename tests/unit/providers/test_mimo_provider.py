@@ -60,8 +60,10 @@ def isolated_secret_dir(monkeypatch, tmp_path):
 
 def test_mimo_registered_in_provider_manager(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
-    """MiMo Token Plan provider should be registered as a built-in provider."""
+    """MiMo Token Plan provider should be registerable as a built-in."""
+    register_builtins("mimo-tokenplan")
     manager = ProviderManager()
 
     provider = manager.get_provider("mimo-tokenplan")
@@ -71,8 +73,12 @@ def test_mimo_registered_in_provider_manager(
     assert provider.name == "Xiaomi MiMo Token Plan"
 
 
-def test_mimo_has_expected_models(isolated_secret_dir) -> None:
+def test_mimo_has_expected_models(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
     """MiMo Token Plan provider should include built-in models."""
+    register_builtins("mimo-tokenplan")
     manager = ProviderManager()
     provider = manager.get_provider("mimo-tokenplan")
 
@@ -81,8 +87,12 @@ def test_mimo_has_expected_models(isolated_secret_dir) -> None:
     assert provider.has_model("mimo-v2.5")
 
 
-def test_mimo_provider_list_includes_mimo(isolated_secret_dir) -> None:
+def test_mimo_provider_list_includes_mimo(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
     """ProviderManager should list MiMo Token Plan in available providers."""
+    register_builtins("mimo-tokenplan")
     manager = ProviderManager()
     # Verify the provider exists in builtin_providers
     assert "mimo-tokenplan" in manager.builtin_providers

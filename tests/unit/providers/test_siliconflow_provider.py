@@ -56,8 +56,10 @@ def isolated_secret_dir(monkeypatch, tmp_path):
 
 def test_siliconflow_registered_in_provider_manager(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
-    """Siliconflow providers should be registered as built-in providers."""
+    """Siliconflow providers should be registerable as built-ins."""
+    register_builtins("siliconflow-cn", "siliconflow-intl")
     manager = ProviderManager()
 
     provider_cn = manager.get_provider("siliconflow-cn")

@@ -339,12 +339,16 @@ class TestChatAttachmentLimits:
             name="user",
             role="user",
             content=[
-                {"type": "file", "source": {"type": "url", "url": "ignored"}}
+                DataBlock(
+                    source=URLSource(
+                        url=path.resolve().as_uri(),
+                        media_type="text/plain",
+                    ),
+                ),
             ],
         )
         with (
             patch("qwenpaw.agents.utils.message_processing.load_config", return_value=self._config()),
-            patch("qwenpaw.agents.utils.message_processing._process_single_block", new=AsyncMock(return_value=str(path))),
             patch("qwenpaw.agents.utils.message_processing._parse_file_via_knowledge", new=AsyncMock(return_value={"content": "y" * (_CHAT_FILE_MAX_CHARS * 2)})),
             patch("qwenpaw.agents.utils.message_processing.freeze_local_images_async", new=AsyncMock()),
         ):
@@ -364,8 +368,13 @@ class TestChatAttachmentLimits:
             name="user",
             role="user",
             content=[
-                {"type": "file", "source": {"type": "url", "url": "one"}},
-                {"type": "file", "source": {"type": "url", "url": "two"}},
+                DataBlock(
+                    source=URLSource(
+                        url=path.resolve().as_uri(),
+                        media_type="text/plain",
+                    ),
+                )
+                for path in paths
             ],
         )
         image = "data:image/png;base64," + ("a" * (_CHAT_TOTAL_IMAGE_MAX_CHARS // 2 + 1))
@@ -377,7 +386,6 @@ class TestChatAttachmentLimits:
         )
         with (
             patch("qwenpaw.agents.utils.message_processing.load_config", return_value=self._config()),
-            patch("qwenpaw.agents.utils.message_processing._process_single_block", new=AsyncMock(side_effect=[str(paths[0]), str(paths[1])])),
             patch("qwenpaw.agents.utils.message_processing._parse_file_via_knowledge", new=parse),
             patch("qwenpaw.agents.utils.message_processing.freeze_local_images_async", new=AsyncMock()),
         ):
@@ -386,5 +394,10 @@ class TestChatAttachmentLimits:
         text_blocks = [block for block in msg.content if isinstance(block, TextBlock)]
         assert len(text_blocks) == 2
         assert sum(len(block.text) for block in text_blocks) < _CHAT_TOTAL_FILE_MAX_CHARS + 2_000
-        data_blocks = [block for block in msg.content if isinstance(block, DataBlock)]
-        assert len(data_blocks) == 1
+        # The second image hits the total image budget and is skipped.
+        image_blocks = [
+            block for block in msg.content
+            if isinstance(block, DataBlock)
+            and isinstance(block.source, Base64Source)
+        ]
+        assert len(image_blocks) == 1

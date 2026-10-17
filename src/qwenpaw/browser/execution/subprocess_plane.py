@@ -21,7 +21,7 @@ from ..runtime.links import (
     unregister_local,
 )
 from ..runtime.ports import ControlLink
-from ...utils.io_utils import run_sync_io
+from ...utils.io_pools import POOL_SUBPROCESS, ThreadPoolBusy, run_in_pool
 from .adjudicator import Adjudicator
 from .wire import (
     ExecRequest,
@@ -445,7 +445,8 @@ class SubprocessPlane:
                 await self._terminate(worker)
             created: list[tuple[socket.socket, Any]] = []
             try:
-                await run_sync_io(
+                await run_in_pool(
+                    POOL_SUBPROCESS,
                     _start_worker_process,
                     self._ctx,
                     self._target,
@@ -574,7 +575,12 @@ class SubprocessPlane:
 
     async def _reap_process(self, proc: Any) -> None:
         """Offload reaping so process waits never block agent turns."""
-        await run_sync_io(kill_process_sync, proc)
+        try:
+            await run_in_pool(POOL_SUBPROCESS, kill_process_sync, proc)
+        except ThreadPoolBusy:
+            # Termination-critical: backpressure must never drop a kill
+            # signal and leak the browser worker process. Bypass the pool.
+            await asyncio.to_thread(kill_process_sync, proc)
 
     async def _discard(self, key: str, worker: _Worker) -> None:
         """Drop a dead worker so a later request can spawn a replacement."""

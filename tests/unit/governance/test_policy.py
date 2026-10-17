@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 import shutil
@@ -1238,6 +1239,51 @@ class TestAddApprovedRuleGeneralization:
         )
         assert added is False
         assert governor.policy.user_rules == before
+
+    async def test_saturated_pool_fails_closed_loudly(
+        self,
+        governor,
+        monkeypatch,
+        caplog,
+    ):
+        """A saturated I/O pool must not silently discard the approval.
+
+        The rule write rides the fast pool; when that pool is saturated for the
+        whole wait budget ``run_sync_io`` raises ``ThreadPoolBusy``. The
+        fail-closed behaviour (return False, ask again next time) is right, but
+        at the production ``info`` log level a debug-level drop is invisible —
+        the user would be re-prompted forever with no trace of why. So the
+        busy case must be logged at warning or above.
+        """
+        import qwenpaw.governance.resource_governor as gov_mod
+
+        def _busy(*args, **kwargs):
+            raise gov_mod.ThreadPoolBusy("fast pool saturated")
+
+        monkeypatch.setattr(gov_mod, "run_sync_io", _busy)
+
+        before = [r.match for r in governor.policy.user_rules]
+        with caplog.at_level(logging.WARNING, logger=gov_mod.__name__):
+            added = await governor.add_approved_rule(
+                _tc("Bash", "git status"),
+                generalized_target="git status",
+            )
+
+        assert added is False
+        assert [r.match for r in governor.policy.user_rules] == before, (
+            "no rule may be recorded when the write never reached disk"
+        )
+        assert "Bash(git status)" not in [r.match for r in governor.policy.user_rules]
+        busy_records = [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert busy_records, "pool saturation was logged below WARNING"
+        assert any("not persisted" in r.getMessage().lower()
+                   or "NOT persisted" in r.getMessage()
+                   for r in busy_records), (
+            "no record explains that the approved rule was dropped: "
+            f"{[r.getMessage() for r in caplog.records]}"
+        )
 
     async def test_missing_generalized_target_raises(self, governor):
         """The keyword arg is required — calling without it is a TypeError,

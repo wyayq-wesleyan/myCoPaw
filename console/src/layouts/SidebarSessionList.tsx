@@ -60,6 +60,7 @@ interface VirtualRowData {
   handleDelete: (sessionId: string) => void;
   handlePinToggle: (sessionId: string) => void;
   handleArchiveToggle: (sessionId: string) => void;
+  handleExport: (sessionId: string) => void;
   handleEditChange: (value: string) => void;
   handleEditSubmit: () => void;
   handleEditCancel: () => void;
@@ -127,6 +128,7 @@ const VirtualRow = React.memo(function VirtualRow({
         onDelete={data.handleDelete}
         onPin={data.handlePinToggle}
         onArchive={data.handleArchiveToggle}
+        onExport={data.handleExport}
         onEditChange={data.handleEditChange}
         onEditSubmit={data.handleEditSubmit}
         onEditCancel={data.handleEditCancel}
@@ -152,6 +154,7 @@ export default function SidebarSessionList({
 
   const [searchQuery, setSearchQuery] = useState("");
   const [historyCollapsed, setHistoryCollapsed] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
   /** Collapsed date groups — persisted so remounts keep the user's state */
   const { collapsedGroups, toggleGroup, expandGroupForSession } =
     useCollapsedSessionGroups();
@@ -192,6 +195,9 @@ export default function SidebarSessionList({
     handleDelete,
     handlePinToggle,
     handleArchiveToggle,
+    importing,
+    onImportInputChange,
+    handleExport,
     handleEditChange,
     handleEditSubmit,
     handleEditCancel,
@@ -328,6 +334,7 @@ export default function SidebarSessionList({
       handleDelete,
       handlePinToggle,
       handleArchiveToggle,
+      handleExport,
       handleEditChange,
       handleEditSubmit,
       handleEditCancel,
@@ -344,6 +351,7 @@ export default function SidebarSessionList({
       handleDelete,
       handlePinToggle,
       handleArchiveToggle,
+      handleExport,
       handleEditChange,
       handleEditSubmit,
       handleEditCancel,
@@ -353,13 +361,35 @@ export default function SidebarSessionList({
 
   return (
     <div className={styles.sessionList}>
-      {/* Sticky header: new chat + history title + search */}
-      <div className={styles.sessionListHeader}>
-        {/* New Chat button */}
-        <button className={styles.newChatBtn} onClick={handleNewChat}>
-          <SparkPlusLine size={14} />
-          <span>{t("chat.newChatTooltip")}</span>
-        </button>
+        {/* Sticky header: new chat + history title + search */}
+        <div className={styles.sessionListHeader}>
+          {/* New Chat button + import. Import creates a new conversation, so it
+              belongs beside "new chat" and outside the list — the list's action
+              column carries export instead. */}
+          <div className={styles.newChatRow}>
+            <button className={styles.newChatBtn} onClick={handleNewChat}>
+              <SparkPlusLine size={14} />
+              <span>{t("chat.newChatTooltip")}</span>
+            </button>
+            <button
+              type="button"
+              className={styles.importBtn}
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing}
+              title={t("chat.importChat", "Import")}
+            >
+              {t("chat.importChat", "Import")}
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              data-testid="session-import-input"
+              onChange={onImportInputChange}
+            />
+          </div>
+
 
         {/* Conversation history header (collapsible) */}
         <button

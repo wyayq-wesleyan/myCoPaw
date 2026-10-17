@@ -50,6 +50,13 @@ services:
       QWENPAW_LLM_MAX_CONCURRENT: "${QWENPAW_LLM_MAX_CONCURRENT:-6}"
       QWENPAW_LLM_STREAM_FIRST_CONTENT_TIMEOUT: "${QWENPAW_LLM_STREAM_FIRST_CONTENT_TIMEOUT:-300}"
       QWENPAW_LLM_STREAM_IDLE_TIMEOUT: "${QWENPAW_LLM_STREAM_IDLE_TIMEOUT:-300}"
+      # Blocking I/O runs in purpose-separated pools so a session checkpoint
+      # write cannot queue ahead of DB reads. Defaults target 8-10 users; tune
+      # with `GET /api/debug/io-pools` rather than guessing.
+      QWENPAW_IO_FAST_THREADS: "${QWENPAW_IO_FAST_THREADS:-16}"
+      QWENPAW_IO_FILE_THREADS: "${QWENPAW_IO_FILE_THREADS:-8}"
+      QWENPAW_IO_SUBPROCESS_THREADS: "${QWENPAW_IO_SUBPROCESS_THREADS:-8}"
+      QWENPAW_IO_POOL_WAIT_SECONDS: "${QWENPAW_IO_POOL_WAIT_SECONDS:-120}"
       QWENPAW_LOG_LEVEL: "${QWENPAW_LOG_LEVEL:-info}"
       QWENPAW_LOG_DIR: /app/working/logs
     extra_hosts:

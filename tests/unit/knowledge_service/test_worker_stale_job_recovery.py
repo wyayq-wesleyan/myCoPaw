@@ -126,9 +126,11 @@ def test_worker_survives_a_database_error_while_claiming():
     """A transient DB error must not kill the heartbeat (uploads key off it)."""
     source = _worker_source()
 
-    claim_idx = source.index("store.claim_job()")
-    # The call must sit inside a try/except that logs and retries.
-    window = source[max(0, claim_idx - 200): claim_idx + 600]
+    claim_idx = source.index("store.claim_job(")
+    # The call must sit inside a try/except that logs and retries. The window
+    # is generous because the surrounding branch order may change (e.g. a
+    # definitive lock-takeover case ahead of the generic retry).
+    window = source[max(0, claim_idx - 400): claim_idx + 1200]
     assert "except Exception" in window
     assert "DB_RETRY_SECONDS" in window
 
@@ -137,7 +139,7 @@ def test_startup_recovery_does_not_abort_the_worker():
     """PostgreSQL may simply not be up yet when the worker boots."""
     source = _worker_source()
 
-    recover_idx = source.index("store.recover_interrupted_jobs()")
+    recover_idx = source.index("store.recover_interrupted_jobs(")
     window = source[max(0, recover_idx - 600): recover_idx]
     assert "try:" in window, (
         "start-up recovery must be best-effort; dying there reports the worker "

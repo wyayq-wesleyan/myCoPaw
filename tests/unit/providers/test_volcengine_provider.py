@@ -55,6 +55,12 @@ def test_volcengine_models_list() -> None:
     assert len(VOLCENGINE_CODINGPLAN_MODELS) == 10
 
 
+_VOLCENGINE_BUILTIN_IDS = (
+    "volcengine-cn",
+    "volcengine-cn-codingplan",
+)
+
+
 @pytest.fixture
 def isolated_secret_dir(monkeypatch, tmp_path):
     secret_dir = tmp_path / ".qwenpaw.secret"
@@ -64,8 +70,10 @@ def isolated_secret_dir(monkeypatch, tmp_path):
 
 def test_volcengine_registered_in_provider_manager(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
-    """Volcano Engine providers should be registered as built-in providers."""
+    """Volcano Engine providers should be registerable as built-ins."""
+    register_builtins(*_VOLCENGINE_BUILTIN_IDS)
     manager = ProviderManager()
 
     provider_cn = manager.get_provider("volcengine-cn")
@@ -84,8 +92,12 @@ def test_volcengine_registered_in_provider_manager(
     )
 
 
-def test_volcengine_has_expected_models(isolated_secret_dir) -> None:
+def test_volcengine_has_expected_models(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
     """Volcano Engine providers should include built-in models."""
+    register_builtins(*_VOLCENGINE_BUILTIN_IDS)
     manager = ProviderManager()
     provider_cn = manager.get_provider("volcengine-cn")
     provider_codingplan = manager.get_provider(

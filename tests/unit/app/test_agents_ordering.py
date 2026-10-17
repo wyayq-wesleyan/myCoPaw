@@ -270,10 +270,15 @@ async def test_create_agent_appends_new_id_to_order(monkeypatch, tmp_path):
     manager = SimpleNamespace(schedule_agent_startup=lambda agent_id: None)
     scheduled_ids: list[str] = []
     manager.schedule_agent_startup = scheduled_ids.append
+    # ``create_agent`` resolves the account via ``request.state.user`` (None
+    # here keeps the legacy unauthenticated path) and reads the manager from
+    # ``request.app.state``.
     http_request = SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(multi_agent_manager=manager),
         ),
+        state=SimpleNamespace(user=None),
+        headers={},
     )
 
     await agents_router.create_agent(
@@ -316,7 +321,13 @@ async def test_delete_agent_removes_id_from_order(monkeypatch):
 
     await agents_router.delete_agent(
         "beta",
-        request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
+        # ``delete_agent`` resolves the account via ``request.state.user``;
+        # ``headers`` backs the bearer-token fallback in ``get_request_username``.
+        request=SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace()),
+            state=SimpleNamespace(user=None),
+            headers={},
+        ),
     )
 
     assert config.agents.agent_order == ["alpha", "default"]

@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping
 
 from ....config.context import get_current_workspace_dir
 from ....constant import WORKING_DIR
-from ....utils.io_utils import run_sync_io
+from ....utils.io_pools import POOL_SUBPROCESS, ThreadPoolBusy, run_in_pool
 from ..._proc import kill_process_sync
 from ...errors import BrowserError, ErrorCause, ErrorCategory
 from ...runtime.links import register_local
@@ -85,7 +85,8 @@ class CdpControlLink(CdpVerbsMixin):
             args.append(f"--proxy-server={spec['proxy']}")
         created: list[tuple[Any, str | None]] = []
         try:
-            await run_sync_io(
+            await run_in_pool(
+                POOL_SUBPROCESS,
                 spawn_managed_chromium,
                 executable=spec["executable_path"],
                 user_data_dir=user_data_dir,
@@ -109,7 +110,12 @@ class CdpControlLink(CdpVerbsMixin):
 
     async def _reap_process(self, process: Any) -> None:
         """Reap one owned Chromium process outside the event loop."""
-        await run_sync_io(kill_process_sync, process)
+        try:
+            await run_in_pool(POOL_SUBPROCESS, kill_process_sync, process)
+        except ThreadPoolBusy:
+            # Termination-critical: backpressure must never drop a kill
+            # signal and leak a Chromium process. Bypass the pool.
+            await asyncio.to_thread(kill_process_sync, process)
 
     def _terminate_owned_processes(self) -> None:
         for process in list(self._owned.values()):

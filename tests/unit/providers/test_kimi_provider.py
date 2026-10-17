@@ -18,6 +18,8 @@ from qwenpaw.providers.provider_manager import (
     ProviderManager,
 )
 
+_KIMI_BUILTIN_IDS = ("kimi-cn", "kimi-intl", "kimi-codingplan")
+
 
 def test_kimi_providers_are_openai_compatible() -> None:
     """Kimi providers should be OpenAIProvider instances."""
@@ -57,8 +59,12 @@ def isolated_secret_dir(monkeypatch, tmp_path):
     return secret_dir
 
 
-def test_kimi_registered_in_provider_manager(isolated_secret_dir) -> None:
-    """Kimi providers should be registered as built-in providers."""
+def test_kimi_registered_in_provider_manager(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
+    """Kimi providers should be registerable as built-in providers."""
+    register_builtins(*_KIMI_BUILTIN_IDS)
     manager = ProviderManager()
 
     provider_cn = manager.get_provider("kimi-cn")
@@ -94,8 +100,12 @@ async def test_kimi_check_connection_success(monkeypatch) -> None:
     assert msg == ""
 
 
-def test_kimi_has_expected_models(isolated_secret_dir) -> None:
+def test_kimi_has_expected_models(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
     """Provider manager Kimi providers should include all built-in models."""
+    register_builtins(*_KIMI_BUILTIN_IDS)
     manager = ProviderManager()
     provider_cn = manager.get_provider("kimi-cn")
     provider_intl = manager.get_provider("kimi-intl")
@@ -117,9 +127,11 @@ def test_kimi_has_expected_models(isolated_secret_dir) -> None:
 
 async def test_kimi_activate_models(
     isolated_secret_dir,
+    register_builtins,
     monkeypatch,
 ) -> None:
     """Should be able to activate both Kimi providers."""
+    register_builtins(*_KIMI_BUILTIN_IDS)
     manager = ProviderManager()
 
     await manager.activate_model("kimi-cn", "kimi-k2.5")
@@ -156,8 +168,12 @@ def test_kimi_codingplan_models() -> None:
     assert model.supports_video is False
 
 
-def test_kimi_codingplan_registered(isolated_secret_dir) -> None:
-    """Kimi Coding Plan should be in ProviderManager builtins."""
+def test_kimi_codingplan_registered(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
+    """Kimi Coding Plan should be registerable into ProviderManager."""
+    register_builtins("kimi-codingplan")
     manager = ProviderManager()
     provider = manager.get_provider("kimi-codingplan")
     assert provider is not None

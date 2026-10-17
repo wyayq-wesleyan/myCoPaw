@@ -2005,7 +2005,7 @@ Neo4j 等集群时可直接使用；但产品当前**没有**这两类功能的�
 | 默认对话模型 | 已移除全局默认设置，改为按账号授权自动选择第一个可用模型 |
 | 上游同步 | 已完成，按符号级 diff 对比上游并合并 6 项修复/优化；见 9.42 |
 | 资源生命周期审计 | 已完成，收口 7 处「状态标记不回滚 → 永久降级」类缺陷；见 9.41 |
-| 并发能力（50 人） | **方案已出、尚未实施**：10 项瓶颈已排序（`docs/50并发改造方案.md`）；本轮已缓解连接池排队、后台任务增长、限流器键空间、导入调度、向量检索 O(n) |
+| 并发能力（50 人） | **第一批已实施**（见 9.44）：线程池分池（fast/file/subprocess + 有界等待）、审计搬离事件循环（B8）、知识服务启动恢复加 owner 判定、`/api/debug/io-pools` 观测。**仍未实施**：checkpoint 外置、21 个端点迁移、前端轮询改造、worker 多副本、模型服务扩容（方案 `docs/50并发改造方案.md` 其余阶段） |
 | 全新服务器离线部署包 | 已完成，x86_64 专用、无需外网、6.6GB 按 900MiB 分卷并校验合并结果；见 9.43 |
 | 合并包脚本 | 已修正，主应用与知识服务同时携带 amd64/arm64 compose（原仅 arm64，生产是 x86） |
 
@@ -2720,6 +2720,13 @@ HNSW `vector_cosine_ops`），近邻检索下推到数据库。老数据由后�
 ### 9.43 50 并发审查与全新服务器离线部署包
 
 **50 人并发的结论：当前架构支撑不住，方案已出但尚未实施**（`docs/50并发改造方案.md`）。
+
+该方案已于 **2026-10-13 修订**（§0.3）：① 列出本轮已修的 8 处缺陷，避免把已修现状当待办；
+② 给出**缺陷类 avoid 清单**（状态标记不回滚、只增不删的集合、借还键不一致、启动路径做重活、
+缓存否定结论、异常路径引用未绑定变量、清理循环无逐个容错、阻塞调用在事件循环上），
+每条绑定到具体阶段；③ 补上评审发现的两个缺口——**审计是在事件循环上同步 INSERT（B8 重新
+分级为 ❌，且平台池满时冻结 15 秒）**、**启动恢复 `recover_interrupted_jobs` 无 owner 判定
+（多副本会重复执行任务，必须先于阶段 5.1 修）**。
 按「决定 50 人能否可用」排序的 10 项瓶颈：
 
 | # | 瓶颈 | 现状 | 影响 |
@@ -2769,6 +2776,309 @@ tag 写错）——现主应用与知识服务都同时带两个架构。
   solution-style tsconfig 下是假通过，见 AGENTS.md）。
 - 本轮新增测试文件 **24 个**；其中 `tests/unit/agents/test_upstream_merged_fixes.py`
   的 17 例逐项锁定上游合并的 6 个修复。
+
+### 9.44 并发改造第一批：线程池分池、审计搬离事件循环、多副本安全
+
+按 `docs/50并发改造方案.md` 的结论实施，只做「风险低、可独立上线、且互不阻塞」的三项，
+其余阶段（checkpoint 外置、21 个端点迁移、前端轮询、worker 多副本）**仍未实施**。
+
+**（1）线程池分池（方案阶段 1）**
+
+以前所有同步 IO 共用 `to_thread` 的默认池（≤32 线程）：每 2 秒写 4MB 的会话 checkpoint
+和一次「读配置」抢同一批线程，谁的顺序都不受控，也看不出谁占着。
+
+现在有三个按用途分开的池（`src/qwenpaw/utils/io_pools.py`）：
+
+| 池 | 线程 | 排队位 | 用途 |
+| --- | --- | --- | --- |
+| `fast` | 16 | 64 | DB 查询、配置读取（默认池） |
+| `file` | 8 | 32 | 会话 checkpoint 远程下载等大文件读写 |
+| `subprocess` | 8 | 16 | shell / git / soffice / chromium 等子进程 |
+| `audit` | 1 | 256 | 治理审计写入专用通道（1 线程即满速：`record()` 自身用 `RLock` 串行化） |
+
+- 超过「线程 + 排队位」后**等待 120 秒再报可读错误**（`ThreadPoolBusy`，消息里写明是哪个池、
+  多少线程、多少排队位），而不是无界排队后在别处变成一个没有归属的超时。审计通道有
+  独立的更短预算（默认 30 秒，`QWENPAW_IO_AUDIT_WAIT_SECONDS`），超时后按既有"尽力而为"
+  契约丢弃该条审计并记 ERROR，不拖住工具调用。
+- **没有改默认 executor**：仍有约 250 处直接调用 `asyncio.to_thread`，把它们指向更小的池
+  会静默砍掉一半容量。分池解决的是隔离，不是线程数；这些调用点也不在
+  `/api/debug/io-pools` 的观测范围内（已知边界）。
+- 已完成的路由：会话 checkpoint 的读写 → `file` 池；审计写 → `audit` 专用通道；远程下载
+  → `file` 池；shell 的 Windows 同步路径、chromium spawn/kill、browser worker 进程的
+  spawn/terminate、`run_command_async` → `subprocess` 池。其余 `run_sync_io` 调用点
+  （~100 处）仍走默认 `fast` 池，后续按 `/api/debug/io-pools` 的实测数据逐个归类。
+- 池任务以 `contextvars.copy_context()` 派发，与 `asyncio.to_thread` 语义一致——
+  请求上下文（账号/工作区/会话）在线程内仍可读，并有回归测试。
+- 启动日志会打印各池容量与等待预算，便于核对。
+
+**（2）审计搬离事件循环（方案阶段 1.5，B8 重新分级）**
+
+`AuditLog.record()` 是**同步** `INSERT` + `commit`，还持一把进程级 `RLock`。它原先由
+`async def _policy_tool_check_permissions` 直接调用，于是**每次工具调用都在事件循环上写库**；
+平台池满时 `get_conn()` 会等 15 秒，这 15 秒内 SSE、轮询、心跳全部停住。这正是
+「稍微用一用就报 pool exhausted」+「页面特别卡、干什么都慢一拍」的机制。
+
+改为 `ResourceGovernor.audit_async()`（走**专用 `audit` 通道**——最初版本并入 `fast` 池，
+复审发现 fast 池也可能被审计划垮/审计也可能被 fast 池拖住，改为 1 线程专用通道），
+三处调用点（工具前置检查、沙箱违规升级、审批结果）全部改为 `await`。**契约不变**：
+审计失败不传播、不打断策略决策——数据库错误仍由 `record()` 自己吞掉，通道繁忙超过
+等待预算则记一条错误日志并丢弃该条。
+
+**（3）知识服务启动恢复加 owner 判定（方案阶段 5.5，多副本前置）**
+
+`recover_interrupted_jobs()` 原先把**所有** `processing` 任务无条件重排。单副本下正确
+（启动即意味着唯一的 worker 死了），但 `claim_job` 用的是 `FOR UPDATE SKIP LOCKED`、
+本就支持并发消费——一旦起两个 worker，任一 worker 重启就会**抢走另一个正在解析的任务**，
+造成重复解析、重复 embedding、重复写图谱。
+
+本节改动经历了一次复审迭代，最终实现与最初两个版本都不同（两个中间版本都有真实缺陷，
+见下）：
+
+- `jobs` 表新增 `owner_worker_id`，`claim_job(worker_id=…)` 在**同一事务**里写入归属与
+  一条新鲜心跳——"claim 提交了、心跳还没写"的无主窗口不再存在；
+- 恢复条件是「**owner 的心跳行**超过 60 秒宽限未刷新」。第一版按「心跳行的 `job_id`
+  匹配该任务」判定，实测是错的：心跳行按 worker 每 ~10 秒无条件刷新（与它 names 的
+  job 无关），重启后新 worker 的 idle 心跳会被误认为"该任务的 owner 还活着"，旧的
+  `requeue_stale_jobs` 复发为「fast restart 后任务搁置约 1 小时」，已在本地 PostgreSQL
+  实测复现；
+- worker 进程持有**固定 worker id**（compose 注入 `KNOWLEDGE_WORKER_ID`，默认 `worker-1`）
+  + **会话级 advisory lock**（同 id 不可能双活，否则报错退出），因此启动时用
+  `reclaim_owner` **立即**收回自己前一世遗留的任务——容器内快速重启（<60 秒）不再受
+  宽限窗口限制；id 用默认 hostname 且容器被 recreate 时，idle 分支的周期回收（每 60 秒）
+  会在宽限窗口过后兜住；
+- 心跳行按 24 小时保留期清理，不再只增不删；
+- 只重置真正被回收的那些任务对应的文档——仍由存活 worker 持有的文档继续保持
+  `processing`，不会在界面上显示成「等待 Worker」。
+
+**（4）可观测性（方案阶段 0 的一部分）**
+
+新增管理员专属 `GET /api/debug/io-pools`：返回各线程池的 `active` / `waiting` /
+`peak_active` / `busy_rejections`，以及平台库连接池的 `in_use` / `idle` / `wait_count` /
+`exhausted_count`。这是为了把「某个池满了」从用户的感受变成一个可读的数字。
+
+**验证口径**（延续第三轮）：新增 40+ 项测试，全部做**变异验证**——把修复回退，确认测试
+精确失败：
+
+- 把 `run_sync_io` 的 `pool` 参数忽略 → `test_run_sync_io_routes_by_pool` 失败；
+- 把信号量改到协程的 `finally` 里释放 → `test_slot_survives_a_shielded_cancellation`
+  报「slot was released while the thread was still running」；
+- 把审计改回事件循环内联调用 → 线程名测试报 `record ran on 'MainThread'`；
+- 把审计通道改回 fast 池 → `qp-io-audit` 线程名断言失败，且 fast 池打满时审计被拖出
+  独立性（`test_a_saturated_fast_pool_does_not_delay_or_drop_the_audit_lane`）；
+- 把池任务改回不复制 context 的派发 → `test_pool_work_sees_the_caller_contextvars` 失败；
+- 把恢复的 owner 判定改回 job_id 匹配 / 去掉 reclaim_owner →
+  `test_startup_recovery_respects_owner.py` 的静态守卫与 live-PG 用例失败。
+
+**全量单测对比**：与 `278475fd` 干净副本逐项比对，**失败集合完全一致（113 = 113，零新增）**。
+过程中确实引入过一处回归（`test_tool_adapter_scope.py` 的 governor 替身没有
+`audit_async`，4 项失败），已修正替身——这正是「必须与干净副本对照」而非只看总数的原因。
+
+**新增环境变量**（都有默认值，不配也能跑）：
+`QWENPAW_IO_FAST_THREADS` / `QWENPAW_IO_FILE_THREADS` /
+`QWENPAW_IO_SUBPROCESS_THREADS` / `QWENPAW_IO_AUDIT_THREADS` /
+`QWENPAW_IO_POOL_WAIT_SECONDS` / `QWENPAW_IO_AUDIT_WAIT_SECONDS`。
+知识服务侧新增 `KNOWLEDGE_WORKER_ID`（compose 默认 `worker-1`；多副本部署必须每个副本
+一个不同的值）。
+
+### 9.45 上线前复审：三处「改了但没生效」的缺口
+
+9.44 的改造合入后做上线前复审，发现三处代码写对了、但**实际运行时没走到的路径**。三处
+都不是设计问题，是接线问题——每一处都恰好在生产路径上不生效，所以本地测试全绿也看不出来。
+
+**（1）`KNOWLEDGE_WORKER_ID` 补到生产真正使用的 compose**
+
+9.44 把固定 worker id 写进了 `knowledge-service/docker-compose.yml`，但**生产不用这个文件**：
+生产用 `docker-compose.code-mount.{amd64,arm64}.yml`（`knowledge-service/README.md` 的部署
+步骤只引这两个）。结果运行中的 worker 容器里该变量是**空的**，代码回退到容器 hostname——
+`docker restart` 能扛住，但更新流程用的 `up -d --force-recreate` 会换 hostname，正是要避免的
+那种情况下身份不稳定。两个 code-mount compose 现已补上（带解释注释），并在
+`.env.example` 里补了文档（多副本必须每副本不同值）。**此改动需 recreate worker 容器才生效。**
+
+**（2）会话检查点：`update_session_state` 漏了 `pool=POOL_FILE`**
+
+`save_session_state` 与 `update_session_state` 都是「整份会话 JSON 重写」，但只有前者传了
+`pool=POOL_FILE`。后者走默认 `fast` 池（16 线程）——正是 9.44 注释里写明「不可与 DB 查询
+抢同一批线程」的那类大文件突发写。已补齐，并加回归测试
+`test_update_session_state_uses_the_file_pool`。
+
+**（3）审批规则的持久化在池饱和时静默丢失**
+
+`add_approved_rule` 用 `run_sync_io(self.add_rule, rule)`（未指定池 → `fast`）。池饱和
+到超过等待预算时抛 `ThreadPoolBusy`，被下面宽泛的 `except Exception` 接住并以 **debug**
+级别记录——生产日志级别是 `info`，于是这行**永远不会出现**。效果是：用户刚批准的工具，
+规则没落盘，下次再问一遍，反复如此且没有任何线索。行为本身是 fail-closed（重问而不是
+误放行），所以不是安全问题；已把 `ThreadPoolBusy` 单独catch 并提升到 `warning`，明确写出
+「approved rule NOT persisted」。回归测试
+`test_saturated_pool_fails_closed_loudly`。
+
+**验证**：两处修复各配一个回归测试，并做变异验证——删掉 `pool=POOL_FILE` 与删掉
+`ThreadPoolBusy` 分支时测试分别精确失败（后者第一次写变异脚本时切错了位置，命中了审计
+里同名的 `except ThreadPoolBusy:`，重写为按唯一文本定位后确认失败原因是
+"pool saturation was logged below WARNING"，不是无关的 AttributeError）。
+相关套件 `tests/unit/app tests/unit/governance tests/unit/agents/tools`：**1722 passed,
+2 skipped, 0 failed**。
+
+**仍存在的问题（未改，已知）**：`_MAX_LIVE_POOLS = 16`（`data_tables/connection.py`）是
+硬编码的，最坏情况连接预算 195/200 已贴近上限，不能通过环境变量下调；多副本 worker 的
+完整验证（真起两个 worker 跑同一批任务）仍未做，当前只有单副本的 live-PG 用例。
+
+### 9.46 故障复盘：缺 pgvector 的数据库让知识服务整体起不来
+
+**现象**：知识空间整页报 `Knowledge service unavailable: Server disconnected without
+sending a response.`，路径计数全为 0。
+
+**这不是运行时问题，是启动问题。** 服务器上：
+
+```
+huizhi-knowledge-api   Up 42 seconds (health: starting)   # 一直在重启
+huizhi-knowledge-postgres   postgres:17-alpine            # 注意：不是 pgvector 镜像
+```
+
+`knowledge-api` 的日志是同一个 20 次重试循环，每次都崩在同一处：
+
+```
+CREATE EXTENSION IF NOT EXISTS vector
+WARNING schema migration skipped (extension "vector" is not available
+        DETAIL: Could not open extension control file .../vector.control: No such file)
+SELECT vector_dims((vector_json::text)::vector) AS dims FROM chunk_embeddings ...
+WARNING schema migration skipped (current transaction is aborted, commands ignored ...):
+        ALTER TABLE chunk_embeddings ADD COLUMN IF NOT EXISTS embedding vector(1024)
+...
+psycopg.ProgrammingError: Explicit commit() forbidden within a Transaction context.
+  File "app/main.py", line 31, in <module>  store = Store(settings.database_url)
+```
+
+**根因链**（逐环都在本地复现过）：
+
+1. 服务器的 PostgreSQL 是 **`postgres:17-alpine`**，不带 pgvector。仓库里的
+   `docker-compose.postgres.yml` 用的是 `pgvector/pgvector:pg17`（该文件注释里就写明了
+   alpine 既不含 vector 也无法安装），但**服务器没有采用这个镜像**。
+2. 9.40 的 pgvector 改造加了一句量列宽的探测 `SELECT vector_dims((...)::
+   vector)`。在没有 `vector` 类型的库上它报 `UndefinedObject`。
+3. 这句探测**没有 savepoint**，于是整个初始化事务被标记为 aborted。**已作废的外层事务用
+   savepoint 也救不回来** —— 这是关键：`_migrate` 里那些 `with db.transaction()` 全都
+   跟着失败了。
+4. `_connect()` 归还连接时 `commit()` 抛 `ProgrammingError`。`Store.__init__` 抛出 →
+   `main.py` 在**模块导入期**构造 `Store` → uvicorn 起不来 → 容器反复重启。
+5. 主应用侧每个代理请求都拿到「连接被关闭」，于是整页 503。
+
+也就是说：一个**只是缺扩展**的库，被降级成了**整体不可用**。代码里原本写着「任何一步
+失败都只降级到 jsonb 全量比对，不影响可用性」，这句承诺当时是假的。
+
+**修复（两处，各自单独就足够，互为保险）**：
+
+- `Store._vector_type_available()` 前置能力检测：用 `to_regtype('vector')`（未知类型返回
+  NULL，不报错）问扩展在不在，不在就直接跳过整个 pgvector 分支，并留一条 WARNING 说明
+  退化到 jsonb 路径、以及该换哪个镜像。
+- 那句量列宽的探测用 `with db.transaction()` 包住，失败不再污染外层事务；日志级别从
+  debug 提到 warning（生产日志级别是 `info`，debug 级等于没有）。
+- 顺带把**建表语句**也改成走 `_migrate`。原先它们是一个裸循环，注释里却写着「每条语句
+  各自 savepoint 隔离」——隔离对那批语句其实不成立，这是同一类缺陷。
+
+**验证**：搭了一个忠实的「无 pgvector」库（非超管角色 owner，`CREATE EXTENSION vector`
+被拒），然后
+
+| 代码 | 结果 |
+| --- | --- |
+| 变异体（等价旧代码） | `_init_db` 抛 `ProgrammingError: Explicit commit() forbidden within a Transaction context.` —— 与服务器日志逐字一致，只建成 8 张表 |
+| 修复后 | `_init_db` 正常返回，**10 张表全部建成**，`jobs.owner_worker_id` 也在，`embedding` 列按预期不存在，并留下一条说明原因的 WARNING |
+
+新增 7 项源码级契约测试（+1 项需真实库的门控测试），全部做变异验证：删掉能力门禁、去掉
+探测的 savepoint、建表退回裸循环、告警退回 debug、能力检测改成靠转换失败，各自都有测试
+**精确失败**。其中两项第一次写时被**文档字符串**骗过（docstring 里写着 `to_regtype`、
+方法里另有一条 warning），收紧为按具体调用与具体文案断言后才有效 —— 与本仓库反复遇到的
+「测试读到了注释而不是行为」是同一类问题。
+
+**运维侧仍需你决定**：代码修复让服务在没有 pgvector 时也能正常起来（语义检索退化到
+jsonb 全量比对，即慢但可用）。要恢复 9.40 的性能收益，需要把服务器的 PostgreSQL 换成
+`pgvector/pgvector:pg17`（数据目录是 bind mount，换镜像不丢数据；但 libc 从 musl 变
+glibc，**升级前先 `pg_dumpall` 备份**）。
+
+### 9.47 会话导入/导出：把一段对话带走，再放回来
+
+会话抽屉里新增两个入口：**导出**在每个会话的「操作列」下拉菜单里（归档之后、删除
+之前，删除仍是唯一的危险项，留在最后）；**导入**在列表外、紧挨「新建对话」。多语言
+文案齐备（zh/en/ja/ru/pt-BR/vi/id）。
+
+**会话列表有三份实现**，改动这一块**三处都要过一遍**：
+
+| 界面 | 文件 | 实现方式 |
+| --- | --- | --- |
+| 简单模式侧边栏 | `layouts/SidebarSessionList.tsx` | 走 `useSessionListData` hook |
+| 大屏会话抽屉 | `pages/Chat/components/ChatSessionDrawer/index.tsx` | 自带一份等价逻辑 |
+| **控制 → 会话**（表格） | `pages/Control/Sessions/` | 走 `useSessions` hook，操作列是一排 `<Button>` |
+
+踩过的坑：第一版只接了抽屉，第二版只补了侧边栏，用户实际用的是**控制 → 会话**这个表格
+页（导出在「操作」列、导入在筛选条旁边）——两次都以为改完了。三个列表共用 `SessionItem`，
+所以「导出」那条菜单项在侧边栏也会出现，但没接 `onExport` 时点了没反应，这种「按钮在但
+不工作」比没有按钮更难发现。现在三处都接了，且各有 hook/组件层的测试。
+
+**文件格式**是单个明文 JSON（`format: "huizhi.chat-session"`，`version: 1`），可打开
+查看、便于排障。
+
+**文件里刻意不带任何身份**：没有 `id` / `session_id` / `user_id` / owner —— 会话块里
+没有，历史行里的 `session_id` / `agent_id` 也被剥掉。导入时全部重新生成，所以一个
+文件没法用来冒充或覆盖别人账号里的会话。**导入永远是新建**：导入同一个文件两次得到
+两个互不相干的会话，不会合并、不会覆盖。导入只写进**请求者自己的** agent workspace，
+与其余会话接口同一道隔离边界。
+
+**为什么导出必须带上完整历史行。** 控制台展示的历史来自 PostgreSQL 的
+`platform.conversation_history`，**不是** session state 文件——默认策略是 `scroll`，
+state 文件只装当前上下文窗口。只导出 state 会把长对话静默截成最后一个窗口。而读取
+路径 `load_session_messages` 也不能用来中转：它对工具结果有 4000 字符的展示上限，会把
+「内容过长已截断」写进文件（实测：7203 字符 → 4031）。所以导出走**原始行**，导入走
+`append_many` 分配**新的 seq**（`(workspace_key, seq)` 是主键，沿用源序号会撞主键）。
+已用真库往返测试锁住：导出 → 导入 → 再导出，除 `seq` 与 `session_id` 外**逐列相同**。
+
+**顺手修掉两个「遗留 SQLite 泄漏进 PG 逻辑」的缺陷**（都是这次做导出时才暴露的，且都
+属于静默降级那一类）：
+
+1. **策略来源取错**：判断「这个 agent 是不是 scroll」时读的是全局
+   `load_config().agents.profiles[...]`，而那里 `light_context_config` 是未设置的
+   （`strategy` 为 `None`）；真正生效的值在 `load_agent_config` 里。结果是**每一次导出
+   都静默丢掉整段历史**，文件看着正常、内容却只剩最后一个窗口。
+2. **读取侧的存在性守卫**：`_load_durable_transcript` 用 `history.db` 文件是否存在做
+   前置判断。历史迁移到 PostgreSQL 之后那个文件只在「老到迁过库」的机器上才存在，于是
+   **每一台全新安装都静默退回上下文窗口**——被淘汰的轮次又从控制台消失，正是这个函数
+   当初要修的症状。现在按「路径是地址、不是文件」处理。
+
+另外把会话接口的属主判据统一到既有的 `is_agent_owned`：原先「没有用户名就 401」会让
+**无鉴权的离线单用户部署**用不了导出/导入，而那正是唯一没有登录界面、最需要这两个
+按钮的部署形态。分享（`share_chat`）仍然要求具名发起者——它得把快照归属到人、并从
+收件人里排除自己，这个差别是刻意的，有测试钉住。
+
+**验证**：后端 33 项新测试（真库往返 11 + 路由 22），前端 9 项（抽屉 6 + SessionItem 3），
+**13 处变异验证**全部精确失败，包括「导出带上源 session_id」「策略退回全局配置」
+「把 is_file 守卫加回来」「导入沿用文件里的身份」「导出传 display id 而非 backend id」
+「把导入按钮挪进列表里」。真实链路端到端也跑通：起干净实例 → 造一条含 7223 字符工具
+输出的会话 → 导出 → 导入 → 打开新会话，4 条消息与原会话**逐条一致**（走 Msg 路径会只剩
+4031 字符）→ 另一个 agent 的列表与 `chats.json` 里都看不到它。
+
+### 9.48 聊天里上传的文件：重开会话后不再把文件正文摊在气泡里
+
+**现象**：在一个会话里上传若干文件后不关页面，它们显示成文件卡片；**关掉会话再打开**，
+同样这些文件变成了纯文本，一个表格文件几万行，聊天框基本没法用。
+
+**原因**：上传文档时后端会自动解析，并把提取的正文**注入到那条消息里**（9.7 的功能，
+格式是 `用户上传了文件：x.csv` + `--- 文件内容开始 ---` … `--- 文件内容结束 ---`，
+中英各一套分隔符）。这段文本**被持久化**，好让模型在后续轮次仍然看得到文件内容——
+这是有意设计，不是bug。但控制台重开会话时会渲染持久化的那条消息，于是整份正文被当作
+普通文字画了出来。实时视图看不到它纯属巧合：那时渲染的是前端自己刚发出的消息，注入的
+那份只存在于服务端。
+
+**修复（只改显示，历史不动）**：重载路径把这段封套**折叠**成文件卡片。
+`console/src/pages/Chat/fileContentEnvelope.ts` 识别封套（要求头部行 + 前后两个标记齐全，
+宁可漏判不误判——误判会吞掉用户自己写的内容），`sessionApi` 的内容转换里调用它：
+
+- 同一条消息里**已经有文件项**（卡片）时，直接丢掉正文，只留卡片；
+- 没有文件项时（文件块丢失的老消息）退化成一张只有文件名的卡片，也好过摊开正文。
+
+正文**保留在历史里**：从 transcript 里删掉的话，模型每轮都得重新读一遍文件。
+因此这个修复**不需要任何迁移**，已有会话打开即恢复。
+
+**验证**：13 项前端测试（识别中英封套、正则元字符文件名、缺标记不匹配、
+头部行不在首位不匹配；折叠的四种情形），并做变异验证——把 `sessionApi` 里那次折叠调用
+删掉，接线用例精确失败（只测 helper 是测不出来的，helper 测试照样通过而用户照样看到正文）。
 
 ## 12. 知识服务部署
 

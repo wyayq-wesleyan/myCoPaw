@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2375,6 +2376,117 @@ async def test_windows_host_task_cancel_still_sets_stop_event():
         assert seen.get("stopped") is True
     finally:
         reset_call_context(token)
+
+
+@pytest.mark.asyncio
+async def test_windows_host_cancel_while_queued_in_a_saturated_pool():
+    """A force cancel while the job is already admitted but still queued in
+    the executor must not wait behind the hog(s) — the admission slot is
+    released and the cancel returns promptly."""
+    import asyncio
+    import time
+
+    from qwenpaw.tool_calls import reset_call_context, set_call_context
+    from qwenpaw.tool_calls._context import ToolCallContext
+    from qwenpaw.utils import io_pools
+    from qwenpaw.utils.io_pools import POOL_SUBPROCESS
+
+    await io_pools.shutdown_io_pools()
+    started_hog = threading.Semaphore(0)
+    release_hog = threading.Event()
+
+    def hog() -> None:
+        started_hog.release()
+        release_hog.wait(10)
+
+    seen: dict[str, object] = {}
+
+    def _fake_sync(
+        _cmd,
+        _cwd,
+        timeout,
+        _env=None,
+        _shell_executable=None,
+        stop_event=None,
+    ):
+        seen["started"] = True
+        seen["stop_seen"] = bool(
+            stop_event is not None and stop_event.is_set()
+        )
+        return -1, "", ""
+
+    loop = asyncio.get_running_loop()
+    ctx = ToolCallContext(
+        tool_call_id="tc-win-queued-cancel",
+        tool_name="execute_shell_command",
+        session_id="s",
+        agent_id="a",
+        root_session_id="r",
+        started_at=loop.time(),
+        offload_deadline=None,
+        cancel_event=asyncio.Event(),
+    )
+    token = set_call_context(ctx)
+    try:
+        with patch(
+            "qwenpaw.agents.tools.shell._execute_subprocess_sync",
+            side_effect=_fake_sync,
+        ):
+            # A one-slot subprocess pool whose only worker is a hog.
+            # queue_depth=1 lets the shell job pass admission and sit in the
+            # executor queue — the window where a naive "drain the inner
+            # task" cancel waits for it to run behind the hog.
+            io_pools._pools = {
+                POOL_SUBPROCESS: io_pools._IoPool(
+                    name=POOL_SUBPROCESS,
+                    max_workers=1,
+                    queue_depth=1,
+                    wait_seconds=120.0,  # long: proves cancel does not wait
+                ),
+            }
+            io_pools._pools_loop_id = id(loop)
+            hog_task = asyncio.create_task(
+                io_pools.run_in_pool(POOL_SUBPROCESS, hog),
+            )
+            assert await asyncio.to_thread(started_hog.acquire, True, 5)
+
+            task = asyncio.create_task(
+                _execute_windows_host(
+                    "sleep 99",
+                    "/tmp",
+                    30.0,
+                    {"PATH": "/bin"},
+                    None,
+                ),
+            )
+            await asyncio.sleep(0.05)
+            assert not seen.get("started"), "the command must still be queued"
+            task.cancel()
+            started_at = time.monotonic()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            elapsed = time.monotonic() - started_at
+            assert elapsed < 2.5, (
+                f"cancel took {elapsed:.2f}s: the queued job drained "
+                "behind the hog instead of being freed promptly"
+            )
+            # The admission slot it held must be released, not leaked.
+            release_hog.set()
+            await hog_task
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                active = {r["pool"]: r for r in io_pools.io_pool_stats()}
+                if active.get(POOL_SUBPROCESS, {}).get("active") == 0:
+                    break
+                await asyncio.sleep(0.05)
+            stats = {r["pool"]: r for r in io_pools.io_pool_stats()}
+            assert stats[POOL_SUBPROCESS]["active"] == 0, (
+                "a cancelled queued command left its slot held"
+            )
+    finally:
+        reset_call_context(token)
+        release_hog.set()
+        await io_pools.shutdown_io_pools()
 
 
 @pytest.mark.asyncio

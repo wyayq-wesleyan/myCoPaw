@@ -48,12 +48,22 @@ cp "${ROOT_DIR}/deploy/docker-compose.code-mount.amd64.yml" "${STAGE_DIR}/deploy
 cp "${ROOT_DIR}/deploy/docker-compose.code-mount.arm64.yml" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/entrypoint.sh" "${STAGE_DIR}/deploy/"
 cp "${ROOT_DIR}/deploy/config/supervisord.conf.template" "${STAGE_DIR}/deploy/config/"
+# Environment template. Placeholders only (the same values are already visible in
+# the compose files), and the operator needs it to diff against a live .env — a
+# deployment older than a variable has no other way to learn it was added.
+cp "${ROOT_DIR}/deploy/.env.example" "${STAGE_DIR}/deploy/"
+# The upgrade/migration record travels with the package. It is what says which
+# changes need an operator action versus which apply themselves, and an operator
+# staring at an older server has no other copy: it lives at the repository root,
+# which the per-service packagers do not stage.
+cp "${ROOT_DIR}/UPGRADE_AND_MIGRATION.md" "${STAGE_DIR}/UPGRADE_AND_MIGRATION.md"
 
 find "${STAGE_DIR}" \
   \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' -o -name .DS_Store \) \
   -prune -exec rm -rf {} +
 
-tar -C "${STAGE_DIR}" -czf "${DIST_DIR}/${PACKAGE_NAME}" app knowledge-service deploy
+tar -C "${STAGE_DIR}" -czf "${DIST_DIR}/${PACKAGE_NAME}" \
+  app knowledge-service deploy UPGRADE_AND_MIGRATION.md
 (cd "${DIST_DIR}" && shasum -a 256 "${PACKAGE_NAME}") > "${DIST_DIR}/${PACKAGE_NAME}.sha256"
 
 echo

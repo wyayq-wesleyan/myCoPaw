@@ -21,6 +21,7 @@ from ..sandbox import (
     detect_platform_mode,
     probe_sandbox_support,
 )
+from ..utils.io_pools import POOL_AUDIT, ThreadPoolBusy
 from ..utils.io_utils import get_sync_path_lock, run_sync_io
 from .audit import AuditLog
 from .policy import (
@@ -294,6 +295,55 @@ class ResourceGovernor:
             decision,
         )
 
+    async def audit_async(
+        self,
+        tc_spec: ToolCallSpec,
+        decision: GovernanceDecision,
+    ) -> None:
+        """Async variant of :meth:`audit` that runs the INSERT off the loop.
+
+        ``audit_log.record`` performs a **synchronous** ``INSERT`` + ``commit``
+        and serialises writers behind a process-wide ``RLock``. Called straight
+        from an ``async def`` — which is how the tool-guard hooks used to call
+        it — every tool invocation blocked the entire event loop for the
+        duration of a database round trip. When the platform pool was full,
+        ``get_conn()`` waits up to ``POOL_WAIT_SECONDS`` (15 s), freezing SSE
+        streams, polling and heartbeats for every connected user. That is the
+        "页面特别卡、干什么都慢一拍" symptom.
+
+        Contract preserved from the sync path: **an audit failure must never
+        disturb the policy decision**. ``AuditLog.record`` already swallows
+        database errors; this wrapper additionally swallows pool contention
+        (``ThreadPoolBusy``), which would otherwise turn a busy audit pool into
+        failing tool calls.
+
+        The write runs on the dedicated single-thread audit lane
+        (:data:`POOL_AUDIT`) instead of the fast pool: audit is serialised by
+        the log's own ``RLock`` anyway, so the lane drains at the database's
+        pace and can neither be starved by other fast-pool traffic nor starve
+        it. A jammed lane costs a bounded ``audit_wait_seconds`` wait before
+        the record is dropped — minutes less than the general pool budget.
+        """
+        if self._policy is not None and self._policy.audit_level == "none":
+            return
+        try:
+            await run_sync_io(
+                self.audit_log.record,
+                str(self.workspace_dir),
+                tc_spec,
+                decision,
+                pool=POOL_AUDIT,
+            )
+        except ThreadPoolBusy:
+            # Audit is best-effort by contract. Log a readable cause rather
+            # than propagating into the governance decision.
+            logger.error(
+                "audit: dropped a record because the audit lane stayed "
+                "saturated for its whole wait budget (tool=%s target=%r)",
+                tc_spec.tool_name,
+                tc_spec.target,
+            )
+
     # ------------------------------------------------------------------
     # Core interface 3: Compile sandbox config
     # ------------------------------------------------------------------
@@ -477,6 +527,20 @@ class ResourceGovernor:
                 rule.match,
             )
             return True
+        except ThreadPoolBusy:
+            # The rule write went to the fast pool and the pool stayed
+            # saturated for the whole wait budget. Fail closed (the next call
+            # asks for approval again) but say so loudly: at the production
+            # ``info`` level a debug-level drop is invisible, and a user who
+            # just approved a tool would silently be asked again forever.
+            logger.warning(
+                "ResourceGovernor: approved rule NOT persisted — the I/O pool "
+                "was saturated (tool=%s target=%r); the user will be asked to "
+                "approve again",
+                tc_spec.tool_name,
+                tc_spec.target,
+            )
+            return False
         except Exception:
             logger.debug(
                 "ResourceGovernor: failed to persist approved rule",

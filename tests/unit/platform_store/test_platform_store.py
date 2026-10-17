@@ -160,7 +160,9 @@ def test_schema_step_tolerates_a_down_database(monkeypatch):
     try:
         assert store_schema.ensure_schema(ALL_MIGRATIONS) is False
         # Not marked ready: the next call retries instead of assuming success.
-        assert store_schema._schema_ready is False
+        assert store_schema._ready_versions == set(), (
+            "库不可达时把版本记成就绪了，下次不会再重试"
+        )
     finally:
         store_schema.reset_schema_flag()
 
@@ -287,6 +289,149 @@ def test_a_failing_statement_does_not_lose_the_others():
             conn.commit()
         finally:
             put_conn(conn)
+
+
+@requires_db
+def test_a_narrow_migration_set_does_not_suppress_a_later_one():
+    """先应用一套窄迁移，**不能**让后面另一套被当成「已就绪」而跳过。
+
+    这是线上故障的根因。五个调用方各传一套（history / audit / import-state /
+    token / paths，每套一个版本），而「已就绪」原先只是**一个模块级布尔**——谁先
+    跑成功就替所有人答了。启动早期构造 token usage 管理器会先把它置位，于是历史
+    那套（`202609240001`，建 `platform.history_seq` 与
+    `platform.conversation_history`）永远不会执行；**重启也没用，每次都是同一个
+    调用方先赢**。表现就是导入会话 500：`relation "platform.history_seq" does not
+    exist`，而数据库是通的、别的平台表也在。
+
+    断言的是**表真的建出来了**，不只是返回值：旧行为下 `ensure_schema` 会因为标志
+    已置位而返回 True，单看返回值测不出来。
+    """
+    from qwenpaw.platform_store import Migration, get_conn, put_conn
+    from qwenpaw.platform_store import schema as schema_mod
+
+    stamp = int(time.time() * 1000)
+    first_version = f"test_first_{stamp}"
+    later_version = f"test_later_{stamp}"
+    first_table = f"_t_{first_version}"
+    later_table = f"_t_{later_version}"
+
+    def _table_exists(name: str) -> bool:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema='platform' AND table_name=%s",
+                    (name,),
+                )
+                found = cur.fetchone() is not None
+            conn.commit()
+            return found
+        finally:
+            put_conn(conn)
+
+    def _cleanup() -> None:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f'DROP TABLE IF EXISTS "platform".{first_table}')
+                cur.execute(f'DROP TABLE IF EXISTS "platform".{later_table}')
+                cur.execute(
+                    "DELETE FROM platform.schema_migrations WHERE version = ANY(%s)",
+                    ([first_version, later_version],),
+                )
+            conn.commit()
+        finally:
+            put_conn(conn)
+
+    try:
+        schema_mod.reset_schema_flag()
+        assert schema_mod.ensure_schema([
+            Migration(
+                first_version,
+                "narrow",
+                (f'CREATE TABLE IF NOT EXISTS "platform".{first_table} (id INT)',),
+            ),
+        ])
+        assert _table_exists(first_table)
+
+        # 另一套（不同版本）必须真的执行，而不是因为「schema 已就绪」被跳过。
+        assert schema_mod.ensure_schema([
+            Migration(
+                later_version,
+                "later",
+                (f'CREATE TABLE IF NOT EXISTS "platform".{later_table} (id INT)',),
+            ),
+        ])
+        assert _table_exists(later_table), (
+            "先应用的窄迁移把后面这套顶掉了：表没建，却报告已就绪"
+        )
+    finally:
+        _cleanup()
+        schema_mod.reset_schema_flag()
+
+
+@requires_db
+def test_a_migration_with_a_skipped_statement_is_not_recorded():
+    """语句跑失败并被跳过时，**不能**把这次迁移记为「已应用」。
+
+    记了就是永久的静默缺口：版本再也不会被重试，缺的那张表只能在很久之后以
+    一个看起来无关的故障暴露出来——线上就是这样：导入会话在
+    ``relation "platform.history_seq" does not exist`` 上 500，而日志里没有
+    任何东西把这两件事联系起来。不记录则下次启动会重跑；语句全是 IF NOT EXISTS，
+    重跑没有代价，环境一修好就自愈。
+    """
+    from qwenpaw.platform_store import Migration, apply_migrations, get_conn, put_conn
+
+    version = f"test_{int(time.time() * 1000)}"
+
+    def _applied() -> bool:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM platform.schema_migrations WHERE version=%s",
+                    (version,),
+                )
+                found = cur.fetchone() is not None
+            conn.commit()
+            return found
+        finally:
+            put_conn(conn)
+
+    def _forget() -> None:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM platform.schema_migrations WHERE version=%s",
+                    (version,),
+                )
+            conn.commit()
+        finally:
+            put_conn(conn)
+
+    try:
+        # 对照：全部语句成功的迁移照常记录，否则这条断言就成了「什么都不记录」。
+        assert apply_migrations([Migration(version, "unit_clean", ("SELECT 1",))]) == [
+            version
+        ]
+        assert _applied()
+        _forget()
+
+        broken = Migration(
+            version,
+            "unit_broken",
+            ("SELECT 1", "NOT VALID SQL AT ALL"),
+        )
+        apply_migrations([broken])
+        assert not _applied(), "有语句被跳过的迁移被记成了已应用，从此不再重试"
+
+        # 重跑仍会执行，且仍然不记录（幂等，直到环境修好）。
+        apply_migrations([broken])
+        assert not _applied()
+    finally:
+        _forget()
 
 
 @requires_db

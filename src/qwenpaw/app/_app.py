@@ -54,6 +54,7 @@ from .routers import router as api_router
 from .routers.agent_scoped import AgentContextMiddleware
 from .routers.approval import router as approval_router
 from .routers.coding_mode import router as coding_mode_router
+from .routers.debug import router as debug_router
 from .routers.healthz import router as healthz_router
 from .routers.loops import router as loops_router
 from .routers.tool_calls import router as tool_calls_router
@@ -180,6 +181,26 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     startup_start_time = time.time()
     import_recovery_task = None
     add_project_file_handler(LOG_FILE_PATH)
+
+    # Purpose-separated thread pools for blocking I/O. Must happen before any
+    # request handler runs: session checkpoints, DB reads and shell tools then
+    # stop competing for one shared executor. Logged so capacity is verifiable
+    # from the boot log rather than inferred.
+    try:
+        from ..utils.io_pools import install_io_pools, pool_wait_seconds
+
+        pool_sizes = install_io_pools()
+        logger.info(
+            "I/O thread pools ready: %s (wait budget %.0fs)",
+            ", ".join(f"{name}={size}" for name, size in pool_sizes.items()),
+            pool_wait_seconds(),
+        )
+    except Exception:  # noqa: BLE001 - never block startup on pool setup
+        logger.warning(
+            "Could not install named I/O thread pools; "
+            "falling back to the default executor",
+            exc_info=True,
+        )
 
     # ================================================================
     # Fast synchronous setup (target < 100ms)
@@ -775,6 +796,15 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
             except Exception as e:
                 logger.error(f"Error during sandbox cleanup: {e}")
 
+        # Release the named I/O pools last: earlier cleanup steps run their own
+        # blocking work on them.
+        try:
+            from ..utils.io_pools import shutdown_io_pools
+
+            await shutdown_io_pools()
+        except Exception as e:  # noqa: BLE001 - shutdown must not fail the app
+            logger.error(f"Error shutting down I/O thread pools: {e}")
+
         logger.info("Application shutdown complete")
         startup_display.stop()
 
@@ -949,6 +979,7 @@ app.include_router(browser_chrome_status_router, prefix="/api")
 register_builtin_control_links()
 
 app.include_router(healthz_router, prefix="/api")
+app.include_router(debug_router, prefix="/api")
 
 app.include_router(tool_calls_router, prefix="/api")
 

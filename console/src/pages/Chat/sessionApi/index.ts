@@ -11,6 +11,7 @@ import api, {
 } from "../../../api";
 import { toDisplayUrl } from "../utils";
 import { useAgentStore } from "../../../stores/agentStore";
+import { collapseInjectedFileContentParts } from "../fileContentEnvelope";
 import {
   extractTurnUsageFromOutputMessages,
   extractLatestSnapshotFromCards,
@@ -221,9 +222,11 @@ function contentToRequestParts(
   if (!Array.isArray(content)) {
     return [{ type: "text", text: String(content || ""), status: "created" }];
   }
-  const parts = (content as ContentItem[])
-    .map(resolveContentItemUrl)
-    .map((c) => ({ ...c, status: "created" }));
+  // 折叠后端注入的文件正文：它和文件卡片是同一份东西的两种表示，正文留着给模型看，
+  // 但把几万行摊在气泡里会让会话没法用（重载后才可见，实时视图看不到）。
+  const parts = collapseInjectedFileContentParts(
+    (content as ContentItem[]).map(resolveContentItemUrl),
+  ).map((c) => ({ ...c, status: "created" }));
 
   if (parts.length === 0) {
     return [{ type: "text", text: "", status: "created" }];

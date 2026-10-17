@@ -18,11 +18,12 @@ def test_adbpg_auto_memory_search_defaults():
     assert cfg.auto_memory_search_config.max_results == 3
 
 
-def test_reme_light_job_notifications_default_to_enabled():
+def test_reme_light_job_notifications_default_to_disabled():
+    """Auto-memory and auto-dream pushes are opt-in (disabled by default)."""
     cfg = ReMeLightMemoryConfig()
 
-    assert cfg.auto_memory_inbox_push_enabled is True
-    assert cfg.auto_dream_inbox_push_enabled is True
+    assert cfg.auto_memory_inbox_push_enabled is False
+    assert cfg.auto_dream_inbox_push_enabled is False
     assert cfg.daily_paper_inbox_push_enabled is True
     assert "inbox_push_enabled" not in cfg.model_dump()
 

@@ -18,6 +18,8 @@ vi.mock("../../../api/modules/chat", () => ({
     unarchiveChat: vi.fn(),
     batchArchiveChats: vi.fn(),
     batchUnarchiveChats: vi.fn(),
+    exportChat: vi.fn(),
+    importChat: vi.fn(),
   },
 }));
 vi.mock("../../../stores/agentStore", () => ({
@@ -209,5 +211,74 @@ describe("useSessions", () => {
     expect(mockMessage.error).toHaveBeenCalledWith(
       "sessions.batchDeleteFailed",
     );
+  });
+
+  // 控制 → 会话 这一页是**第三个**会话列表（表格形态）：导出在「操作」列，
+  // 导入在筛选条旁边。前面已经踩过一次「只接了其中一个列表」的坑，所以这里
+  // 也补上 hook 层的契约。
+  describe("会话导入导出", () => {
+    it("exportSession 用会话 id 与名称调用导出", async () => {
+      const { result } = renderHook(() => useSessions());
+
+      await act(async () => {
+        await result.current.exportSession("s1", "会话一");
+      });
+
+      expect(chatApi.exportChat).toHaveBeenCalledWith("s1", "会话一");
+    });
+
+    it("exportSession 失败时提示而不抛出", async () => {
+      vi.mocked(chatApi.exportChat).mockRejectedValueOnce(new Error("boom"));
+      const { result } = renderHook(() => useSessions());
+
+      await act(async () => {
+        await result.current.exportSession("s1", "会话一");
+      });
+
+      expect(mockMessage.error).toHaveBeenCalled();
+    });
+
+    it("importSession 导入后刷新列表并返回新会话", async () => {
+      vi.mocked(chatApi.importChat).mockResolvedValue({
+        id: "imported-1",
+        name: "导入的会话",
+      } as Awaited<ReturnType<typeof chatApi.importChat>>);
+      vi.mocked(chatApi.listChats).mockResolvedValue([]);
+      const { result } = renderHook(() => useSessions());
+      const before = vi.mocked(chatApi.listChats).mock.calls.length;
+
+      let created: unknown = null;
+      await act(async () => {
+        created = await result.current.importSession(
+          new File(["{}"], "chat.session.json", { type: "application/json" }),
+        );
+      });
+
+      expect(chatApi.importChat).toHaveBeenCalledTimes(1);
+      // 必须刷新：不刷新的话导入的会话要等下一次加载才出现。
+      expect(vi.mocked(chatApi.listChats).mock.calls.length).toBeGreaterThan(
+        before,
+      );
+      expect((created as { id: string }).id).toBe("imported-1");
+    });
+
+    it("importSession 失败时透出服务端原因并返回 null", async () => {
+      vi.mocked(chatApi.importChat).mockRejectedValueOnce(
+        new Error("Not a session export file (missing the expected format marker)"),
+      );
+      const { result } = renderHook(() => useSessions());
+
+      let created: unknown = "sentinel";
+      await act(async () => {
+        created = await result.current.importSession(
+          new File(["{}"], "notes.json", { type: "application/json" }),
+        );
+      });
+
+      expect(created).toBeNull();
+      expect(mockMessage.error).toHaveBeenCalledWith(
+        "Not a session export file (missing the expected format marker)",
+      );
+    });
   });
 });

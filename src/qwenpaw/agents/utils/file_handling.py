@@ -24,6 +24,7 @@ from qwenpaw.exceptions import (
 
 from ...config.context import get_current_workspace_dir
 from ...constant import WORKING_DIR
+from ...utils.io_pools import POOL_FILE
 from ...utils.io_utils import (
     get_path_lock,
     make_dirs_async,
@@ -399,6 +400,7 @@ async def download_file_from_url(
                 _finish_remote_download,
                 url,
                 local_file_path,
+                pool=POOL_FILE,
             )
         return str(local_file_path.absolute())
     except subprocess.TimeoutExpired as e:

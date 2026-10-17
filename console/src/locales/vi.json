@@ -261,6 +261,10 @@
     "chatHistoryTooltip": "Lịch sử trò chuyện",
     "allChats": "Tất cả cuộc trò chuyện",
     "createNewChat": "Tạo cuộc trò chuyện mới",
+    "importChat": "Nhập",
+    "importSuccess": "Đã nhập hội thoại: {{name}}",
+    "importFailed": "Nhập tệp hội thoại thất bại",
+    "exportFailed": "Xuất hội thoại thất bại",
     "pinDrawer": "Ghim",
     "unpinDrawer": "Bỏ ghim",
     "statusIdle": "Rảnh",
@@ -324,7 +328,8 @@
       "rename": "Đổi tên",
       "pin": "Ghim",
       "unpin": "Bỏ ghim",
-      "delete": "Xóa"
+      "delete": "Xóa",
+      "export": "Xuất"
     },
     "queue": {
       "title": "Hàng đợi tin nhắn",

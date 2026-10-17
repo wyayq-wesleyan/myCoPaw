@@ -9,6 +9,16 @@ from qwenpaw.app.routers.providers import (
 )
 
 
+def _fake_request() -> SimpleNamespace:
+    """Minimal Request stub for ``_require_admin_model_access``.
+
+    The offline deployment runs with auth disabled, so the guard is a
+    no-op; the stub only carries the ``state`` attribute the helper
+    would read via ``get_request_username`` when auth is enabled.
+    """
+    return SimpleNamespace(state=SimpleNamespace(user="admin"))
+
+
 class FakeManager:
     """Records update_provider calls for assertion."""
 
@@ -32,6 +42,7 @@ async def test_configure_custom_provider_applies_stripped_name():
     body = ProviderConfigRequest(name="  New Name  ")
 
     await configure_provider(
+        request=_fake_request(),
         manager=manager,
         provider_id="my-custom",
         body=body,
@@ -46,6 +57,7 @@ async def test_configure_builtin_provider_ignores_name():
     body = ProviderConfigRequest(name="Hacked Name")
 
     await configure_provider(
+        request=_fake_request(),
         manager=manager,
         provider_id="openai",
         body=body,
@@ -60,6 +72,7 @@ async def test_configure_provider_ignores_blank_name():
     body = ProviderConfigRequest(name="   ")
 
     await configure_provider(
+        request=_fake_request(),
         manager=manager,
         provider_id="my-custom",
         body=body,

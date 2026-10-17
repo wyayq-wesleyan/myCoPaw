@@ -11,6 +11,7 @@ interface ColumnHandlers {
   onView: (session: Session) => void;
   onArchiveToggle: (session: Session) => void;
   onShare: (session: Session) => void;
+  onExport: (session: Session) => void;
   isArchivedTab?: boolean;
 }
 
@@ -119,6 +120,13 @@ export const createColumns = (
             >
               分享
             </Button>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => handlers.onExport(record)}
+              >
+                {t("chat.contextMenu.export", "Export")}
+              </Button>
             <Button
               type="link"
               size="small"
@@ -159,6 +167,13 @@ export const createColumns = (
             >
               分享
             </Button>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => handlers.onExport(record)}
+              >
+                {t("chat.contextMenu.export", "Export")}
+              </Button>
             <Button
               type="link"
               size="small"

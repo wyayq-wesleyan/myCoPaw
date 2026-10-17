@@ -273,7 +273,7 @@ async def test_report_prompt_error_hides_unexpected_exception_details():
     assert "invalid api key" not in update.content.text
     assert "secret-token" not in update.content.text
     assert update.content.text == (
-        "Error: QwenPaw failed to process the request. "
+        "Error: 汇智小助手 failed to process the request. "
         "Check server logs for details."
     )
     assert update.field_meta == {ACP_ERROR_META_KEY: True}

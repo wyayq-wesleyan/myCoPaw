@@ -1,19 +1,21 @@
 # -*- coding: utf-8 -*-
 """The chat transcript must come from durable history, not the live window.
 
-Scroll keeps only a recent tail live and evicts older turns into
-``history.db``. ``GET /chats/{id}`` used to return ``agent.state.context`` —
-the live window — so every evicted turn vanished from the console: the
-right-hand anchor count shrank while chatting and "jump to top" landed in the
-middle of the conversation, even though nothing was lost on disk.
+Scroll keeps only a recent tail live and evicts older turns into durable
+storage. ``GET /chats/{id}`` used to return ``agent.state.context`` — the live
+window — so every evicted turn vanished from the console: the right-hand anchor
+count shrank while chatting and "jump to top" landed in the middle of the
+conversation, even though nothing was lost on disk.
 
-These tests pin the durable read and its fallbacks. The row-rebuild cases are
-pure (no database); the final one uses a real SQLite file, since the SQL is the
-part that can silently regress.
+These tests pin the durable read and its fallbacks. The row-rebuild and
+timestamp cases are pure (no database); the durable-read cases run against the
+platform's PostgreSQL store and skip — not fail — when none is reachable (the
+deeper store coverage lives in ``tests/unit/agents/context/test_history_store.py``).
 """
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -25,10 +27,68 @@ from qwenpaw.agents.context.scroll.history import (  # noqa: E402
     HistoryStore,
     _row_to_msg,
 )
+from qwenpaw.agents.context.types import LogEntry  # noqa: E402
+from qwenpaw.platform_store import (  # noqa: E402
+    get_conn,
+    is_available,
+    put_conn,
+)
+
+
+def _platform_db_available() -> bool:
+    """Whether the platform database can be reached for the durable-read tests."""
+    try:
+        return bool(is_available())
+    except Exception:  # noqa: BLE001 - any failure means "not usable"
+        return False
+
+
+requires_platform_db = pytest.mark.skipif(
+    not _platform_db_available(),
+    reason="needs the platform PostgreSQL store",
+)
+
+
+@pytest.fixture
+def pg_store() -> HistoryStore:
+    """A HistoryStore scoped to a throwaway workspace, cleaned up afterwards.
+
+    A fresh workspace key per test means one shared table without cross-test
+    interference.
+    """
+    handle = HistoryStore(
+        f"/tmp/qwenpaw-history-tests/test-{uuid.uuid4().hex}/history.db",
+    )
+    try:
+        yield handle
+    finally:
+        handle.close()
+        _delete_workspace(handle.workspace_key)
+
+
+def _delete_workspace(workspace_key: str) -> None:
+    """Remove exactly the rows the test's workspace created."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM platform.conversation_history "
+                "WHERE workspace_key = %s",
+                (workspace_key,),
+            )
+            cur.execute(
+                "DELETE FROM platform.history_seq WHERE workspace_key = %s",
+                (workspace_key,),
+            )
+        conn.commit()
+    except Exception:  # noqa: BLE001 - teardown must not mask the real result
+        conn.rollback()
+    finally:
+        put_conn(conn)
 
 
 class _Row(dict):
-    """Stand-in for ``sqlite3.Row`` (supports ``row["col"]``)."""
+    """Stand-in for a durable result row (supports ``row["col"]``)."""
 
     def __getitem__(self, key):
         return self.get(key)
@@ -43,6 +103,7 @@ def _row(**over):
         "content": "你好",
         "blocks": '[{"type": "text", "text": "你好", "id": "b1"}]',
         "metadata": "{}",
+        "created_at": None,
     }
     base.update(over)
     return _Row(**base)
@@ -83,49 +144,41 @@ def test_tool_result_blocks_survive_reconstruction() -> None:
     assert "tool_call" in types
 
 
-def test_load_session_messages_reads_all_rows_in_order(tmp_path) -> None:
+@requires_platform_db
+def test_load_session_messages_reads_all_rows_in_order(pg_store) -> None:
     """The real query: every turn, oldest first, scoped to one session."""
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        conn = store._conn
-        for i in range(1, 18):
-            blocks = f'[{{"type": "text", "text": "问题{i}", "id": "b{i}"}}]'
-            conn.execute(
-                "INSERT INTO conversation_history "
-                "(session_id, agent_id, kind, role, name, content, blocks, "
-                " metadata, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,datetime('now'))",
-                (
-                    "s1", "agent1", "context_msg", "user", None,
-                    f"问题{i}", blocks,
-                    '{"qwenpaw_tag": "external_user_query"}',
-                ),
-            )
-        # A different session must not leak in.
-        conn.execute(
-            "INSERT INTO conversation_history "
-            "(session_id, agent_id, kind, role, content, created_at) "
-            "VALUES (?,?,?,?,?,datetime('now'))",
-            ("s2", "agent1", "context_msg", "user", "别的会话"),
+    for i in range(1, 18):
+        pg_store.append(
+            session_id="s1",
+            agent_id="agent1",
+            dedup_key=f"m{i}",
+            entry=LogEntry(
+                kind="context_msg",
+                role="user",
+                content=f"问题{i}",
+                blocks=[{"type": "text", "text": f"问题{i}", "id": f"b{i}"}],
+                metadata={"qwenpaw_tag": "external_user_query"},
+            ),
         )
-        conn.commit()
+    # A different session must not leak in.
+    pg_store.append(
+        session_id="s2",
+        agent_id="agent1",
+        dedup_key="other",
+        entry=LogEntry(kind="context_msg", role="user", content="别的会话"),
+    )
 
-        messages = store.load_session_messages("s1", "agent1")
+    messages = pg_store.load_session_messages("s1", "agent1")
 
-        assert len(messages) == 17, "every durable turn must be returned"
-        assert messages[0].get_text_content() == "问题1"
-        assert messages[-1].get_text_content() == "问题17"
-    finally:
-        store.close()
+    assert len(messages) == 17, "every durable turn must be returned"
+    assert messages[0].get_text_content() == "问题1"
+    assert messages[-1].get_text_content() == "问题17"
 
 
-def test_load_session_messages_returns_empty_for_unknown_session(tmp_path) -> None:
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        assert store.load_session_messages("nope") == []
-        assert store.load_session_messages("") == []
-    finally:
-        store.close()
+@requires_platform_db
+def test_load_session_messages_returns_empty_for_unknown_session(pg_store):
+    assert pg_store.load_session_messages("nope") == []
+    assert pg_store.load_session_messages("") == []
 
 
 def test_api_prefers_the_durable_transcript_over_the_window() -> None:
@@ -143,23 +196,46 @@ def test_api_prefers_the_durable_transcript_over_the_window() -> None:
 
 
 def test_non_scroll_strategy_has_no_transcript() -> None:
-    """Without the scroll strategy there is no durable store to read."""
-    import inspect
+    """Without the scroll strategy there is no durable store to read.
+
+    Asserted as **behaviour**, not as source text. The strategy check now lives in
+    ``_scroll_history_store_path`` because the export path shares it, so the old
+    ``'!= "scroll"' in source`` form failed on a refactor that kept the behaviour
+    identical — and, worse, it would have passed had the check merely been
+    relocated without ever being applied.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
 
     from qwenpaw.app.chats import api as chats_api
 
-    source = inspect.getsource(chats_api._load_durable_transcript)
-    assert '!= "scroll"' in source
-    assert "return None" in source
+    workspace = SimpleNamespace(agent_id="default", workspace_dir="/tmp/unused")
+    spec = SimpleNamespace(id="chat-1", session_id="console:u:1")
+
+    def _agent_config(strategy):
+        lcc = SimpleNamespace(
+            strategy=strategy,
+            scroll_config=SimpleNamespace(db_filename="history.db"),
+        )
+        return SimpleNamespace(running=SimpleNamespace(light_context_config=lcc))
+
+    for strategy in ("native", None, "compact"):
+        with patch(
+            "qwenpaw.config.config.load_agent_config",
+            return_value=_agent_config(strategy),
+        ), patch(
+            "qwenpaw.agents.context.scroll.history.HistoryStore",
+        ) as store_cls:
+            assert chats_api._load_durable_transcript(workspace, spec) is None
+            assert not store_cls.called, (
+                f"strategy={strategy!r} 不是 scroll，却去读了历史存储"
+            )
 
 
+@requires_platform_db
 @pytest.mark.parametrize("bad", [None, "", "  "])
-def test_helper_tolerates_missing_session_id(tmp_path, bad) -> None:
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        assert store.load_session_messages(bad) == []
-    finally:
-        store.close()
+def test_helper_tolerates_missing_session_id(pg_store, bad) -> None:
+    assert pg_store.load_session_messages(bad) == []
 
 
 def test_durable_read_precedes_the_missing_state_early_return() -> None:
@@ -232,7 +308,7 @@ def test_normal_sized_tool_results_are_untouched() -> None:
 # --------------------------------------------------------- message timestamps
 
 
-def test_rebuilt_rows_carry_their_timestamp(tmp_path) -> None:
+def test_rebuilt_rows_carry_their_timestamp() -> None:
     """A rebuilt message must keep its time.
 
     The console reads a message's time from ``metadata.timestamp`` and
@@ -241,68 +317,35 @@ def test_rebuilt_rows_carry_their_timestamp(tmp_path) -> None:
     against each other and the question re-appeared *below* the answer after a
     page refresh.
     """
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        conn = store._conn
-        for role, kind, when in (
-            ("user", "context_msg", "2026-09-24T09:16:27.211129"),
-            ("assistant", "model_turn", "2026-09-24T09:17:11.652462"),
-        ):
-            conn.execute(
-                "INSERT INTO conversation_history "
-                "(session_id, agent_id, kind, role, name, content, blocks, "
-                " metadata, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    "s1", "a1", kind, role, role, role,
-                    f'[{{"type": "text", "text": "{role}"}}]',
-                    "{}", when,
-                ),
-            )
-        conn.commit()
+    user = _row_to_msg(
+        _row(role="user", created_at="2026-09-24T09:16:27.211129"),
+    )
+    assistant = _row_to_msg(
+        _row(role="assistant", created_at="2026-09-24T09:17:11.652462"),
+    )
 
-        messages = store.load_session_messages("s1", "a1")
-
-        assert len(messages) == 2
-        assert messages[0].created_at == "2026-09-24T09:16:27.211129"
-        assert messages[1].created_at == "2026-09-24T09:17:11.652462"
-        # Ordered by seq, so the question precedes its answer.
-        assert messages[0].role == "user"
-        assert messages[1].role == "assistant"
-        for msg in messages:
-            assert (msg.metadata or {}).get("timestamp"), (
-                "metadata.timestamp drives the console's clock"
-            )
-    finally:
-        store.close()
-
-
-def test_existing_metadata_timestamp_wins(tmp_path) -> None:
-    """A stored timestamp must not be overwritten by the row's created_at."""
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        store._conn.execute(
-            "INSERT INTO conversation_history "
-            "(session_id, agent_id, kind, role, name, content, blocks, "
-            " metadata, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (
-                "s1", "a1", "context_msg", "user", "user", "hi",
-                '[{"type": "text", "text": "hi"}]',
-                '{"timestamp": "2020-01-01T00:00:00"}',
-                "2026-09-24T09:16:27.211129",
-            ),
+    assert user.created_at == "2026-09-24T09:16:27.211129"
+    assert assistant.created_at == "2026-09-24T09:17:11.652462"
+    for msg in (user, assistant):
+        assert (msg.metadata or {}).get("timestamp"), (
+            "metadata.timestamp drives the console's clock"
         )
-        store._conn.commit()
-
-        msg = store.load_session_messages("s1", "a1")[0]
-
-        assert msg.metadata["timestamp"] == "2020-01-01T00:00:00"
-    finally:
-        store.close()
 
 
-def test_transcript_is_ordered_by_time_not_write_order(tmp_path) -> None:
+def test_existing_metadata_timestamp_wins() -> None:
+    """A stored timestamp must not be overwritten by the row's created_at."""
+    msg = _row_to_msg(
+        _row(
+            metadata='{"timestamp": "2020-01-01T00:00:00"}',
+            created_at="2026-09-24T09:16:27.211129",
+        ),
+    )
+
+    assert msg.metadata["timestamp"] == "2020-01-01T00:00:00"
+
+
+@requires_platform_db
+def test_transcript_is_ordered_by_time_not_write_order(pg_store) -> None:
     """A turn written later but happening earlier must still sort first.
 
     ``seq`` is the *write* order and it can disagree with the conversation's
@@ -311,113 +354,130 @@ def test_transcript_is_ordered_by_time_not_write_order(tmp_path) -> None:
     therefore rendered a question *below* its answer once the transcript came
     from the durable store (the live window never showed this).
     """
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        conn = store._conn
-        # Write them out of order on purpose: the assistant row gets the lower
-        # seq even though it happened later in time.
-        conn.execute(
-            "INSERT INTO conversation_history "
-            "(session_id, agent_id, kind, role, name, content, blocks, "
-            " metadata, created_at, dedup_key) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                "s1", "a1", "model_turn", "assistant", "assistant", "答案",
-                '[{"type": "text", "text": "答案"}]', "{}",
-                "2026-09-24T09:26:52", "u2",
-            ),
-        )
-        conn.execute(
-            "INSERT INTO conversation_history "
-            "(session_id, agent_id, kind, role, name, content, blocks, "
-            " metadata, created_at, dedup_key) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                "s1", "a1", "context_msg", "user", "user", "问题",
-                '[{"type": "text", "text": "问题"}]', "{}",
-                "2026-09-24T09:25:59", "u1",
-            ),
-        )
-        conn.commit()
+    # Write them out of order on purpose: the assistant row gets the lower
+    # seq even though it happened later in time.
+    pg_store.append(
+        session_id="s1",
+        agent_id="a1",
+        dedup_key="u2",
+        entry=LogEntry(
+            kind="model_turn",
+            role="assistant",
+            name="assistant",
+            content="答案",
+            blocks=[{"type": "text", "text": "答案"}],
+            created_at="2026-09-24T09:26:52",
+        ),
+    )
+    pg_store.append(
+        session_id="s1",
+        agent_id="a1",
+        dedup_key="u1",
+        entry=LogEntry(
+            kind="context_msg",
+            role="user",
+            name="user",
+            content="问题",
+            blocks=[{"type": "text", "text": "问题"}],
+            created_at="2026-09-24T09:25:59",
+        ),
+    )
 
-        messages = store.load_session_messages("s1", "a1")
+    messages = pg_store.load_session_messages("s1", "a1")
 
-        assert [m.role for m in messages] == ["user", "assistant"], (
-            "transcript must follow time, not the order rows were written"
-        )
-    finally:
-        store.close()
+    assert [m.role for m in messages] == ["user", "assistant"], (
+        "transcript must follow time, not the order rows were written"
+    )
 
 
-def test_same_timestamp_rows_keep_write_order(tmp_path) -> None:
+@requires_platform_db
+def test_same_timestamp_rows_keep_write_order(pg_store) -> None:
     """Ties break on seq, so a turn's internal order is preserved.
 
     Every row of one turn shares its message's ``created_at``; ``seq`` must
     therefore still decide the order *within* a turn (tool call before result).
     """
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        conn = store._conn
-        same = "2026-09-24T09:26:52"
-        for role, text, key in (
-            ("assistant", "first", "a"),
-            ("assistant", "second", "b"),
-        ):
-            conn.execute(
-                "INSERT INTO conversation_history "
-                "(session_id, agent_id, kind, role, name, content, blocks, "
-                " metadata, created_at, dedup_key) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (
-                    "s1", "a1", "model_turn", role, role, text,
-                    f'[{{"type": "text", "text": "{text}"}}]', "{}",
-                    same, key,
-                ),
-            )
-        conn.commit()
+    same = "2026-09-24T09:26:52"
+    pg_store.append(
+        session_id="s1",
+        agent_id="a1",
+        dedup_key="a",
+        entry=LogEntry(
+            kind="model_turn",
+            role="assistant",
+            name="assistant",
+            content="first",
+            blocks=[{"type": "text", "text": "first"}],
+            created_at=same,
+        ),
+    )
+    pg_store.append(
+        session_id="s1",
+        agent_id="a1",
+        dedup_key="b",
+        entry=LogEntry(
+            kind="model_turn",
+            role="assistant",
+            name="assistant",
+            content="second",
+            blocks=[{"type": "text", "text": "second"}],
+            created_at=same,
+        ),
+    )
 
-        messages = store.load_session_messages("s1", "a1")
+    messages = pg_store.load_session_messages("s1", "a1")
 
-        assert [m.get_text_content() for m in messages] == ["first", "second"]
-    finally:
-        store.close()
+    assert [m.get_text_content() for m in messages] == ["first", "second"]
 
 
-def test_undated_rows_fall_last_not_first(tmp_path) -> None:
+@requires_platform_db
+def test_undated_rows_fall_last_not_first(pg_store) -> None:
     """A row with no timestamp must not jump to the top of the transcript.
 
-    SQLite sorts NULL first, so ordering on ``created_at`` alone pushed any
+    SQLite sorted ``NULL`` first, so ordering on ``created_at`` alone pushed any
     undated row (legacy data, a partially written turn) ahead of the whole
-    conversation. ``created_at IS NULL`` is sorted on first so those rows trail
+    conversation. ``created_at IS NULL`` is sorted on last so those rows trail
     instead, keeping their relative write order.
     """
-    store = HistoryStore(tmp_path / "history.db")
+    rows = [
+        ("user", "dated-question", "2026-09-24T09:00:00", "a"),
+        ("assistant", "dated-answer", "2026-09-24T09:01:00", "b"),
+    ]
+    for role, text, when, key in rows:
+        pg_store.append(
+            session_id="s1",
+            agent_id="a1",
+            dedup_key=key,
+            entry=LogEntry(
+                kind="context_msg",
+                role=role,
+                name=role,
+                content=text,
+                blocks=[{"type": "text", "text": text}],
+                created_at=when,
+            ),
+        )
+    # ``append`` always stamps ``created_at``, so the undated legacy row is
+    # written directly.
+    conn = get_conn()
     try:
-        conn = store._conn
-        rows = [
-            ("user", "dated-question", "2026-09-24T09:00:00", "a"),
-            ("assistant", "dated-answer", "2026-09-24T09:01:00", "b"),
-            ("assistant", "undated-old", None, "c"),
-        ]
-        for role, text, when, key in rows:
-            conn.execute(
-                "INSERT INTO conversation_history "
-                "(session_id, agent_id, kind, role, name, content, blocks, "
-                " metadata, created_at, dedup_key) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (
-                    "s1", "a1", "context_msg", role, role, text,
-                    f'[{{"type": "text", "text": "{text}"}}]', "{}", when, key,
-                ),
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO platform.conversation_history "
+                "(workspace_key, seq, session_id, kind, role, name, content, "
+                " created_at, dedup_key) "
+                "VALUES (%s, 3, 's1', 'context_msg', 'assistant', NULL, "
+                " 'undated-old', NULL, 'c')",
+                (pg_store.workspace_key,),
             )
         conn.commit()
-
-        messages = store.load_session_messages("s1", "a1")
-
-        assert [m.get_text_content() for m in messages] == [
-            "dated-question",
-            "dated-answer",
-            "undated-old",
-        ], "an undated row must not be placed before the dated conversation"
     finally:
-        store.close()
+        put_conn(conn)
+
+    messages = pg_store.load_session_messages("s1", "a1")
+
+    assert [m.get_text_content() for m in messages] == [
+        "dated-question",
+        "dated-answer",
+        "undated-old",
+    ], "an undated row must not be placed before the dated conversation"

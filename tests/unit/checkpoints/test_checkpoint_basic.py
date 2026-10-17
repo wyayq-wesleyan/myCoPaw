@@ -448,6 +448,9 @@ async def test_control_restore_waits_for_active_agent(
     assert engine.query_gate.is_set()
     assert not engine.maintenance_lock.locked()
     assert not engine.lock.locked()
+    # The run producer persists its replay file after pushing the sentinel,
+    # so the task can still be active for the duration of one file write.
+    assert await tracker.wait_all_done(timeout=5)
     assert await tracker.list_active_tasks() == []
 
 

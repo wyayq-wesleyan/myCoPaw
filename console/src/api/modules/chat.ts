@@ -1,6 +1,10 @@
 import { request } from "../request";
 import { getApiUrl, getApiToken } from "../config";
 import { buildAuthHeaders, getAgentScopedApiPath } from "../authHeaders";
+import {
+  DownloadCancelledError,
+  downloadFileFromUrl,
+} from "../../utils/downloadFileFromUrl";
 import type {
   ChatSpec,
   ChatHistory,
@@ -126,6 +130,66 @@ export const chatApi = {
     request<void>(`/console/chat/stop?chat_id=${encodeURIComponent(chatId)}`, {
       method: "POST",
     }),
+
+  /**
+   * Download one conversation as a `.session.json` file.
+   *
+   * `fallbackName` is only used where the runtime cannot read the response
+   * headers (the pywebview and Tauri save dialogs), so the server's
+   * Content-Disposition filename is preferred when it is available — it carries
+   * the chat name and the export date, which the client cannot reconstruct
+   * reliably.
+   */
+  exportChat: async (chatId: string, fallbackName: string): Promise<void> => {
+    const stem =
+      (fallbackName || "session")
+        .replace(/[<>:"/\\|?*]+/g, "_")
+        .trim()
+        .slice(0, 80) || "session";
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const url = getApiUrl(`/chats/${encodeURIComponent(chatId)}/export`);
+
+    try {
+      await downloadFileFromUrl(url, `${stem}-${stamp}.session.json`, {
+        headers: buildAuthHeaders(),
+        errorMessage: "Export failed",
+        preferResponseFilename: true,
+      });
+    } catch (error) {
+      if (error instanceof DownloadCancelledError) {
+        return;
+      }
+      throw error;
+    }
+  },
+
+  /**
+   * Create a new conversation from an exported file and return it.
+   *
+   * Not routed through `request()`: that helper forces a JSON Content-Type on
+   * writes, which breaks the multipart body. The server's validation messages
+   * are surfaced verbatim — "wrong file type" is the most likely outcome and
+   * the user needs to know which rule they hit.
+   */
+  importChat: async (file: File): Promise<ChatSpec> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(getApiUrl("/chats/import"), {
+      method: "POST",
+      headers: buildAuthHeaders(),
+      body: formData,
+    });
+    if (!response.ok) {
+      const detail = await response
+        .json()
+        .then((body) => (body as { detail?: string }).detail)
+        .catch(() => undefined);
+      throw new Error(
+        detail || `Import failed: ${response.status} ${response.statusText}`,
+      );
+    }
+    return response.json();
+  },
 };
 
 export const sessionApi = {

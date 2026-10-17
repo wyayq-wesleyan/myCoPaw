@@ -94,7 +94,16 @@ def isolated_secret_dir(monkeypatch, tmp_path):
     return secret_dir
 
 
-def test_builtin_zhipu_providers_registered(isolated_secret_dir) -> None:
+def test_builtin_zhipu_providers_registered(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
+    register_builtins(
+        "zhipu-cn",
+        "zhipu-cn-codingplan",
+        "zhipu-intl",
+        "zhipu-intl-codingplan",
+    )
     manager = ProviderManager()
 
     expected_configs = {
@@ -134,7 +143,10 @@ def test_builtin_zhipu_providers_registered(isolated_secret_dir) -> None:
 
 async def test_add_custom_provider_and_reload_from_storage(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    # A builtin with the same id is required to trigger the conflict rename
+    register_builtins("openai")
     manager = ProviderManager()
     custom = OpenAIProvider(
         id="custom-openai",
@@ -207,8 +219,10 @@ async def test_custom_provider_preserves_explicit_default_context_window(
 
 async def test_activate_provider_persists_active_model(
     isolated_secret_dir,
+    register_builtins,
     monkeypatch,
 ) -> None:
+    register_builtins("openai")
     manager = ProviderManager()
 
     class FakeCompletions:
@@ -239,7 +253,9 @@ async def test_activate_provider_persists_active_model(
 
 async def test_resume_local_model_restores_server_and_runtime_state(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("qwenpaw-local")
     manager = ProviderManager()
     model_id = "AgentScope/QwenPaw-Flash-2B-Q4_K_M"
     manager.update_provider(
@@ -335,7 +351,9 @@ def test_load_provider_invalid_json_returns_none(isolated_secret_dir) -> None:
 
 def test_migrate_legacy_file_and_persist_active_model(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("dashscope", "ollama")
     isolated_secret_dir.mkdir(parents=True, exist_ok=True)
     legacy_file = isolated_secret_dir / "providers.json"
     legacy_file.write_text(
@@ -374,7 +392,10 @@ def test_migrate_legacy_file_and_persist_active_model(
 
 async def test_add_custom_provider_conflict_resolution_loops_until_unique(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    # The conflict-rename loop only runs when a builtin owns the id
+    register_builtins("openai")
     manager = ProviderManager()
     conflict = OpenAIProvider(
         id="openai",
@@ -396,7 +417,9 @@ async def test_add_custom_provider_conflict_resolution_loops_until_unique(
 
 def test_update_provider_for_builtin_persists_to_builtin_path(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("openai", "azure-openai")
     manager = ProviderManager()
 
     ok = manager.update_provider(
@@ -438,9 +461,11 @@ def test_update_provider_for_builtin_persists_to_builtin_path(
 )
 def test_legacy_builtin_context_window_infers_non_default_as_configured(
     isolated_secret_dir,
+    register_builtins,
     saved_length: int,
     expected_configured: bool,
 ) -> None:
+    register_builtins("openai")
     manager = ProviderManager()
     provider = manager.get_provider("openai")
     assert provider is not None
@@ -466,7 +491,9 @@ def test_legacy_builtin_context_window_infers_non_default_as_configured(
 
 def test_builtin_capability_probe_results_survive_storage_reload(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("openai")
     manager = ProviderManager()
     provider = manager.get_provider("openai")
     assert provider is not None
@@ -494,8 +521,10 @@ def test_builtin_capability_probe_results_survive_storage_reload(
 
 async def test_openrouter_metadata_probe_restores_and_persists_capabilities(
     isolated_secret_dir,
+    register_builtins,
     monkeypatch,
 ) -> None:
+    register_builtins("openrouter")
     manager = ProviderManager()
     provider = manager.get_provider("openrouter")
     assert isinstance(provider, OpenRouterProvider)
@@ -555,8 +584,10 @@ async def test_openrouter_metadata_probe_restores_and_persists_capabilities(
 
 async def test_openrouter_inconclusive_probe_does_not_overwrite_capabilities(
     isolated_secret_dir,
+    register_builtins,
     monkeypatch,
 ) -> None:
+    register_builtins("openrouter")
     manager = ProviderManager()
     provider = manager.get_provider("openrouter")
     assert isinstance(provider, OpenRouterProvider)
@@ -621,7 +652,9 @@ async def test_activate_provider_invalid_provider_raises(
 
 async def test_activate_provider_invalid_model_raises(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("openai")
     manager = ProviderManager()
 
     with pytest.raises(ModelNotFoundException, match="not-exists"):
@@ -630,7 +663,9 @@ async def test_activate_provider_invalid_model_raises(
 
 async def test_add_model_to_provider_duplicate_id_raises(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("openai")
     manager = ProviderManager()
     model_info = ModelInfo(id="custom-duplicate", name="Custom Duplicate")
 
@@ -711,7 +746,9 @@ def test_provider_from_data_fallback_to_openai(isolated_secret_dir) -> None:
 
 def test_init_from_storage_migrates_with_different_provider(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("minimax", "ollama")
     builtin_path = isolated_secret_dir / "providers" / "builtin"
     builtin_path.mkdir(parents=True, exist_ok=True)
 
@@ -765,8 +802,22 @@ def test_init_from_storage_migrates_with_different_provider(
     )
 
 
-def test_provider_group_metadata(isolated_secret_dir) -> None:
+def test_provider_group_metadata(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
     """Providers in the same brand share provider_group."""
+    register_builtins(
+        "dashscope",
+        "aliyun-codingplan",
+        "aliyun-codingplan-intl",
+        "aliyun-tokenplan",
+        "kimi-cn",
+        "kimi-intl",
+        "kimi-codingplan",
+        "volcengine-cn",
+        "volcengine-cn-codingplan",
+    )
     manager = ProviderManager()
 
     aliyun_ids = [
@@ -794,8 +845,12 @@ def test_provider_group_metadata(isolated_secret_dir) -> None:
         assert p.provider_group == "volcengine"
 
 
-async def test_provider_group_in_get_info(isolated_secret_dir) -> None:
+async def test_provider_group_in_get_info(
+    isolated_secret_dir,
+    register_builtins,
+) -> None:
     """get_info() should include provider_group fields."""
+    register_builtins("dashscope")
     manager = ProviderManager()
     provider = manager.get_provider("dashscope")
     assert provider is not None
@@ -808,6 +863,7 @@ async def test_provider_group_in_get_info(isolated_secret_dir) -> None:
 
 def test_dashscope_max_inline_media_bytes_loaded_from_json(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
     """A user-set ``max_inline_media_bytes`` in dashscope.json must be
     loaded by ``_init_from_storage`` and actually used by the capping
@@ -818,6 +874,7 @@ def test_dashscope_max_inline_media_bytes_loaded_from_json(
     the runtime builtin instance — not just the freshly deserialized one —
     carries the value through to the formatter.
     """
+    register_builtins("dashscope")
     builtin_path = isolated_secret_dir / "providers" / "builtin"
     builtin_path.mkdir(parents=True, exist_ok=True)
 
@@ -840,7 +897,7 @@ def test_dashscope_max_inline_media_bytes_loaded_from_json(
     provider = manager.get_provider("dashscope")
     assert provider is not None
     # The runtime builtin must reflect the value loaded from disk, not the
-    # field default (2 MB).
+    # field default (20 MB, see capping_formatter.MAX_INLINE_MEDIA_BYTES).
     assert provider.max_inline_media_bytes == 4096
 
     # And it must reach the capping formatter that actually guards requests.
@@ -850,9 +907,11 @@ def test_dashscope_max_inline_media_bytes_loaded_from_json(
 
 def test_dashscope_max_inline_media_bytes_defaults_when_absent(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
     """An existing dashscope.json without the new key must fall back to the
-    built-in default (2 MB) — i.e. upgrading must not silently cap at 0."""
+    built-in default (20 MB) — i.e. upgrading must not silently cap at 0."""
+    register_builtins("dashscope")
     builtin_path = isolated_secret_dir / "providers" / "builtin"
     builtin_path.mkdir(parents=True, exist_ok=True)
 
@@ -873,10 +932,10 @@ def test_dashscope_max_inline_media_bytes_defaults_when_absent(
     manager = ProviderManager()
     provider = manager.get_provider("dashscope")
     assert provider is not None
-    assert provider.max_inline_media_bytes == 2 * 1024 * 1024
+    assert provider.max_inline_media_bytes == 20 * 1024 * 1024
     assert (
         provider.get_chat_model_instance("qwen3-max").formatter.max_bytes
-        == 2 * 1024 * 1024
+        == 20 * 1024 * 1024
     )
 
 
@@ -933,6 +992,8 @@ def _write_builtin_provider_json(
     }
     if with_cap:
         data["max_inline_media_bytes"] = 4096
+    # with_cap=False omits the key (legacy JSON) to exercise the 20 MB
+    # default fallback (capping_formatter.MAX_INLINE_MEDIA_BYTES).
     (builtin_path / f"{provider_id}.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -945,6 +1006,7 @@ def _write_builtin_provider_json(
 )
 def test_max_inline_media_bytes_loaded_from_json(
     isolated_secret_dir,
+    register_builtins,
     provider_id,
     chat_model,
     model_id,
@@ -952,6 +1014,7 @@ def test_max_inline_media_bytes_loaded_from_json(
 ) -> None:
     """A user-set ``max_inline_media_bytes`` in <id>.json must be loaded by
     ``_init_from_storage`` and reach the runtime capping formatter."""
+    register_builtins(provider_id)
     _write_builtin_provider_json(
         isolated_secret_dir,
         provider_id,
@@ -963,7 +1026,7 @@ def test_max_inline_media_bytes_loaded_from_json(
     manager = ProviderManager()
     provider = manager.get_provider(provider_id)
     assert provider is not None
-    # Runtime builtin reflects the disk value, not the 2 MB default.
+    # Runtime builtin reflects the disk value, not the 20 MB default.
     assert provider.max_inline_media_bytes == 4096
 
     model = provider.get_chat_model_instance(model_id)
@@ -977,13 +1040,15 @@ def test_max_inline_media_bytes_loaded_from_json(
 )
 def test_max_inline_media_bytes_defaults_when_absent(
     isolated_secret_dir,
+    register_builtins,
     provider_id,
     chat_model,
     model_id,
     formatter_cls,
 ) -> None:
-    """A legacy <id>.json without the key falls back to the 2 MB default
+    """A legacy <id>.json without the key falls back to the 20 MB default
     (upgrading must not silently cap at 0)."""
+    register_builtins(provider_id)
     _write_builtin_provider_json(
         isolated_secret_dir,
         provider_id,
@@ -995,16 +1060,18 @@ def test_max_inline_media_bytes_defaults_when_absent(
     manager = ProviderManager()
     provider = manager.get_provider(provider_id)
     assert provider is not None
-    assert provider.max_inline_media_bytes == 2 * 1024 * 1024
+    assert provider.max_inline_media_bytes == 20 * 1024 * 1024
 
     model = provider.get_chat_model_instance(model_id)
     assert isinstance(model.formatter, formatter_cls)
-    assert model.formatter.max_bytes == 2 * 1024 * 1024
+    assert model.formatter.max_bytes == 20 * 1024 * 1024
 
 
 async def test_github_models_provider_uses_new_endpoint_and_prefixes(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("github-models")
     manager = ProviderManager()
     provider = manager.get_provider("github-models")
 
@@ -1025,7 +1092,9 @@ async def test_github_models_provider_uses_new_endpoint_and_prefixes(
 
 async def test_update_config_persists_api_key_prefixes(
     isolated_secret_dir,
+    register_builtins,
 ) -> None:
+    register_builtins("github-models")
     manager = ProviderManager()
     provider = manager.get_provider("github-models")
     assert provider is not None
@@ -1043,9 +1112,11 @@ async def test_update_config_persists_api_key_prefixes(
 
 async def test_activate_model_clears_rejects_media_for_selected_model(
     isolated_secret_dir,
+    register_builtins,
     monkeypatch,
 ) -> None:
     """Re-selecting a model drops its stale rejects_media entry."""
+    register_builtins("openai")
     from qwenpaw.providers.model_capability_cache import (
         ModelCapabilityCache,
         get_capability_cache,
@@ -1078,9 +1149,11 @@ async def test_activate_model_clears_rejects_media_for_selected_model(
 
 async def test_activate_model_preserves_other_models_and_capabilities(
     isolated_secret_dir,
+    register_builtins,
     monkeypatch,
 ) -> None:
     """Activating one model must not evict capabilities of other models."""
+    register_builtins("openai", "ollama")
     from qwenpaw.providers.model_capability_cache import (
         ModelCapabilityCache,
         get_capability_cache,

@@ -2435,6 +2435,10 @@
     "normalModeTooltip": "Обычный режим",
     "allChats": "Все чаты",
     "createNewChat": "Создать новый чат",
+    "importChat": "Импорт",
+    "importSuccess": "Чат импортирован: {{name}}",
+    "importFailed": "Не удалось импортировать сессию",
+    "exportFailed": "Не удалось экспортировать чат",
     "pinDrawer": "Закрепить",
     "unpinDrawer": "Открепить",
     "statusIdle": "Ожидание",
@@ -2532,7 +2536,8 @@
       "rename": "Переименовать",
       "pin": "Закрепить",
       "unpin": "Открепить",
-      "delete": "Удалить"
+      "delete": "Удалить",
+      "export": "Экспорт"
     },
     "queue": {
       "title": "Очередь сообщений",

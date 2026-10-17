@@ -15,6 +15,7 @@ from typing import Union, Sequence
 
 from qwenpaw.exceptions import ConfigurationException
 from ...exceptions import AgentStateError
+from ...utils.io_pools import POOL_FILE
 from ...utils.io_utils import (
     get_path_lock,
     run_sync_io,
@@ -294,10 +295,14 @@ class SafeJSONSession:
             channel,
         )
         async with get_path_lock(session_save_path):
+            # Session checkpoints serialise megabytes every couple of seconds;
+            # the dedicated file pool keeps them from queueing ahead of DB
+            # queries on the fast pool.
             await write_json_atomic_async(
                 session_save_path,
                 state_dicts,
                 indent=None,
+                pool=POOL_FILE,
             )
 
         logger.info(
@@ -324,6 +329,7 @@ class SafeJSONSession:
             states = await run_sync_io(
                 _read_session_json,
                 session_save_path,
+                pool=POOL_FILE,
             )
         except FileNotFoundError:
             states = None
@@ -379,6 +385,7 @@ class SafeJSONSession:
                 states = await run_sync_io(
                     _read_session_json,
                     session_save_path,
+                    pool=POOL_FILE,
                 )
             except FileNotFoundError as exc:
                 if not create_if_not_exist:
@@ -403,6 +410,7 @@ class SafeJSONSession:
                 session_save_path,
                 states,
                 indent=None,
+                pool=POOL_FILE,
             )
 
         logger.info(
@@ -447,6 +455,7 @@ class SafeJSONSession:
             states = await run_sync_io(
                 _read_session_json,
                 session_save_path,
+                pool=POOL_FILE,
             )
         except FileNotFoundError:
             states = None

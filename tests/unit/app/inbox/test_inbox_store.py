@@ -94,7 +94,7 @@ async def test_append_event_prepends_newest_first(inbox_path: Path):
         title="second",
         body="b",
     )
-    events = await inbox_store.list_events(limit=10)
+    events = await inbox_store.list_events(limit=10, is_admin=True)
     assert len(events) == 2
     assert events[0]["source_id"] == "2"
     assert events[1]["source_id"] == "1"
@@ -122,7 +122,12 @@ async def test_append_event_carries_payload(inbox_path: Path):
 
 
 async def _seed_events(inbox_path: Path) -> None:
-    """Seed a mix of events for filter tests."""
+    """Seed a mix of events for filter tests.
+
+    Events created here carry no ``recipient_username`` (system events),
+    so every read below uses the admin view (``is_admin=True``) — that is
+    the only perspective that sees recipient-less system events.
+    """
     await inbox_store.append_event(
         agent_id="A",
         source_type="cron",
@@ -155,7 +160,7 @@ async def _seed_events(inbox_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_list_events_filter_by_source_type(inbox_path: Path):
     await _seed_events(inbox_path)
-    events = await inbox_store.list_events(source_type="cron")
+    events = await inbox_store.list_events(source_type="cron", is_admin=True)
     assert len(events) == 2
     assert all(e["source_type"] == "cron" for e in events)
 
@@ -163,7 +168,7 @@ async def test_list_events_filter_by_source_type(inbox_path: Path):
 @pytest.mark.asyncio
 async def test_list_events_filter_by_status(inbox_path: Path):
     await _seed_events(inbox_path)
-    events = await inbox_store.list_events(status="error")
+    events = await inbox_store.list_events(status="error", is_admin=True)
     assert len(events) == 1
     assert events[0]["status"] == "error"
 
@@ -171,7 +176,7 @@ async def test_list_events_filter_by_status(inbox_path: Path):
 @pytest.mark.asyncio
 async def test_list_events_filter_by_agent_id(inbox_path: Path):
     await _seed_events(inbox_path)
-    events = await inbox_store.list_events(agent_id="A")
+    events = await inbox_store.list_events(agent_id="A", is_admin=True)
     assert len(events) == 2
     assert all(e["agent_id"] == "A" for e in events)
 
@@ -180,10 +185,10 @@ async def test_list_events_filter_by_agent_id(inbox_path: Path):
 async def test_list_events_unread_only(inbox_path: Path):
     await _seed_events(inbox_path)
     # Mark the first (newest) as read.
-    events = await inbox_store.list_events(limit=1)
-    await inbox_store.mark_read([events[0]["id"]])
+    events = await inbox_store.list_events(limit=1, is_admin=True)
+    await inbox_store.mark_read([events[0]["id"]], is_admin=True)
 
-    unread = await inbox_store.list_events(unread_only=True)
+    unread = await inbox_store.list_events(unread_only=True, is_admin=True)
     assert len(unread) == 2
     assert all(not e["read"] for e in unread)
 
@@ -191,8 +196,12 @@ async def test_list_events_unread_only(inbox_path: Path):
 @pytest.mark.asyncio
 async def test_list_events_pagination(inbox_path: Path):
     await _seed_events(inbox_path)
-    page1 = await inbox_store.list_events(limit=2, offset=0)
-    page2 = await inbox_store.list_events(limit=2, offset=2)
+    page1 = await inbox_store.list_events(limit=2, offset=0, is_admin=True)
+    page2 = await inbox_store.list_events(
+        limit=2,
+        offset=2,
+        is_admin=True,
+    )
     assert len(page1) == 2
     assert len(page2) == 1
     assert page1[0]["source_id"] == "3"  # newest first
@@ -202,12 +211,13 @@ async def test_list_events_pagination(inbox_path: Path):
 @pytest.mark.asyncio
 async def test_query_events_returns_filtered_counts(inbox_path: Path):
     await _seed_events(inbox_path)
-    newest = await inbox_store.list_events(limit=1)
-    await inbox_store.mark_read([newest[0]["id"]])
+    newest = await inbox_store.list_events(limit=1, is_admin=True)
+    await inbox_store.mark_read([newest[0]["id"]], is_admin=True)
 
     events, total, unread_count = await inbox_store.query_events(
         source_types={"cron", "manual"},
         limit=1,
+        is_admin=True,
     )
 
     assert len(events) == 1
@@ -218,12 +228,13 @@ async def test_query_events_returns_filtered_counts(inbox_path: Path):
 @pytest.mark.asyncio
 async def test_query_events_total_respects_unread_filter(inbox_path: Path):
     await _seed_events(inbox_path)
-    newest = await inbox_store.list_events(limit=1)
-    await inbox_store.mark_read([newest[0]["id"]])
+    newest = await inbox_store.list_events(limit=1, is_admin=True)
+    await inbox_store.mark_read([newest[0]["id"]], is_admin=True)
 
     events, total, unread_count = await inbox_store.query_events(
         unread_only=True,
         limit=1,
+        is_admin=True,
     )
 
     assert len(events) == 1
@@ -233,7 +244,7 @@ async def test_query_events_total_respects_unread_filter(inbox_path: Path):
 
 @pytest.mark.asyncio
 async def test_list_events_empty_when_no_file(inbox_path: Path):
-    events = await inbox_store.list_events()
+    events = await inbox_store.list_events(is_admin=True)
     assert events == []
 
 
@@ -242,7 +253,7 @@ async def test_list_events_handles_non_list_json(inbox_path: Path):
     """Valid JSON that isn't a list → returns [] via the isinstance
     guard (not the except branch)."""
     inbox_path.write_text("not a json list", encoding="utf-8")
-    events = await inbox_store.list_events()
+    events = await inbox_store.list_events(is_admin=True)
     assert events == []
 
 
@@ -256,7 +267,7 @@ async def test_list_events_handles_malformed_json(
     swallowed). Regression for the #5809 review feedback."""
     inbox_path.write_text("{bad", encoding="utf-8")
     with caplog.at_level("WARNING"):
-        events = await inbox_store.list_events()
+        events = await inbox_store.list_events(is_admin=True)
     assert events == []
     assert any("Failed to load" in r.message for r in caplog.records)
 
@@ -269,33 +280,36 @@ async def test_list_events_handles_malformed_json(
 @pytest.mark.asyncio
 async def test_mark_read_returns_count_of_newly_read(inbox_path: Path):
     await _seed_events(inbox_path)
-    events = await inbox_store.list_events(limit=2)
-    updated = await inbox_store.mark_read([events[0]["id"], events[1]["id"]])
+    events = await inbox_store.list_events(limit=2, is_admin=True)
+    updated = await inbox_store.mark_read(
+        [events[0]["id"], events[1]["id"]],
+        is_admin=True,
+    )
     assert updated == 2
 
 
 @pytest.mark.asyncio
 async def test_mark_read_idempotent(inbox_path: Path):
     await _seed_events(inbox_path)
-    events = await inbox_store.list_events(limit=1)
-    first = await inbox_store.mark_read([events[0]["id"]])
-    second = await inbox_store.mark_read([events[0]["id"]])
+    events = await inbox_store.list_events(limit=1, is_admin=True)
+    first = await inbox_store.mark_read([events[0]["id"]], is_admin=True)
+    second = await inbox_store.mark_read([events[0]["id"]], is_admin=True)
     assert first == 1
     assert second == 0
 
 
 @pytest.mark.asyncio
 async def test_mark_read_empty_list_returns_zero(inbox_path: Path):
-    assert await inbox_store.mark_read([]) == 0
+    assert await inbox_store.mark_read([], is_admin=True) == 0
 
 
 @pytest.mark.asyncio
 async def test_mark_all_read(inbox_path: Path):
     await _seed_events(inbox_path)
-    updated = await inbox_store.mark_all_read()
+    updated = await inbox_store.mark_all_read(is_admin=True)
     assert updated == 3
     # Second call is idempotent.
-    assert await inbox_store.mark_all_read() == 0
+    assert await inbox_store.mark_all_read(is_admin=True) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -305,23 +319,32 @@ async def test_mark_all_read(inbox_path: Path):
 
 @pytest.mark.asyncio
 async def test_delete_event_returns_false_for_empty_id(inbox_path: Path):
-    deleted, run_id, still_ref = await inbox_store.delete_event("")
+    deleted, run_id, still_ref = await inbox_store.delete_event(
+        "",
+        is_admin=True,
+    )
     assert (deleted, run_id, still_ref) == (False, None, False)
 
 
 @pytest.mark.asyncio
 async def test_delete_event_removes_event(inbox_path: Path):
     await _seed_events(inbox_path)
-    events = await inbox_store.list_events(limit=1)
-    deleted, _, _ = await inbox_store.delete_event(events[0]["id"])
+    events = await inbox_store.list_events(limit=1, is_admin=True)
+    deleted, _, _ = await inbox_store.delete_event(
+        events[0]["id"],
+        is_admin=True,
+    )
     assert deleted is True
-    remaining = await inbox_store.list_events()
+    remaining = await inbox_store.list_events(is_admin=True)
     assert len(remaining) == 2
 
 
 @pytest.mark.asyncio
 async def test_delete_event_returns_false_for_missing_id(inbox_path: Path):
-    deleted, run_id, still_ref = await inbox_store.delete_event("ghost-id")
+    deleted, run_id, still_ref = await inbox_store.delete_event(
+        "ghost-id",
+        is_admin=True,
+    )
     assert (deleted, run_id, still_ref) == (False, None, False)
 
 
@@ -349,9 +372,10 @@ async def test_delete_event_tracks_run_id_reference(inbox_path: Path):
         body="b",
         payload={"run_id": "run-shared"},
     )
-    events = await inbox_store.list_events(limit=1)
+    events = await inbox_store.list_events(limit=1, is_admin=True)
     deleted, run_id, still_ref = await inbox_store.delete_event(
         events[0]["id"],
+        is_admin=True,
     )
     assert deleted is True
     assert run_id == "run-shared"
@@ -370,9 +394,10 @@ async def test_delete_event_run_id_not_referenced_after_last(inbox_path: Path):
         body="b",
         payload={"run_id": "run-solo"},
     )
-    events = await inbox_store.list_events(limit=1)
+    events = await inbox_store.list_events(limit=1, is_admin=True)
     deleted, run_id, still_ref = await inbox_store.delete_event(
         events[0]["id"],
+        is_admin=True,
     )
     assert deleted is True
     assert run_id == "run-solo"
@@ -413,7 +438,10 @@ async def test_append_event_caps_at_max(
             body="b",
         )
 
-    events = await inbox_store.list_events(limit=small_cap + 100)
+    events = await inbox_store.list_events(
+        limit=small_cap + 100,
+        is_admin=True,
+    )
     assert len(events) == small_cap
     # newest-first: the last two appended (indices small_cap+1, small_cap)
     # survived; the oldest two (0, 1) were trimmed off the tail.
@@ -443,5 +471,5 @@ async def test_append_event_large_payload_round_trips(inbox_path: Path):
     )
     assert len(event["payload"]["k"]) == 50_000
 
-    events = await inbox_store.list_events(limit=1)
+    events = await inbox_store.list_events(limit=1, is_admin=True)
     assert len(events[0]["payload"]["k"]) == 50_000

@@ -23,6 +23,9 @@
 迁入 PG、升级自动导入）。基线包经核对已含迁移版本 `202609240001`–`202609240004`，
 因此**生产环境已完成这一轮改造**。
 
+> **另有一台机器跑的是 9/23 那代代码**（提交 `8e722059`，9/24 平台存储改造之前），
+> 但其数据库**已经是 PostgreSQL**。该机的升级路径与核对点见 **§3.5**。
+
 ---
 
 ## 2. 基线之后的改动（按「是否需要升级动作」分类）
@@ -68,6 +71,10 @@
 | 上游合并 6 项 | 空文本块清洗 / 文档块剥离 / 流清理隔离期限 / 图片像素上限 / prompt 缓存前缀 / 工具排序 | **无需动作**，纯代码 |
 | 智能体归入案件 | 新增 `list_paths` / `move_data_table_to_path`；建表与上传工具支持 `path` | **无需动作**，纯代码 |
 | 合并包脚本 | 主应用与知识服务同时携带 amd64/arm64 compose | **需知悉**：覆盖 `deploy/` 前先对比资源限制，别覆盖服务器上调过的值 |
+| 线程池分池（并发改造第一批） | 新增 `fast`(16) / `file`(8) / `subprocess`(4) 三个命名池 + 有界等待；会话 checkpoint 读写走 `file`，审计走 `fast` | **无需动作**：新环境变量 `QWENPAW_IO_FAST_THREADS` / `..._FILE_THREADS` / `..._SUBPROCESS_THREADS` / `QWENPAW_IO_POOL_WAIT_SECONDS` 都有默认值，compose 已带默认值。默认 executor 未改，其余调用点行为不变 |
+| 审计搬离事件循环 | `ResourceGovernor.audit_async()`；工具前置检查 / 沙箱违规 / 审批结果三处改为 `await` | **无需动作**：纯位置变更，审计内容与契约不变（失败仍不传播） |
+| 知识服务启动恢复加 owner 判定 | `recover_interrupted_jobs` 只回收无存活心跳的任务 | **无需动作**，且**是多副本的前置**：起第二个 worker 之前必须先有这一条，否则重启会重复执行任务 |
+| 管理员诊断接口 | 新增 `GET /api/debug/io-pools` | **无需动作**：仅管理员可读，只返回计数 |
 
 ### 2.3 数据库结构变更
 
@@ -606,7 +613,120 @@ tar -xzf huizhi-code-update-YYYYMMDD.tar.gz -C <部署根目录>
 | 31 | 上传后角标即时可见 | 在某路径上传文件：上传完成的当下，路径树该节点就出现「处理中」角标（无需手动刷新页面） |
 | 32 | 新建账号即有公共空间 | 新建一个账号并登录：「知识空间」「数据空间」两页左侧都出现「公共区（未归类）」；该账号的默认智能体已挂载公共区（对话界面可见） |
 | 33 | 9.24 升级后既有数据在公共区 | 用 9.24 的库升级后：原有文档/数据表都在公共区可见，且每个既有智能体仍能看到升级前能看到的内容 |
-| 34 | 全量单测 | 与改动前失败清单逐项对比无新增 |
+
+### 3.5 从 2026-09-23 那代代码升级（跨代，目标机平台存储已是 PostgreSQL）
+
+适用场景：某台服务器跑的是 **9/23 那代代码**（代表提交 `8e722059`，即 9/24「平台存储
+迁到 PostgreSQL」那批提交**之前**的代码），但**数据库已经是 PostgreSQL 版本**。
+这种情况下升级仍然是「覆盖代码 + 重启」，因为所有结构变更都在启动时自动执行；下面是
+这一跳特有的核对点。
+
+**这一跳跨过了什么**：9/24 的平台存储改造（会话历史 / 审计 / 词元用量 / MemorySpace
+迁入 PG）、路径隔离（9/27 那批）、pgvector 语义检索、50 并发改造、知识服务多项修复、
+会话导入导出。**代码包是全量覆盖**（`app/` + `knowledge-service/` + `deploy/`），不是
+增量补丁，所以不需要按提交逐个对齐。
+
+**自动执行、无需人工触发的**（均幂等，重复启动无副作用）：
+
+| 项 | 何时跑 | 备注 |
+| --- | --- | --- |
+| 平台库迁移 | 应用启动（`platform_store`） | 目标机应已有 `202609240001`–`...0004`；本代**唯一**新增的是 `202609270001`（`platform.paths` 等表） |
+| `run_legacy_import` | 应用启动 | 旧 SQLite → PG 导入。目标机已是 PG，**这是空操作**，无需手工执行 |
+| `sync_all_scroll_agents` | 应用启动 | 把 `sessions/*.json` 里的会话补进历史库 |
+| `migrate_into_path_scoping` | 应用启动（最后一步） | 建路径表、给每个既有智能体发根路径授权、自愈 |
+| 知识图谱多租户 | 应用启动 | 见 §2.12；`KNOWLEDGE_GRAPH_DATABASE_URL` 为空时保持旧行为 |
+| 知识服务侧表结构 | 知识服务启动（`_init_db`） | `documents`/`jobs` 若干列 + `worker_heartbeats` 表 + `chunk_embeddings.embedding` |
+| LightRAG 图谱迁移 | 知识服务启动（后台） | 见 §3.1，幂等可重跑 |
+
+**唯一需要人工确认的前提：PostgreSQL 必须装了 pgvector。**
+
+```bash
+docker exec huizhi-knowledge-postgres \
+  psql -U huizhi_knowledge -d huizhi_knowledge -tc \
+  "SELECT to_regtype('vector') IS NOT NULL"      # 期望 t
+```
+
+输出 `t` 即正常。若为 `f`：本次升级**不会**再像以前那样把知识服务整个打挂（§9.46 已修，
+缺扩展时自动降级到 jsonb 全量比对），但**语义检索会明显变慢**。修法是换镜像
+（`pgvector/pgvector:pg17`）——数据目录是 bind mount，换镜像不丢数据，但 libc 从 musl
+变 glibc，**换之前先 `pg_dumpall` 备份**。
+
+**基座镜像不需要重建。** 本代 `pyproject.toml` 显式声明了 `networkx>=3.2` /
+`scipy>=1.11` / `numpy>=1.26`，实测基座镜像里已存在（`networkx 3.6.1` /
+`scipy 1.18.1` / `numpy 2.5.3`），此前 `networkx` 是 LightRAG 的传递依赖。没有
+Dockerfile 变动，因此按 AGENTS.md 的规则**不重建基座**。
+
+**`deploy/` 层有新增内容**：`.env.example`（此前缺失，现已随包）与两个架构的
+code-mount compose。覆盖前先对比服务器上调过的资源限制（`mem_limit` 等），别把调优值
+冲掉。（`deploy/full-offline/` 是面向**全新机器**的离线部署套件，不在这份代码包里。）
+
+**本包根目录带 `UPGRADE_AND_MIGRATION.md`** —— 就是本文件。包里带一份是为了让升级时
+不必再回仓库翻：它写明哪些改动需要人工动作、哪些自动生效。
+
+**本代新增的环境变量**（都有默认值，不配也能跑）：线程池 `QWENPAW_IO_*`、
+`KNOWLEDGE_WORKER_ID`（compose 已带默认 `worker-1`，多副本才需要每副本不同值）。
+
+**验证**：沿用 §3.4，并补这三条本代特有的：
+
+| 检查项 | 期望 |
+| --- | --- |
+| 打开「知识空间」 | 不再报 `Knowledge service unavailable`；文件列表与路径计数正常 |
+| 会话页「控制 → 会话」 | 操作列出现「导出」，筛选条旁出现「导入」；导出一个会话能得到 `.session.json` |
+| `GET /api/debug/io-pools`（管理员） | 返回四个线程池的 active/waiting 计数 |
+
+#### 已知症状：导入会话报 `Could not write the imported conversation history`
+
+**先看括号里的原因**（本代起会把底层异常带在报错里，例如
+`(UndefinedTable: relation "platform.history_seq" does not exist)`）。这句说明**平台
+schema 没有建起来**——`platform` 里的表缺失，而应用仍能连上数据库。
+
+排查（在目标机上）：
+
+```bash
+# 1) 平台库到底有没有建表/有没有迁移记录
+docker exec huizhi-knowledge-postgres psql -U huizhi_knowledge -d huizhi_knowledge -c "
+  SELECT to_regclass('platform.schema_migrations') AS migrations_table,
+         to_regclass('platform.history_seq')       AS history_seq,
+         to_regclass('platform.conversation_history') AS conversation_history;"
+
+# 2) 应用日志里迁移那几行（这两行是判断依据）
+docker logs huizhi-assistant 2>&1 | grep -E "platform store:" | tail -20
+```
+
+- 看到 `platform store: schema migration failed` + traceback → 迁移**整体**失败（多为
+  权限或库不对），表没建，每次启动都会重试并再次报同样的错。
+- 看到 `platform store: migration 202609240001 statement skipped (...)` → 个别语句被跳过。
+  **本代之前**这种迁移仍会被记成「已应用」，于是永远不再重试（缺口从此静默）；
+  **本代起不再记录**，下次启动会重跑，日志里给出 `is NOT recorded as applied` 的 ERROR。
+  语句全是 `IF NOT EXISTS`，重跑无代价，环境修好即自愈。
+
+最常见的两个根因：
+
+1. **平台库指向的数据库不对**（`QWENPAW_PLATFORM_DB_*` → `QWENPAW_DATA_TABLES_DB_*` →
+   默认值，见 `platform_store/config.py`）。连上了库，但那个库里从没跑过迁移。
+2. **`CREATE EXTENSION pg_trgm` 建不出来**（`platform` 的表用到 `gin_trgm_ops`）。
+   该扩展在官方镜像里就有，但要求角色有权限；用
+   `SELECT * FROM pg_available_extensions WHERE name='pg_trgm'` 看是否可用。
+
+两种情况下**都要先升级到本代代码再重启**：旧代码会把被跳过的迁移记成已应用，重启也不会
+重试。
+
+**第三类根因（本代修复，最可能就是它）**：平台 schema 的「已就绪」判断原先只是**一个进程级
+布尔**，而五个调用方各传**不同**的迁移集（history / audit / import-state / token / paths）。
+谁先跑成功就替所有人答了——启动早期构造 token usage 管理器会先置位，于是历史那套
+（`202609240001`，建 `platform.history_seq` 与 `platform.conversation_history`）**在这个进程
+里永远不会执行**，**重启也一样**（每次都是同一个调用方先赢）。现在「已就绪」按**版本**记录，
+各套互不影响。
+
+若那台机器的 `schema_migrations` 里已经**错误地记着** `202609240001`（旧代码在被跳过时也会
+记录），光重启不会补建，删掉那条记录再重启即可（语句都是 `IF NOT EXISTS`，重跑无副作用）：
+
+```sql
+SELECT version FROM platform.schema_migrations ORDER BY version;
+-- 若列出的版本对应的表实际不存在，删掉该条记录后重启应用：
+DELETE FROM platform.schema_migrations WHERE version = '202609240001';
+```
+
 
 ---
 

@@ -16,12 +16,17 @@ Two separate defects reported from production:
    empty list.
 
 The transcript read now collapses duplicates, the identity used for persistence
-is content-stable, and the API reports which agents hold conversations.
+is content-stable, and the API reports which agents hold conversations. The
+duplicate-row cases run against the platform's PostgreSQL store and skip — not
+fail — when none is reachable.
 """
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -30,75 +35,124 @@ from agentscope.message import Msg, TextBlock  # noqa: E402
 
 from qwenpaw.agents.context.scroll.history import HistoryStore  # noqa: E402
 from qwenpaw.agents.context.scroll.manager import stable_message_key  # noqa: E402
+from qwenpaw.agents.context.types import LogEntry  # noqa: E402
+from qwenpaw.platform_store import (  # noqa: E402
+    get_conn,
+    is_available,
+    put_conn,
+)
 
 
-def _insert(store: HistoryStore, role: str, text: str, when: str, key: str) -> None:
-    store._conn.execute(
-        "INSERT INTO conversation_history "
-        "(session_id, agent_id, kind, role, name, content, blocks, metadata, "
-        " created_at, dedup_key) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (
-            "s1", "a1",
-            "context_msg" if role == "user" else "model_turn",
-            role, role, text,
-            f'[{{"type": "text", "text": "{text}"}}]', "{}", when, key,
+def _platform_db_available() -> bool:
+    """Whether the platform database can be reached for the durable-read tests."""
+    try:
+        return bool(is_available())
+    except Exception:  # noqa: BLE001 - any failure means "not usable"
+        return False
+
+
+requires_platform_db = pytest.mark.skipif(
+    not _platform_db_available(),
+    reason="needs the platform PostgreSQL store",
+)
+
+
+@pytest.fixture
+def pg_store() -> HistoryStore:
+    """A HistoryStore scoped to a throwaway workspace, cleaned up afterwards."""
+    handle = HistoryStore(
+        f"/tmp/qwenpaw-history-tests/test-{uuid.uuid4().hex}/history.db",
+    )
+    try:
+        yield handle
+    finally:
+        handle.close()
+        _delete_workspace(handle.workspace_key)
+
+
+def _delete_workspace(workspace_key: str) -> None:
+    """Remove exactly the rows the test's workspace created."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM platform.conversation_history "
+                "WHERE workspace_key = %s",
+                (workspace_key,),
+            )
+            cur.execute(
+                "DELETE FROM platform.history_seq WHERE workspace_key = %s",
+                (workspace_key,),
+            )
+        conn.commit()
+    except Exception:  # noqa: BLE001 - teardown must not mask the real result
+        conn.rollback()
+    finally:
+        put_conn(conn)
+
+
+def _append(
+    store: HistoryStore,
+    role: str,
+    text: str,
+    when: str,
+    key: str,
+) -> None:
+    store.append(
+        session_id="s1",
+        agent_id="a1",
+        dedup_key=key,
+        entry=LogEntry(
+            kind="context_msg" if role == "user" else "model_turn",
+            role=role,
+            name=role,
+            content=text,
+            blocks=[{"type": "text", "text": text}],
+            created_at=when,
         ),
     )
 
 
-def test_duplicate_rows_are_collapsed(tmp_path) -> None:
+@requires_platform_db
+def test_duplicate_rows_are_collapsed(pg_store) -> None:
     """The same event written under two keys must appear once."""
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        # Production shape: the question was stored twice (different keys, same
-        # timestamp) with its answer in between.
-        _insert(store, "user", "问题一", "2026-09-24T09:00:00", "keyA")
-        _insert(store, "assistant", "回答一", "2026-09-24T09:01:00", "keyB")
-        _insert(store, "user", "问题一", "2026-09-24T09:00:00", "keyC")
-        store._conn.commit()
+    # Production shape: the question was stored twice (different keys, same
+    # timestamp) with its answer in between.
+    _append(pg_store, "user", "问题一", "2026-09-24T09:00:00", "keyA")
+    _append(pg_store, "assistant", "回答一", "2026-09-24T09:01:00", "keyB")
+    _append(pg_store, "user", "问题一", "2026-09-24T09:00:00", "keyC")
 
-        messages = store.load_session_messages("s1", "a1")
+    messages = pg_store.load_session_messages("s1", "a1")
 
-        assert [m.get_text_content() for m in messages] == ["问题一", "回答一"], (
-            "a duplicated row was replayed"
-        )
-    finally:
-        store.close()
+    assert [m.get_text_content() for m in messages] == ["问题一", "回答一"], (
+        "a duplicated row was replayed"
+    )
 
 
-def test_genuine_repeat_asking_survives(tmp_path) -> None:
+@requires_platform_db
+def test_genuine_repeat_asking_survives(pg_store) -> None:
     """Asking the same thing again later is real content, not a duplicate."""
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        _insert(store, "user", "问题一", "2026-09-24T09:00:00", "k1")
-        _insert(store, "assistant", "回答一", "2026-09-24T09:01:00", "k2")
-        _insert(store, "user", "问题一", "2026-09-24T10:00:00", "k3")
-        _insert(store, "assistant", "回答二", "2026-09-24T10:01:00", "k4")
-        store._conn.commit()
+    _append(pg_store, "user", "问题一", "2026-09-24T09:00:00", "k1")
+    _append(pg_store, "assistant", "回答一", "2026-09-24T09:01:00", "k2")
+    _append(pg_store, "user", "问题一", "2026-09-24T10:00:00", "k3")
+    _append(pg_store, "assistant", "回答二", "2026-09-24T10:01:00", "k4")
 
-        messages = store.load_session_messages("s1", "a1")
+    messages = pg_store.load_session_messages("s1", "a1")
 
-        assert [m.get_text_content() for m in messages] == [
-            "问题一", "回答一", "问题一", "回答二",
-        ]
-    finally:
-        store.close()
+    assert [m.get_text_content() for m in messages] == [
+        "问题一", "回答一", "问题一", "回答二",
+    ]
 
 
-def test_rebuilt_messages_have_stable_ids(tmp_path) -> None:
+@requires_platform_db
+def test_rebuilt_messages_have_stable_ids(pg_store) -> None:
     """Ids must not change between reads, or the console re-keys its cards."""
-    store = HistoryStore(tmp_path / "history.db")
-    try:
-        _insert(store, "user", "稳定", "2026-09-24T09:00:00", "k1")
-        store._conn.commit()
+    _append(pg_store, "user", "稳定", "2026-09-24T09:00:00", "k1")
 
-        first = store.load_session_messages("s1", "a1")
-        second = store.load_session_messages("s1", "a1")
+    first = pg_store.load_session_messages("s1", "a1")
+    second = pg_store.load_session_messages("s1", "a1")
 
-        assert first[0].id == second[0].id
-    finally:
-        store.close()
+    assert first[0].id == second[0].id
 
 
 def test_message_key_is_stable_without_an_id() -> None:

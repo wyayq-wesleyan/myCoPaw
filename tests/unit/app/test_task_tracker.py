@@ -46,6 +46,23 @@ def _make_stream(events: list[str]):
     return stream
 
 
+async def _wait_until_idle(tracker: TaskTracker, run_key: str, timeout: float = 2.0) -> None:
+    """Poll ``get_status`` until *run_key* reports idle (bounded).
+
+    The producer enqueues the SENTINEL before persisting the replay, so
+    completion can land a few event-loop turns after the consumer sees the
+    terminator; a bounded poll absorbs that without pinning the timing.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        if await tracker.get_status(run_key) == "idle":
+            return
+        assert asyncio.get_running_loop().time() < deadline, (
+            f"{run_key} did not become idle within {timeout}s"
+        )
+        await asyncio.sleep(0.01)
+
+
 # ---------------------------------------------------------------------------
 # get_status / has_active_tasks / list_active_tasks
 # ---------------------------------------------------------------------------
@@ -127,7 +144,9 @@ async def test_attach_or_start_streams_events_and_marks_completion():
     assert [a, b] == events
     assert sentinel is None
 
-    # Completion becomes idle but remains briefly replayable.
+    # Completion becomes idle but remains briefly replayable. The replay is
+    # persisted after the SENTINEL lands, so wait for the run to actually idle.
+    await _wait_until_idle(tracker, "run-1")
     assert await tracker.get_status("run-1") == "idle"
     assert "run-1" in tracker._runs
 
@@ -315,6 +334,9 @@ async def test_stream_from_queue_yields_until_sentinel_and_detaches():
     ]
 
     assert collected == events
+    # The consumer breaks on the SENTINEL while the producer may still be
+    # persisting the replay; wait for the run to actually idle.
+    await _wait_until_idle(tracker, "run-stream")
     # After streaming, run is cleaned up, so detach should be a no-op.
     assert await tracker.get_status("run-stream") == "idle"
 

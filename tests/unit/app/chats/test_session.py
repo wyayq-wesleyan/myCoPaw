@@ -247,6 +247,37 @@ async def test_update_session_state_serializes_across_instances(
 
 
 @pytest.mark.asyncio
+async def test_update_session_state_uses_the_file_pool(
+    session,
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The whole-state rewrite must not share the fast pool.
+
+    ``update_session_state`` re-serializes the *entire* session dict, which is
+    the multi-megabyte burst the dedicated file pool exists to isolate. Riding
+    the fast pool is what made unrelated DB reads queue behind checkpoints, so
+    the pool argument is load-bearing, not cosmetic.
+    """
+    seen: dict[str, object] = {}
+
+    async def capture(path, payload, **kwargs):
+        seen.update(kwargs)
+        Path(path).write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(session_mod, "write_json_atomic_async", capture)
+
+    await session.update_session_state(
+        session_id="pooled",
+        key="agent.memory.x",
+        value=1,
+        user_id="u",
+    )
+
+    assert seen.get("pool") == session_mod.POOL_FILE
+
+
+@pytest.mark.asyncio
 async def test_update_session_state_missing_file_disallowed(session):
     with pytest.raises(AgentStateError):
         await session.update_session_state(

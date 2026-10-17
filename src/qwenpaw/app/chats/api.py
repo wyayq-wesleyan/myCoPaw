@@ -4,12 +4,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 
 from agentscope.message import Msg
@@ -24,7 +37,12 @@ from .models import (
     ChatUpdate,
     ChatHistory,
 )
-from ...utils.io_utils import read_json, run_sync_io
+from ...utils.io_utils import (
+    read_json,
+    run_sync_io,
+    write_json_atomic_async,
+)
+from ...utils.io_pools import POOL_FILE
 from .utils import agentscope_msg_to_message, parse_legacy_memory_state
 from ...services.project_directory import (
     resolve_effective_project_dir,
@@ -39,7 +57,7 @@ from ..user_resources import (
     register_resource,
     session_resource_storage_dir,
 )
-from ..user_space import get_request_username
+from ..user_space import get_request_username, is_agent_owned
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +203,37 @@ async def create_chat(
     return await mgr.create_chat(spec)
 
 
+async def _load_owned_chat(
+    chat_id: str,
+    request: Request,
+    mgr: ChatManager,
+    workspace: Any,
+) -> tuple[str | None, ChatSpec]:
+    """Resolve *chat_id* to a chat the caller is allowed to act on.
+
+    Ownership is the agent profile's ``owner_username`` rather than anything on
+    the chat itself: chats live inside one agent's workspace, so "this agent
+    belongs to you" is what actually decides access.
+
+    An **unresolvable** caller (no token) is deliberately not a 401 here. When
+    authentication is enabled the middleware has already rejected the request
+    before it reaches a handler, so reaching this with no username means the
+    install has authentication turned off — the offline single-user profile —
+    and ``is_agent_owned`` documents that such callers keep the historical
+    unrestricted view. Rejecting them would break export/import on exactly the
+    deployment that has no login screen to log into. Endpoints that genuinely
+    need a *named* sender (``share_chat``) still require one, they just say so
+    themselves.
+    """
+    username = get_request_username(request)
+    chat = await mgr.get_chat(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if not is_agent_owned(load_config(), username, workspace.agent_id):
+        raise HTTPException(status_code=403, detail="You do not own this chat")
+    return username, chat
+
+
 @router.post("/{chat_id}/share")
 async def share_chat(
     chat_id: str,
@@ -195,16 +244,13 @@ async def share_chat(
     workspace=Depends(get_workspace),
 ) -> dict:
     """Send a point-in-time chat snapshot to selected users for approval."""
-    username = get_request_username(request) or ""
+    username, chat = await _load_owned_chat(chat_id, request, mgr, workspace)
+    # Sharing is the one chat action that cannot work without a named sender:
+    # the snapshot has to be attributed and the sender excluded from the
+    # recipients. Unrelated to ownership, so it is checked here rather than in
+    # the shared guard (see its docstring).
     if not username:
         raise HTTPException(status_code=401, detail="Not authenticated")
-
-    chat = await mgr.get_chat(chat_id)
-    if chat is None:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    profile = load_config().agents.profiles.get(workspace.agent_id)
-    if not profile or getattr(profile, "owner_username", None) != username:
-        raise HTTPException(status_code=403, detail="You do not own this chat")
 
     users = {str(item["username"]): item for item in list_users()}
     targets = [
@@ -253,6 +299,386 @@ async def share_chat(
     for item in requests:
         await notify_resource_share(request_item=item, resource=resource)
     return {"created": len(requests), "skipped": len(targets) - len(requests)}
+
+
+# ---------------------------------------------------------------------------
+# Session export / import (a file the user keeps, not a share to another user)
+# ---------------------------------------------------------------------------
+
+# Marker and version written into every exported file. The marker is checked on
+# import so an unrelated JSON file gets a readable rejection instead of being
+# silently half-imported.
+_SESSION_FILE_FORMAT = "huizhi.chat-session"
+_SESSION_FILE_VERSION = 1
+# Cap on an uploaded session file. A long conversation with verbose tool output
+# is a few MB; the limit exists so a wrong or hostile file cannot turn one
+# import into an out-of-memory.
+_SESSION_IMPORT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _rows_for_export(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop the source session's identity from transcript rows.
+
+    ``export_session_rows`` is a faithful row reader and returns ``session_id``
+    and ``agent_id`` along with everything else. Those two describe *where the
+    rows live here*, not the conversation, and the importer overwrites both, so
+    carrying them into a file that may be handed to someone else leaks the
+    exporter's session and agent identifiers for no benefit.
+
+    ``seq`` is kept: it is the source's write order, it cannot be mistaken for an
+    identity, and it makes the file readable when something looks wrong.
+    ``dedup_key`` is kept because the importer uses it to stay idempotent.
+    """
+    return [
+        {key: value for key, value in row.items() if key not in ("session_id", "agent_id")}
+        for row in rows
+    ]
+
+
+def _scroll_strategy_enabled(workspace: Any) -> bool:
+    """Whether this agent keeps a durable transcript outside the session file."""
+    return _scroll_history_store_path(workspace) is not None
+
+
+def _scroll_history_store_path(workspace: Any) -> Path | None:
+    """Where *workspace*'s durable transcript is addressed, or ``None``.
+
+    Always through ``load_agent_config``, never through
+    ``load_config().agents.profiles[...]``: the global profile leaves
+    ``light_context_config`` unset (``strategy`` is ``None``), because the
+    effective value lives in the per-agent config — which is also what the
+    Scroll manager itself reads. Reading the global copy reported "not scroll"
+    for every agent.
+
+    The returned path is an *address*, not necessarily an existing file: history
+    has lived in PostgreSQL since the migration, and the filename is only hashed
+    into the partition key. Nothing in this module may treat its existence as a
+    signal — see ``_load_durable_transcript``.
+    """
+    try:
+        from ...config.config import load_agent_config
+
+        lcc = load_agent_config(workspace.agent_id).running.light_context_config
+    except Exception:  # noqa: BLE001 - unknown agent means "no transcript"
+        logger.debug(
+            "Could not resolve the context config for agent %s",
+            getattr(workspace, "agent_id", "?"),
+            exc_info=True,
+        )
+        return None
+    if getattr(lcc, "strategy", "native") != "scroll":
+        return None
+    return Path(workspace.workspace_dir) / lcc.scroll_config.db_filename
+
+
+def _read_session_rows(workspace: Any, session_id: str) -> list[dict[str, Any]]:
+    """Read one session's durable transcript rows, or ``[]``."""
+    db_path = _scroll_history_store_path(workspace)
+    if db_path is None:
+        return []
+    from ...agents.context.scroll.history import HistoryStore
+
+    store = HistoryStore(db_path)
+    try:
+        return store.export_session_rows(
+            session_id,
+            getattr(workspace, "agent_id", None),
+        )
+    finally:
+        store.close()
+
+
+def _write_session_rows(
+    workspace: Any,
+    *,
+    session_id: str,
+    rows: list[dict],
+) -> int:
+    """Write transcript rows into *session_id*, returning the number written."""
+    db_path = _scroll_history_store_path(workspace)
+    if db_path is None:
+        return 0
+    from ...agents.context.scroll.history import HistoryStore
+
+    store = HistoryStore(db_path)
+    try:
+        return store.import_session_rows(
+            session_id=session_id,
+            rows=rows,
+            agent_id=getattr(workspace, "agent_id", None),
+        )
+    finally:
+        store.close()
+
+
+def _attachment_disposition(filename: str) -> str:
+    """Build a ``Content-Disposition`` that survives a non-ASCII filename.
+
+    A bare ``filename="会话.json"`` is mojibake in most browsers because the
+    header is read as latin-1. The ``filename*`` form (RFC 5987) carries the
+    real UTF-8 name, and the plain ``filename`` is kept as an ASCII-only
+    fallback for clients that ignore it.
+    """
+    ascii_fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "session.json"
+    return (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
+
+
+def _export_file_name(chat_name: str, chat_id: str) -> str:
+    """``<name>-<date>.session.json``, safe on every platform."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", (chat_name or "").strip())
+    stem = stem.strip(". ") or chat_id
+    # Long names would exceed the filesystem limit once the suffix is added.
+    return f"{stem[:80]}-{stamp}.session.json"
+
+
+@router.get("/{chat_id}/export")
+async def export_chat(
+    chat_id: str,
+    request: Request,
+    mgr: ChatManager = Depends(get_chat_manager),
+    session: SafeJSONSession = Depends(get_session),
+    workspace=Depends(get_workspace),
+) -> Response:
+    """Download one conversation as a self-contained JSON file.
+
+    The file carries two things, and it needs both. ``state`` is the live agent
+    context, so an imported copy keeps talking with the same memory and settings.
+    ``transcript`` is the durable row set — with the default ``scroll`` strategy
+    the console renders history from those rows, *not* from the state file, so
+    exporting only the state would silently truncate a long conversation to the
+    last context window.
+
+    Nothing identifying is written: no ``id``, ``session_id``, ``user_id`` or
+    owner — neither in the chat block nor in the transcript rows, where
+    ``session_id``/``agent_id`` are dropped by ``_rows_for_export``. Import mints
+    all of those, and omitting them here means a file can never be used to claim
+    an identity in someone else's account.
+    """
+    _username, chat = await _load_owned_chat(chat_id, request, mgr, workspace)
+
+    state = await session.get_session_state_dict(
+        chat.session_id,
+        chat.user_id,
+        chat.channel,
+    )
+
+    transcript: list[dict[str, Any]] = []
+    if _scroll_strategy_enabled(workspace):
+        try:
+            transcript = _rows_for_export(
+                await run_sync_io(
+                    _read_session_rows,
+                    workspace,
+                    chat.session_id,
+                ),
+            )
+        except Exception:  # noqa: BLE001 - a session without history is still exportable
+            logger.warning(
+                "Could not read the durable transcript for chat %s; "
+                "exporting the live window only",
+                chat_id,
+                exc_info=True,
+            )
+
+    payload = {
+        "format": _SESSION_FILE_FORMAT,
+        "version": _SESSION_FILE_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "chat": {
+            "name": chat.name,
+            "channel": chat.channel,
+            "created_at": chat.created_at.isoformat() if chat.created_at else None,
+            "updated_at": chat.updated_at.isoformat() if chat.updated_at else None,
+        },
+        "session": {
+            "strategy": "scroll" if transcript else "native",
+            "state": state or {},
+            "transcript": transcript,
+        },
+    }
+    body = json.dumps(payload, ensure_ascii=False, default=str)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": _attachment_disposition(
+                _export_file_name(chat.name, chat.id),
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/import", response_model=ChatSpec)
+async def import_chat(
+    request: Request,
+    file: UploadFile = File(...),
+    mgr: ChatManager = Depends(get_chat_manager),
+    session: SafeJSONSession = Depends(get_session),
+    workspace=Depends(get_workspace),
+) -> ChatSpec:
+    """Create a new conversation from a previously exported file.
+
+    Always a **new** session: the id, session id and user id are minted here, so
+    importing cannot overwrite, resume into, or impersonate an existing chat,
+    and importing the same file twice yields two independent conversations.
+
+    Everything is written into the caller's own agent workspace — the same
+    boundary every other chat endpoint uses. Nothing from the file is used to
+    build a filesystem path; the path comes from the freshly generated session
+    id, so a crafted file cannot escape the workspace.
+    """
+    username = get_request_username(request)
+    if not is_agent_owned(load_config(), username, workspace.agent_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not own this agent",
+        )
+
+    raw = await file.read()
+    if len(raw) > _SESSION_IMPORT_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Session file is larger than "
+                f"{_SESSION_IMPORT_MAX_BYTES // (1024 * 1024)} MB"
+            ),
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Not a valid session file: the upload is not UTF-8 JSON",
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("format") != _SESSION_FILE_FORMAT:
+        raise HTTPException(
+            status_code=400,
+            detail="Not a session export file (missing the expected format marker)",
+        )
+    version = payload.get("version")
+    if version != _SESSION_FILE_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported session file version: "
+                f"{version!r} (this build reads version {_SESSION_FILE_VERSION})"
+            ),
+        )
+    session_block = payload.get("session")
+    if not isinstance(session_block, dict):
+        raise HTTPException(status_code=400, detail="Session file has no session body")
+    state = session_block.get("state")
+    if not isinstance(state, dict):
+        raise HTTPException(status_code=400, detail="Session file has no state")
+    transcript = session_block.get("transcript")
+    if not isinstance(transcript, list):
+        transcript = []
+
+    chat_block = payload.get("chat")
+    if not isinstance(chat_block, dict):
+        chat_block = {}
+    source_name = str(chat_block.get("name") or "").strip()
+
+    # The channel is deliberately not taken from the file. It selects a
+    # subdirectory and a channel badge, and it means "which inbound channel this
+    # conversation arrived on" — not where a file happened to come from. An
+    # imported copy is a console conversation, which is also one fewer
+    # attacker-controlled string anywhere near a path.
+    from ..channels.schema import DEFAULT_CHANNEL
+
+    new_session_id = f"console:imported:{uuid4()}"
+    new_spec = ChatSpec(
+        id=str(uuid4()),
+        name=source_name or "Imported chat",
+        session_id=new_session_id,
+        user_id="default",
+        channel=DEFAULT_CHANNEL,
+        meta={
+            "imported_from_file": True,
+            "imported_at": datetime.now(timezone.utc).isoformat(),
+            "source_agent_id": (
+                str(payload.get("agent", {}).get("agent_id") or "")
+                if isinstance(payload.get("agent"), dict)
+                else ""
+            ),
+            "source_channel": str(chat_block.get("channel") or ""),
+        },
+    )
+
+    # Order matters: transcript first, registration last. A failure partway then
+    # leaves a file the user cannot see rather than a chat in the list that
+    # opens to an empty or half-written conversation.
+    written_rows = 0
+    if transcript and _scroll_strategy_enabled(workspace):
+        try:
+            written_rows = await run_sync_io(
+                _write_session_rows,
+                workspace,
+                session_id=new_session_id,
+                rows=transcript,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Session import failed writing the transcript: %s",
+                exc,
+                exc_info=True,
+            )
+            # Include the cause. This is an operator-facing action on the
+            # caller's own file, and the reason is nearly always a deployment
+            # problem (an unreachable platform database, a schema that did not
+            # build) rather than anything the file did. "Could not write the
+            # imported conversation history" on its own sent someone to the
+            # server logs to find out what it meant; the same sentence plus
+            # `relation "platform.history_seq" does not exist` is immediately
+            # actionable.
+            reason = f"{type(exc).__name__}: {exc}".replace("\n", " ").strip()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not write the imported conversation history ({reason})",
+            ) from exc
+
+    session_path = Path(
+        await run_sync_io(
+            session._get_save_path,
+            new_session_id,
+            new_spec.user_id,
+            new_spec.channel,
+        )
+    )
+    try:
+        await write_json_atomic_async(
+            session_path,
+            state,
+            indent=None,
+            pool=POOL_FILE,
+        )
+        await mgr.create_chat(new_spec)
+    except Exception as exc:  # noqa: BLE001
+        # Do not leave a state file behind for a chat that was never registered:
+        # it would be an orphan on disk with no way for the user to see or
+        # remove it.
+        try:
+            await run_sync_io(session_path.unlink, True)
+        except OSError:
+            logger.debug("Could not clean up %s", session_path, exc_info=True)
+        logger.error("Session import failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create the imported conversation",
+        ) from exc
+
+    logger.info(
+        "Imported session %s as chat %s (%d transcript rows)",
+        chat_block.get("name") or "-",
+        new_spec.id,
+        written_rows,
+    )
+    return new_spec
 
 
 @router.post("/batch-delete", response_model=dict)
@@ -425,19 +851,23 @@ def _load_durable_transcript(
     """Return the session's full durable transcript, or ``None`` if unavailable.
 
     Only the Scroll context strategy keeps one; for any other strategy (or a
-    workspace whose history is missing/unreadable) the caller falls back to the
-    live window. Blocking on SQLite, so callers dispatch it to a thread.
+    workspace whose history is unreadable) the caller falls back to the live
+    window. Blocking on PostgreSQL, so callers dispatch it to a thread.
+
+    Deliberately **no file-existence check**. Until the storage move, history was
+    a per-workspace ``history.db`` and this guarded on ``is_file()``; history now
+    lives in PostgreSQL, so that file is only present on installs old enough to
+    have migrated, and the guard silently reduced every *fresh* install to the
+    live window — evicted turns disappeared from the console again, which is the
+    exact symptom this function was written to fix. The path is an address, not a
+    file: ``HistoryStore`` hashes it into the partition key and never opens it.
     """
     try:
+        db_path = _scroll_history_store_path(workspace)
+        if db_path is None:
+            return None
         from ...agents.context.scroll.history import HistoryStore
-        from ...config.config import load_agent_config
 
-        lcc = load_agent_config(workspace.agent_id).running.light_context_config
-        if getattr(lcc, "strategy", "native") != "scroll":
-            return None
-        db_path = Path(workspace.workspace_dir) / lcc.scroll_config.db_filename
-        if not db_path.is_file():
-            return None
         store = HistoryStore(db_path)
         try:
             return store.load_session_messages(

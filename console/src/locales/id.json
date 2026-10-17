@@ -258,6 +258,10 @@
     "normalModeTooltip": "Mode normal",
     "allChats": "Semua Chat",
     "createNewChat": "Buat Chat Baru",
+    "importChat": "Impor",
+    "importSuccess": "Obrolan diimpor: {{name}}",
+    "importFailed": "Gagal mengimpor berkas obrolan",
+    "exportFailed": "Gagal mengekspor obrolan",
     "pinDrawer": "Sematkan",
     "unpinDrawer": "Lepas sematan",
     "statusIdle": "Idle",
@@ -355,7 +359,8 @@
       "rename": "Ganti nama",
       "pin": "Sematkan",
       "unpin": "Lepas sematan",
-      "delete": "Hapus"
+      "delete": "Hapus",
+      "export": "Ekspor"
     },
     "queue": {
       "title": "Antrean pesan",

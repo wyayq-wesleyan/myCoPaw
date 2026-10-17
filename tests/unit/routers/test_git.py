@@ -168,7 +168,7 @@ async def test_commit_endpoint_passes_identity_args(
         "-c",
         "user.email=qwenpaw@localhost",
         "-c",
-        "user.name=QwenPaw",
+        "user.name=Huizhi Assistant",
         "commit",
         "-m",
         "fix identity",

@@ -167,9 +167,52 @@ export function useSessions() {
     }
   };
 
+  /** Download one conversation as a `.session.json` file. */
+  const exportSession = useCallback(
+    async (sessionId: string, name?: string) => {
+      try {
+        await chatApi.exportChat(sessionId, name || sessionId);
+      } catch (error) {
+        console.error("Failed to export session:", error);
+        message.error(t("chat.exportFailed", "Failed to export this chat"));
+      }
+    },
+    [message, t],
+  );
+
+  /** Create a new conversation from an exported file, then show it. */
+  const importSession = useCallback(
+    async (file: File): Promise<Session | null> => {
+      try {
+        const created = await chatApi.importChat(file);
+        await fetchSessions();
+        message.success(
+          t("chat.importSuccess", "Chat imported: {{name}}", {
+            name: created.name,
+          }),
+        );
+        return created as unknown as Session;
+      } catch (error) {
+        console.error("Failed to import session:", error);
+        // The server's own wording is far more useful than a generic label —
+        // "wrong file type" is the most likely outcome here.
+        message.error(
+          error instanceof Error && error.message
+            ? error.message
+            : t("chat.importFailed", "Failed to import the session file"),
+        );
+        return null;
+      }
+    },
+    [fetchSessions, message, t],
+  );
+
   return {
     sessions,
     loading,
+    fetchSessions,
+    exportSession,
+    importSession,
     updateSession,
     deleteSession,
     batchDeleteSessions,

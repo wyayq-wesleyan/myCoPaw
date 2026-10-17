@@ -15,6 +15,7 @@ from qwenpaw.exceptions import (
     CommandExecutionError,
     ProcessLaunchError,
 )
+from .io_pools import POOL_SUBPROCESS, run_in_pool
 
 # Upper bound for the liveness probe so a wedged ``tasklist`` cannot stall
 # shutdown. Callers with a deadline of their own pass a smaller budget.
@@ -272,7 +273,8 @@ async def run_command_async(
     thread so it remains usable on Windows event loops where
     `asyncio.create_subprocess_exec` may raise `NotImplementedError`.
     """
-    return await asyncio.to_thread(
+    return await run_in_pool(
+        POOL_SUBPROCESS,
         run_command,
         command,
         timeout=timeout,
@@ -318,7 +320,8 @@ async def start_command_async(
     except NotImplementedError:
         if os.name != "nt":
             raise
-        return await asyncio.to_thread(
+        return await run_in_pool(
+            POOL_SUBPROCESS,
             _start_threaded_process,
             command_list,
             popen_kwargs,

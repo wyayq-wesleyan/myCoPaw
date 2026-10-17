@@ -75,6 +75,7 @@ interface VirtualRowData {
   handleDelete: (sessionId: string) => void;
   handlePinToggle: (sessionId: string) => void;
   handleArchiveToggle: (sessionId: string) => void;
+  handleExport: (sessionId: string) => void;
   handleEditChange: (value: string) => void;
   handleEditSubmit: () => void;
   handleEditCancel: () => void;
@@ -148,6 +149,7 @@ const VirtualRow = React.memo(function VirtualRow({
         onDelete={data.handleDelete}
         onPin={data.handlePinToggle}
         onArchive={data.handleArchiveToggle}
+        onExport={data.handleExport}
         onEditChange={data.handleEditChange}
         onEditSubmit={data.handleEditSubmit}
         onEditCancel={data.handleEditCancel}
@@ -613,6 +615,87 @@ const ChatSessionDrawer: React.FC<ChatSessionDrawerProps> = (props) => {
     [sessions, refreshSessions, location.pathname, message, t],
   );
 
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+
+  /** Export one session as a downloadable file */
+  const handleExport = useCallback(
+    async (sessionId: string) => {
+      const session = sessions.find((s) => s.id === sessionId) as
+        | ExtendedChatSession
+        | undefined;
+      const backendId = session ? getBackendId(session) : null;
+      if (!backendId) return;
+      try {
+        await chatApi.exportChat(backendId, session?.name || "session");
+      } catch (err) {
+        console.error("Failed to export session:", err);
+        message.error(t("chat.exportFailed", "Failed to export this chat"));
+      }
+    },
+    [sessions, message, t],
+  );
+
+  /** Import a session file: create it, then open the new conversation. */
+  const handleImportFile = useCallback(
+    async (file: File) => {
+      const owner = sessionApi.getActiveOwner();
+      setImporting(true);
+      try {
+        const created = await chatApi.importChat(file);
+        if (!sessionApi.isActiveOwner(owner)) return;
+
+        // Refresh before navigating: the switch resolves against the session
+        // list, so the imported chat has to be in it first or the console
+        // lands on a session it cannot find.
+        const freshList =
+          (await sessionApi.getSessionList()) as ExtendedChatSession[];
+        if (!sessionApi.isActiveOwner(owner)) return;
+        setSessions(freshList);
+        syncSessionsGlobal(freshList as unknown as ExtendedSession[]);
+
+        message.success(
+          t("chat.importSuccess", "Chat imported: {{name}}", {
+            name: created.name,
+          }),
+        );
+
+        // Prefer the list's own id for this chat (the display id can differ
+        // from the backend UUID); fall back to the UUID, which the session
+        // initializer resolves against the same list.
+        const entry = freshList.find(
+          (s) => s.id === created.id || s.realId === created.id,
+        );
+        handleSessionClick(entry?.id ?? created.id);
+      } catch (err) {
+        console.error("Failed to import session:", err);
+        message.error(
+          err instanceof Error && err.message
+            ? err.message
+            : t("chat.importFailed", "Failed to import the session file"),
+        );
+      } finally {
+        setImporting(false);
+      }
+    },
+    [handleSessionClick, setSessions, message, t],
+  );
+
+  /** Trigger the hidden file picker used by the import button */
+  const handleImportClick = useCallback(() => {
+    importInputRef.current?.click();
+  }, []);
+
+  const onImportInputChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      // Reset first so picking the same file twice still fires a change event.
+      event.target.value = "";
+      if (file) await handleImportFile(file);
+    },
+    [handleImportFile],
+  );
+
   /** Filter sessions by search query */
   const filteredSessions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -738,32 +821,35 @@ const ChatSessionDrawer: React.FC<ChatSessionDrawerProps> = (props) => {
       t,
       handleSessionClick,
       handleEditStart,
-      handleDelete,
-      handlePinToggle,
-      handleArchiveToggle,
-      handleEditChange,
-      handleEditSubmit,
-      handleEditCancel,
-      toggleGroup,
-    }),
-    [
-      flatRows,
-      currentSessionId,
-      switchingSessionId,
-      editingSessionId,
-      editValue,
-      t,
-      handleSessionClick,
-      handleEditStart,
-      handleDelete,
-      handlePinToggle,
-      handleArchiveToggle,
-      handleEditChange,
-      handleEditSubmit,
-      handleEditCancel,
-      toggleGroup,
-    ],
-  );
+        handleDelete,
+        handlePinToggle,
+        handleArchiveToggle,
+        handleExport,
+        handleEditChange,
+        handleEditSubmit,
+        handleEditCancel,
+        toggleGroup,
+      }),
+      [
+        flatRows,
+        currentSessionId,
+        switchingSessionId,
+        editingSessionId,
+        editValue,
+        t,
+        handleSessionClick,
+        handleEditStart,
+        handleDelete,
+        handlePinToggle,
+        handleArchiveToggle,
+        handleExport,
+        handleEditChange,
+        handleEditSubmit,
+        handleEditCancel,
+        toggleGroup,
+      ],
+    );
+
 
   const panelContent = (
     <>
@@ -798,12 +884,33 @@ const ChatSessionDrawer: React.FC<ChatSessionDrawerProps> = (props) => {
         </div>
       </div>
 
-      {/* Create new chat button */}
-      <div className={styles.createSection}>
-        <div className={styles.createButton} onClick={handleCreateSession}>
-          {t("chat.createNewChat")}
+        {/* Create new chat button */}
+        <div className={styles.createSection}>
+          <div className={styles.createButton} onClick={handleCreateSession}>
+            {t("chat.createNewChat")}
+          </div>
+          <button
+            type="button"
+            className={styles.importButton}
+            onClick={handleImportClick}
+            disabled={importing}
+          >
+            {importing && <Spin size="small" />}
+            {t("chat.importChat", "Import")}
+          </button>
+          {/* Hidden picker for the import button. Kept outside the list on
+              purpose: importing creates a new chat, so it is not an action on
+              any existing row. */}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            hidden
+            data-testid="session-import-input"
+            onChange={onImportInputChange}
+          />
         </div>
-      </div>
+
 
       {/* Search bar */}
       <div className={styles.searchContainer}>

@@ -6,6 +6,7 @@ import threading
 import time
 import traceback
 import uuid
+from typing import Any
 
 from .config import Settings
 from .logging_setup import configure_logging
@@ -27,13 +28,196 @@ HEARTBEAT_INTERVAL_SECONDS = 10
 # broken to the user ("Worker 心跳已超时") until the container is restarted.
 DB_RETRY_SECONDS = 5
 
+# How often the idle branch reruns startup-style recovery. Jobs whose owner
+# died without a restart (OOM kill of the worker process while the container
+# stayed up, a crash mid-claim) are reclaimed once the heartbeat grace window
+# passes — on this tick, not on the hour-scale stale sweep.
+RECOVERY_SWEEP_INTERVAL_SECONDS = 60
+
+
+def _resolve_worker_id() -> str:
+    """Identity of this worker instance.
+
+    Job recovery treats "owner's heartbeat went stale" as "owner is dead", and
+    reclaims a restarting worker's own previous-life jobs immediately — both
+    only hold if the id is **stable across restarts**. ``KNOWLEDGE_WORKER_ID``
+    (set in Compose) is authoritative; the container hostname is the fallback,
+    which survives ``docker restart`` but changes on recreate, in which case
+    the periodic recovery sweep still picks the orphans up within about a
+    minute of the old heartbeat going stale.
+    """
+    explicit = os.getenv("KNOWLEDGE_WORKER_ID", "").strip()
+    if explicit:
+        return explicit
+    return os.uname().nodename
+
+
+class LockHeldByAnotherInstance(RuntimeError):
+    """The worker id is already owned by another live process (definitive)."""
+
+
+class WorkerInstanceLock:
+    """Session-level advisory lock that makes one worker id single-live.
+
+    Recovery trusts "owner heartbeat stale ⇒ owner dead". That is only sound
+    if two live processes can never share a worker id, which is exactly what
+    this lock guarantees: a worker may start only while it holds the lock, and
+    the main loop re-tests it so a dropped database connection (which releases
+    the server-side lock) is noticed instead of silently leaving two instances
+    under one id. The lock dies with the session, so a crash frees it for the
+    next instance automatically.
+    """
+
+    _RECONNECT_ATTEMPTS = 5
+    _RECONNECT_DELAY = 3.0
+
+    def __init__(self, database_url: str, worker_id: str) -> None:
+        import psycopg
+
+        self._psycopg = psycopg
+        self._url = database_url
+        self._worker_id = worker_id
+        self._conn: Any = None  # autocommit psycopg connection holding the lock
+
+    def _lock_key(self) -> int:
+        import hashlib
+
+        # Deterministic per worker id; keep it inside signed 64-bit int4 range
+        # so pg_advisory_lock accepts it directly.
+        return int(hashlib.sha256(self._worker_id.encode()).hexdigest()[:16], 16) >> 1
+
+    def _connect_and_lock(self) -> None:
+        conn = self._psycopg.connect(self._url)
+        conn.autocommit = True
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock(%s)",
+            (self._lock_key(),),
+        ).fetchone()
+        if not row or not row[0]:
+            conn.close()
+            raise LockHeldByAnotherInstance(
+                f"另一个 knowledge worker 实例已持有相同身份 {self._worker_id!r}；"
+                "多副本部署必须为每个副本设置不同的 KNOWLEDGE_WORKER_ID"
+            )
+        self._conn = conn
+
+    def acquire(self, attempts: int = 5, delay: float = 3.0) -> bool:
+        """Take the lock, retrying while the database itself is still coming up.
+
+        A definitive ``LockHeldByAnotherInstance`` propagates immediately —
+        retrying a genuinely owned id would only wait out the budget to end
+        in the same answer.
+        """
+        for attempt in range(1, attempts + 1):
+            try:
+                self._connect_and_lock()
+                return True
+            except LockHeldByAnotherInstance:
+                raise
+            except Exception as exc:
+                if attempt == attempts:
+                    logger.error(
+                        "could not acquire the worker instance lock after %d attempt(s): %s",
+                        attempts, exc,
+                    )
+                    return False
+                logger.warning(
+                    "worker lock attempt %d/%d failed, retrying in %.0fs: %s",
+                    attempt, attempts, delay, exc,
+                )
+                time.sleep(delay)
+        return False
+
+    def _discard_conn(self) -> None:
+        try:
+            if self._conn is not None and not self._conn.closed:
+                self._conn.close()
+        except Exception:
+            pass
+        self._conn = None
+
+    def still_held(self) -> bool:
+        """Re-test the lock cheaply; re-acquire after a database reconnect.
+
+        ``pg_try_advisory_lock`` is idempotent for the session that already
+        holds it, so calling it again is a free liveness check. ``False`` means
+        another live instance owns the id — the caller must stop.
+
+        A database outage is NOT that: the lock dies with the connection, so
+        an outage is a re-acquire opportunity, and a transient one would
+        otherwise turn every Postgres restart into a worker exit loop (the
+        heartbeat and claim paths deliberately ride such outages out).
+        Connection-level failures therefore get the same bounded retry
+        ``acquire()`` uses. If the database stays unreachable past that, this
+        returns ``True`` (keep running): while the database is down this
+        worker cannot claim anything either, so it cannot duplicate work, and
+        the next retest — once connectivity returns — gets the definitive
+        answer. Only an explicit "lock held elsewhere" outcome stops it.
+        """
+        for attempt in range(1, self._RECONNECT_ATTEMPTS + 1):
+            try:
+                if self._conn is None or self._conn.closed:
+                    self._connect_and_lock()
+                    return True
+                row = self._conn.execute(
+                    "SELECT pg_try_advisory_lock(%s)",
+                    (self._lock_key(),),
+                ).fetchone()
+                return bool(row and row[0])
+            except LockHeldByAnotherInstance:
+                # Unambiguous: another live instance owns the id now.
+                self._discard_conn()
+                raise
+            except Exception as exc:
+                self._discard_conn()
+                if attempt == self._RECONNECT_ATTEMPTS:
+                    logger.error(
+                        "could not verify the worker instance lock after %d "
+                        "attempt(s) (%s); assuming ownership and riding out "
+                        "the outage — claims will fail until the database "
+                        "returns",
+                        self._RECONNECT_ATTEMPTS, exc,
+                    )
+                    return True
+                logger.warning(
+                    "worker lock retest attempt %d/%d failed, retrying in "
+                    "%.0fs: %s",
+                    attempt, self._RECONNECT_ATTEMPTS, self._RECONNECT_DELAY,
+                    exc,
+                )
+                time.sleep(self._RECONNECT_DELAY)
+        return True
+
+    def release(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is None or conn.closed:
+            return
+        try:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (self._lock_key(),))
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 class WorkerHeartbeat:
-    """Keep liveness observable even while a parser blocks for minutes."""
+    """Keep liveness observable even while a parser blocks for minutes.
 
-    def __init__(self, store: Store) -> None:
+    ``worker_id`` MUST be the same stable id the claims run under
+    (``WorkerInstanceLock``'s id): job recovery judges "abandoned" by the
+    freshness of the row keyed ``jobs.owner_worker_id``. A heartbeat under a
+    private random id would leave the owner's row frozen at claim time, so
+    every recovery pass — this instance's own periodic sweep or another
+    replica's — would see a live parse as dead after the 60s grace and
+    requeue work that is actively running.
+    """
+
+    def __init__(self, store: Store, worker_id: str | None = None) -> None:
         self.store = store
-        self.worker_id = f"{os.uname().nodename}-{uuid.uuid4().hex[:8]}"
+        self.worker_id = worker_id or f"{os.uname().nodename}-{uuid.uuid4().hex[:8]}"
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._status = "idle"
@@ -191,25 +375,55 @@ def run() -> None:
     settings = Settings.from_env()
     settings.ensure_dirs()
     store = Store(settings.database_url)
+    worker_id = _resolve_worker_id()
+    # The instance lock is a precondition, not a nicety: without it two live
+    # processes could share one worker id, which would let each steal the
+    # other's jobs and duplicate parsing, embeddings and graph writes.
+    instance_lock = WorkerInstanceLock(settings.database_url, worker_id)
+    try:
+        if not instance_lock.acquire():
+            raise SystemExit(
+                f"无法取得 worker 实例锁（身份 {worker_id!r}）；"
+                "多副本部署必须为每个副本设置不同的 KNOWLEDGE_WORKER_ID"
+            )
+    except LockHeldByAnotherInstance as exc:
+        raise SystemExit(str(exc)) from exc
     # Startup recovery is best-effort. A database that is not reachable yet
     # (it may still be starting alongside this container) must not abort the
     # worker: the heartbeat below is what tells the API whether uploads are
     # possible, so dying here would report "worker not running" indefinitely.
+    # reclaim_owner marks this instance's own previous life: the lock proves
+    # the previous holder of this id is gone, so those jobs are reclaimed
+    # immediately instead of waiting out the heartbeat grace window.
     try:
-        recovered = store.recover_interrupted_jobs()
+        recovered = store.recover_interrupted_jobs(reclaim_owner=worker_id)
         if recovered:
             logger.warning("recovered %d interrupted knowledge jobs", recovered)
     except Exception:
         logger.exception(
             "startup recovery failed; continuing so the heartbeat stays alive",
         )
-    heartbeat = WorkerHeartbeat(store)
+    heartbeat = WorkerHeartbeat(store, worker_id=worker_id)
     heartbeat.start()
-    logger.info("knowledge worker started; data_dir=%s", settings.data_dir)
+    logger.info(
+        "knowledge worker started; data_dir=%s worker_id=%s",
+        settings.data_dir, worker_id,
+    )
+    last_recovery_at = 0.0
     try:
         while True:
             try:
-                job = store.claim_job()
+                # Raises LockHeldByAnotherInstance if a twin took the id now;
+                # during a database outage it keeps returning True (claims
+                # fail on their own until the database returns), so the worker
+                # rides outages out instead of exiting.
+                instance_lock.still_held()
+                job = store.claim_job(worker_id=worker_id)
+            except LockHeldByAnotherInstance as exc:
+                # Definitive: another live instance owns this id now.
+                raise SystemExit(str(exc)) from exc
+            except SystemExit:
+                raise
             except Exception:
                 # Same reasoning as startup recovery: a transient database
                 # error must not terminate the loop. Keep the heartbeat going
@@ -226,6 +440,20 @@ def run() -> None:
                 # here reclaims it so the queue drains again; waiting for a
                 # restart would leave uploads stuck at "等待 Worker" forever.
                 _sweep_stale_jobs(store, settings)
+                now = time.monotonic()
+                if now - last_recovery_at >= RECOVERY_SWEEP_INTERVAL_SECONDS:
+                    last_recovery_at = now
+                    try:
+                        orphaned = store.recover_interrupted_jobs()
+                        if orphaned:
+                            logger.warning(
+                                "recovered %d orphaned knowledge job(s) (dead owner)",
+                                orphaned,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "orphan recovery failed; will retry next interval",
+                        )
                 # Backfill runs only while the queue is empty, so indexing work
                 # never competes with an upload for the worker. It is resumable and
                 # returns 0 once there is nothing left, which is the steady state.
@@ -261,6 +489,7 @@ def run() -> None:
                 heartbeat.set("idle")
     finally:
         heartbeat.stop()
+        instance_lock.release()
 
 
 if __name__ == "__main__":

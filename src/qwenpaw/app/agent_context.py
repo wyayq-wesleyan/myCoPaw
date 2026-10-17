@@ -196,8 +196,11 @@ async def get_project_dir_for_request(
     if chat_id:
         chat = await workspace.chat_manager.get_chat(chat_id)
         if chat is None:
-            from fastapi import HTTPException
-
+            # NOTE: use the module-level HTTPException. A local ``from fastapi
+            # import HTTPException`` here would shadow the module name for the
+            # whole function — the conditional import leaves the local unbound
+            # whenever ``chat_id`` is absent, turning the ``except
+            # HTTPException`` below into an UnboundLocalError.
             raise HTTPException(status_code=404, detail="Chat not found")
         session_override = session_project_dir(chat.meta)
     else:
@@ -219,7 +222,7 @@ async def get_project_dir_for_request(
             workspace.workspace_dir,
             agent_project_dir=agent_project_dir,
             session_override=resolved_override,
-        )[0]
+        )
         username = get_request_username(request)
         if username:
             try:
@@ -240,8 +243,6 @@ async def get_project_dir_for_request(
     except HTTPException:
         raise
     except NotADirectoryError as exc:
-        from fastapi import HTTPException
-
         raise HTTPException(
             status_code=400,
             detail=f"Project directory is unavailable: {exc}",

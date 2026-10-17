@@ -43,6 +43,15 @@ POOL_WAIT_SECONDS = 15.0
 # build over an existing history must not be cut off mid-way.
 STATEMENT_TIMEOUT_MS = 60000
 
+# Observability counters. Plain integers: bounded by construction and cheap to
+# bump on every checkout. Without them a saturated pool is invisible until a
+# user reports a timeout — and there is no way to tell "who is holding the
+# connections" from the outside.
+_wait_count = 0
+_exhausted_count = 0
+_peak_in_use = 0
+_counters_lock = threading.Lock()
+
 _pool: ThreadedConnectionPool | None = None
 # Re-entrant on purpose. ``get_conn``'s wait branch re-resolves the pool while
 # holding this lock (the pool it was waiting on may have been discarded), and
@@ -130,15 +139,22 @@ def get_conn():
     waiting turns a short burst into ordinary latency. The wait is bounded so a
     genuinely stuck pool still fails rather than pinning a worker thread.
     """
-    global _pool
+    global _pool, _wait_count, _exhausted_count, _peak_in_use
     pool = _get_pool()
     deadline = time.monotonic() + POOL_WAIT_SECONDS
     delay = 0.02
+    waited = False
     while True:
         try:
-            return pool.getconn()
+            conn = pool.getconn()
         except PoolError:
+            if not waited:
+                waited = True
+                with _counters_lock:
+                    _wait_count += 1
             if time.monotonic() >= deadline:
+                with _counters_lock:
+                    _exhausted_count += 1
                 raise PlatformStoreUnavailable("连接池已耗尽") from None
             time.sleep(delay)
             delay = min(delay * 2, 0.25)
@@ -147,6 +163,12 @@ def get_conn():
             with _pool_lock:
                 if _pool is not pool:
                     pool = _get_pool()
+            continue
+        with _counters_lock:
+            in_use = len(getattr(pool, "_used", {}) or {})
+            if in_use > _peak_in_use:
+                _peak_in_use = in_use
+        return conn
 
 
 def put_conn(conn) -> None:
@@ -186,6 +208,45 @@ def is_available() -> bool:
         put_conn(conn)
 
 
+def pool_stats() -> dict[str, Any]:
+    """Snapshot of the platform pool. Never raises, never blocks.
+
+    Read-only on purpose: the debug endpoint must be safe to call while the
+    pool is saturated (that is exactly when someone will call it).
+    """
+    try:
+        with _pool_lock:
+            pool = _pool
+        with _counters_lock:
+            observed = {
+                "wait_count": _wait_count,
+                "exhausted_count": _exhausted_count,
+                "peak_in_use": _peak_in_use,
+            }
+        if pool is None:
+            return {
+                "max_size": POOL_MAX_SIZE,
+                "in_use": 0,
+                "idle": 0,
+                "wait_seconds": POOL_WAIT_SECONDS,
+                "open": False,
+                **observed,
+            }
+        used = getattr(pool, "_used", {}) or {}
+        idle = getattr(pool, "_pool", []) or []
+        return {
+            "max_size": POOL_MAX_SIZE,
+            "in_use": len(used),
+            "idle": len(idle),
+            "wait_seconds": POOL_WAIT_SECONDS,
+            "open": True,
+            **observed,
+        }
+    except Exception:  # noqa: BLE001 - diagnostics must never raise
+        logger.debug("platform store: pool stats unavailable", exc_info=True)
+        return {"error": "unavailable"}
+
+
 def last_error() -> str | None:
     """The most recent connection failure detail, for diagnostics."""
     return _last_error
@@ -217,6 +278,7 @@ __all__ = [
     "get_conn",
     "is_available",
     "last_error",
+    "pool_stats",
     "put_conn",
     "reset_pool",
 ]

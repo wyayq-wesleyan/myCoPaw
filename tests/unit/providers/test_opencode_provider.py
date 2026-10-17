@@ -68,8 +68,9 @@ class TestOpenCodeProvider:
             m.is_free for m in OPENCODE_MODELS
         ), "All OPENCODE_MODELS should be free"
 
-    def test_opencode_registered_in_provider_manager(self):
+    def test_opencode_registered_in_provider_manager(self, register_builtins):
         """opencode provider should be registerable via built-in init."""
+        register_builtins("opencode")
         mgr = ProviderManager()
         assert PROVIDER_OPENCODE.id in mgr.builtin_providers
         provider = mgr.builtin_providers[PROVIDER_OPENCODE.id]

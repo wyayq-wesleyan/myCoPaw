@@ -36,20 +36,23 @@ def api_client():
 
 
 async def test_get_language_default(api_client):
-    """Should return 'en' when no settings file exists."""
+    """The air-gapped console has one supported language: zh."""
     async with api_client:
         resp = await api_client.get("/api/settings/language")
     assert resp.status_code == 200
-    assert resp.json() == {"language": "en"}
+    assert resp.json() == {"language": "zh"}
 
 
-async def test_get_language_persisted(api_client, _use_tmp_settings):
-    """Should return the persisted language value."""
+async def test_get_language_ignores_persisted_value(
+    api_client,
+    _use_tmp_settings,
+):
+    """GET always reports zh even if an old settings file holds another value."""
     _use_tmp_settings.write_text(json.dumps({"language": "ja"}), "utf-8")
     async with api_client:
         resp = await api_client.get("/api/settings/language")
     assert resp.status_code == 200
-    assert resp.json() == {"language": "ja"}
+    assert resp.json() == {"language": "zh"}
 
 
 # ── PUT /settings/language ───────────────────────────────────────────
@@ -61,83 +64,89 @@ async def test_put_language_valid(
     lang,
     _use_tmp_settings,
 ):
-    """Should accept all valid languages and persist them."""
+    """PUT responds, but the console language stays pinned to zh."""
     async with api_client:
         resp = await api_client.put(
             "/api/settings/language",
             json={"language": lang},
         )
     assert resp.status_code == 200
-    assert resp.json() == {"language": lang}
+    assert resp.json() == {"language": "zh"}
 
-    data = json.loads(_use_tmp_settings.read_text("utf-8"))
-    assert data["language"] == lang
+    # The requested language is not persisted anymore.
+    assert not _use_tmp_settings.exists()
 
 
-async def test_put_language_invalid(api_client):
-    """Should reject invalid language with 400."""
+@pytest.mark.parametrize(
+    "payload",
+    [{"language": "xx"}, {"language": ""}, {"lang": "zh"}],
+)
+async def test_put_language_ignores_unsupported_body(api_client, payload):
+    """Any body is accepted and the language stays zh."""
     async with api_client:
-        resp = await api_client.put(
-            "/api/settings/language",
-            json={"language": "xx"},
-        )
-    assert resp.status_code == 400
-    assert "Invalid language" in resp.json()["detail"]
-
-
-async def test_put_language_empty(api_client):
-    """Should reject empty language with 400."""
-    async with api_client:
-        resp = await api_client.put(
-            "/api/settings/language",
-            json={"language": ""},
-        )
-    assert resp.status_code == 400
-
-
-async def test_put_language_missing_key(api_client):
-    """Should reject body without 'language' key with 400."""
-    async with api_client:
-        resp = await api_client.put(
-            "/api/settings/language",
-            json={"lang": "zh"},
-        )
-    assert resp.status_code == 400
+        resp = await api_client.put("/api/settings/language", json=payload)
+    assert resp.status_code == 200
+    assert resp.json() == {"language": "zh"}
 
 
 async def test_put_then_get_roundtrip(api_client):
-    """PUT then GET should return the updated language."""
+    """PUT then GET always reports the pinned language."""
     async with api_client:
         await api_client.put(
             "/api/settings/language",
             json={"language": "ru"},
         )
         resp = await api_client.get("/api/settings/language")
-    assert resp.json() == {"language": "ru"}
+    assert resp.json() == {"language": "zh"}
 
 
 async def test_put_language_preserves_other_settings(
     api_client,
     _use_tmp_settings,
 ):
-    """PUT should not overwrite other keys in settings.json."""
+    """PUT must not overwrite other keys in settings.json."""
     _use_tmp_settings.write_text(
         json.dumps({"theme": "dark", "language": "en"}),
         "utf-8",
     )
     async with api_client:
-        await api_client.put(
+        resp = await api_client.put(
             "/api/settings/language",
             json={"language": "zh"},
         )
+    assert resp.json() == {"language": "zh"}
 
     data = json.loads(_use_tmp_settings.read_text("utf-8"))
-    assert data["language"] == "zh"
-    assert data["theme"] == "dark"
+    assert data == {"theme": "dark", "language": "en"}
+
+
+@pytest.fixture
+def as_admin(monkeypatch):
+    """Let the admin guard accept the request without a real auth store."""
+
+    from qwenpaw.app.routers import _admin_guard
+
+    monkeypatch.setattr(
+        _admin_guard,
+        "get_request_username",
+        lambda _request: "admin",
+    )
+    monkeypatch.setattr(_admin_guard, "require_admin_access", lambda _u: None)
+
+
+async def test_offload_policy_requires_admin(api_client):
+    """Unauthenticated PUT to the admin-only policy is rejected."""
+    async with api_client:
+        resp = await api_client.put(
+            "/api/settings/offload-policy",
+            json={"default_action": "offload"},
+        )
+    assert resp.status_code == 401
 
 
 async def test_concurrent_language_and_offload_policy_updates(
     api_client,
+    as_admin,
     _use_tmp_settings,
 ):
     """Concurrent PUTs must not drop either key (path lock + atomic write)."""
@@ -160,5 +169,5 @@ async def test_concurrent_language_and_offload_policy_updates(
     assert lang.json() == {"language": "zh"}
     assert policy.json() == {"default_action": "offload"}
     data = json.loads(_use_tmp_settings.read_text("utf-8"))
-    assert data["language"] == "zh"
+    # The language PUT no longer persists anything.
     assert data["offload_policy"] == "offload"

@@ -2420,6 +2420,10 @@
     "normalModeTooltip": "標準モード",
     "allChats": "すべてのチャット",
     "createNewChat": "新しいチャットを作成",
+    "importChat": "インポート",
+    "importSuccess": "会話をインポートしました：{{name}}",
+    "importFailed": "会話のインポートに失敗しました",
+    "exportFailed": "会話のエクスポートに失敗しました",
     "pinDrawer": "固定",
     "unpinDrawer": "固定解除",
     "statusIdle": "待機",
@@ -2517,7 +2521,8 @@
       "rename": "名前を変更",
       "pin": "ピン留め",
       "unpin": "ピン留め解除",
-      "delete": "削除"
+      "delete": "削除",
+      "export": "エクスポート"
     },
     "queue": {
       "title": "メッセージキュー",

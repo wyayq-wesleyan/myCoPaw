@@ -556,6 +556,95 @@ class HistoryStore:
             messages.append(msg)
         return messages
 
+    # --- session export / import ---------------------------------------
+
+    def export_session_rows(
+        self,
+        session_id: str,
+        agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return this session's transcript as **raw rows**, oldest first.
+
+        Deliberately not ``load_session_messages``: that path rebuilds ``Msg``
+        objects, and rebuilding truncates any tool result over
+        ``_TRANSCRIPT_TOOL_RESULT_MAX_CHARS`` and recomputes the headline from
+        the body. Both are invisible in the console but corrupt a file that is
+        meant to restore the conversation elsewhere, so the export works on
+        columns instead of messages.
+
+        Every column of ``platform.conversation_history`` is TEXT, so the rows
+        are plain JSON-serialisable dicts — no decoding, and therefore nothing
+        to lose. ``seq`` is included for readability only; the importer allocates
+        fresh sequence numbers (``(workspace_key, seq)`` is the primary key, so
+        reusing the original ones would collide with the source session).
+        """
+        if not session_id:
+            return []
+        where = ["workspace_key = %s", "session_id = %s"]
+        params: list[Any] = [self._workspace_key, session_id]
+        if agent_id:
+            where.append("(agent_id = %s OR agent_id IS NULL)")
+            params.append(agent_id)
+        columns = ", ".join(("seq",) + _INSERT_COLUMNS)
+        conn = get_conn()
+        try:
+            with dict_cursor(conn) as cur:
+                cur.execute(
+                    f"SELECT {columns} FROM platform.conversation_history "
+                    "WHERE " + " AND ".join(where) +
+                    # Same ordering as the read path: the time the turn happened
+                    # first, write order as the tie-break. Kept in step with
+                    # ``load_session_messages`` on purpose — an export that
+                    # ordered differently would scramble a conversation on
+                    # re-import in exactly the way that ordering was added to fix.
+                    " ORDER BY created_at ASC NULLS LAST, seq",
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+        finally:
+            put_conn(conn)
+        return [dict(row) for row in rows]
+
+    def import_session_rows(
+        self,
+        *,
+        session_id: str,
+        rows: Sequence[dict],
+        agent_id: str | None = None,
+    ) -> int:
+        """Write exported rows into *session_id*, allocating fresh ``seq``s.
+
+        ``import_rows`` (the SQLite→PostgreSQL upgrade path) cannot be used
+        here: it preserves the original ``seq``, which is half of the primary
+        key and would collide with the rows still living under the source
+        session. This goes through ``append_many`` instead, which hands out new
+        sequence numbers and dedupes on ``(workspace_key, session_id,
+        dedup_key)`` — a new session id never collides with the source, so the
+        whole transcript lands.
+
+        Malformed rows are skipped rather than aborting the import: a file is
+        user-supplied input, and one unusable row should not cost the user the
+        rest of their conversation. Returns the number of rows written.
+        """
+        entries: list[tuple[LogEntry, str | None]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            entry = _row_to_entry(row)
+            if entry is None:
+                continue
+            dedup_key = row.get("dedup_key")
+            entries.append(
+                (entry, str(dedup_key) if dedup_key else None),
+            )
+        if not entries:
+            return 0
+        return self.append_many(
+            session_id=session_id,
+            entries=entries,
+            agent_id=agent_id,
+        )
+
     def claim_session(self, session_id: str, agent_id: str | None) -> int:
         """Assign legacy unowned rows in a canonical session to an agent."""
         if not session_id or not agent_id:
@@ -1023,6 +1112,42 @@ def _coerce_block(item: Any) -> Any:
     if block_type == "tool_result":
         block = _truncate_tool_result(block)
     return block
+
+
+def _row_to_entry(row: Any) -> LogEntry | None:
+    """Turn one exported row back into a ``LogEntry`` for re-insertion.
+
+    The structured columns (``tool_input`` / ``blocks`` / ``metadata``) are
+    copied across as the **raw text** they were read as, not decoded and
+    re-encoded. ``_to_json`` passes a ``str`` through untouched, so the value
+    written back is byte-identical to the value that came out — which is the
+    point of the exercise. Decoding first would not round-trip: a ``tool_input``
+    that was a bare string is stored unquoted (``git status``), and ``_loads``
+    returns ``None`` for that because it is not valid JSON, so the argument
+    would silently vanish on import.
+
+    Returns ``None`` for a row that cannot be a durable entry (missing or
+    unknown ``kind``), so the caller can skip it instead of writing a row the
+    schema will reject.
+    """
+    if not isinstance(row, dict):
+        return None
+    kind = row.get("kind")
+    if kind not in ("model_turn", "context_msg", "tool_result"):
+        return None
+    return LogEntry(
+        kind=kind,
+        role=row.get("role"),
+        name=row.get("name"),
+        content=row.get("content"),
+        metadata=row.get("metadata"),
+        tool_call_id=row.get("tool_call_id"),
+        tool_input=row.get("tool_input"),
+        tool_state=row.get("tool_state"),
+        headline=row.get("headline"),
+        blocks=row.get("blocks"),
+        created_at=row.get("created_at"),
+    )
 
 
 def _row_to_msg(row: Any) -> Msg | None:

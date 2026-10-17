@@ -37,7 +37,11 @@ from .pool import PlatformStoreUnavailable, get_conn, put_conn
 logger = logging.getLogger(__name__)
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+# Versions this process has confirmed are recorded in `platform.schema_migrations`,
+# and versions whose statements could not all run. Both are keyed per version
+# because different callers ask for different migration sets — see `ensure_schema`.
+_ready_versions: set[str] = set()
+_incomplete_versions: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -72,14 +76,18 @@ def applied_versions(cur) -> set[str]:
     return {row[0] for row in cur.fetchall()}
 
 
-def _run_statements(cur, migration: Migration) -> None:
+def _run_statements(cur, migration: Migration) -> list[str]:
     """Run one migration's statements, isolating each failure with a savepoint.
 
     A failing statement is rolled back to its savepoint and skipped. A plain
     rollback would be wrong here: it would discard the statements that already
     succeeded earlier in the same migration, and (being transaction-scoped) would
     also release the advisory lock mid-flight.
+
+    Returns the statements that were skipped, so the caller can refuse to record
+    the migration as applied — see ``apply_migrations`` for why that matters.
     """
+    skipped: list[str] = []
     for index, statement in enumerate(migration.statements):
         savepoint = f"mig_{index}"
         cur.execute(f"SAVEPOINT {savepoint}")
@@ -95,6 +103,8 @@ def _run_statements(cur, migration: Migration) -> None:
                 exc,
                 " ".join(statement.split())[:120],
             )
+            skipped.append(" ".join(statement.split())[:120])
+    return skipped
 
 
 def apply_migrations(migrations: list[Migration]) -> list[str]:
@@ -121,7 +131,30 @@ def apply_migrations(migrations: list[Migration]) -> list[str]:
             for migration in migrations:
                 if migration.version in done:
                     continue
-                _run_statements(cur, migration)
+                skipped = _run_statements(cur, migration)
+                if skipped:
+                    # A skipped statement means the schema is NOT what this
+                    # migration promises — a missing table, a missing extension.
+                    # Recording it as applied made that permanent and silent: the
+                    # version was never retried, so the gap surfaced much later as
+                    # an unrelated-looking failure (a chat import 500ing on
+                    # ``relation "platform.history_seq" does not exist``, with
+                    # nothing in the log connecting it to the migration). Leave the
+                    # version unrecorded so the next boot retries, and say so
+                    # loudly — the statements are all IF-NOT-EXISTS, so re-running
+                    # them costs nothing and self-heals as soon as the environment
+                    # is fixed.
+                    _incomplete_versions.add(migration.version)
+                    logger.error(
+                        "platform store: migration %s (%s) had %d statement(s) "
+                        "skipped and is NOT recorded as applied; it will be "
+                        "retried on the next start. First skipped: %s",
+                        migration.version,
+                        migration.name,
+                        len(skipped),
+                        skipped[0],
+                    )
+                    continue
                 cur.execute(
                     f'INSERT INTO "{PLATFORM_SCHEMA}".schema_migrations '
                     "(version, name) VALUES (%s, %s) "
@@ -154,22 +187,31 @@ def ensure_schema(migrations: list[Migration]) -> bool:
     Called from constructors on the startup path, so it must NOT raise when the
     database is down: the platform has to boot and report the affected features
     as unavailable, rather than crash-looping while PostgreSQL comes up. A
-    failure is logged and answered with ``False``, and the once-per-process flag
-    stays unset so the next call retries instead of treating an empty schema as
-    ready.
+    failure is logged and answered with ``False``, and the bookkeeping stays
+    unset so the next call retries instead of treating an empty schema as ready.
+
+    The once-per-process cache is keyed on **versions**, not on a single boolean.
+    Four callers pass four different sets — conversation history, governance
+    audit, token usage, path scoping — and a bare "schema is ready" flag let
+    whichever happened to run first answer for all of them: on a deployment where
+    audit or token usage initialised first, the history tables were then never
+    created, for the life of the process, and a restart did not help because the
+    same caller won the race again. The symptom was a chat import failing with
+    ``relation "platform.history_seq" does not exist`` while the database was
+    perfectly reachable and some other platform tables existed.
 
     Returns whether the schema is known to be applied. Callers that need data
     immediately should let their own query raise ``PlatformStoreUnavailable``
     with a specific message; this only covers the bookkeeping step.
     """
-    global _schema_ready
-    if _schema_ready:
+    requested = {migration.version for migration in migrations}
+    if requested <= _ready_versions:
         return True
     with _schema_lock:
-        if _schema_ready:
+        if requested <= _ready_versions:
             return True
         try:
-            apply_migrations(migrations)
+            applied_now = apply_migrations(migrations)
         except PlatformStoreUnavailable as exc:
             logger.warning(
                 "platform store: schema not applied (database unavailable): %s",
@@ -179,15 +221,20 @@ def ensure_schema(migrations: list[Migration]) -> bool:
         except Exception:  # noqa: BLE001 - startup must survive schema errors
             logger.exception("platform store: schema migration failed")
             return False
-        _schema_ready = True
-        return True
+        # After a clean `apply_migrations`, every requested version is either
+        # already recorded, just recorded, or was skipped as incomplete. Only the
+        # first two are ready — marking a skipped one ready is what made a missing
+        # table permanent and invisible (see `_incomplete_versions`).
+        _ready_versions.update(requested - _incomplete_versions)
+        return requested <= _ready_versions
 
 
 def reset_schema_flag() -> None:
-    """Forget the once-per-process flag (tests)."""
-    global _schema_ready
+    """Forget the once-per-process bookkeeping (tests)."""
+    global _ready_versions, _incomplete_versions
     with _schema_lock:
-        _schema_ready = False
+        _ready_versions = set()
+        _incomplete_versions = set()
 
 
 __all__ = [

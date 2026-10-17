@@ -50,6 +50,28 @@ class _HeartbeatWorkspace:
             yield event
 
 
+@pytest.fixture(autouse=True)
+def as_admin(monkeypatch: pytest.MonkeyPatch):
+    """Make the admin guard accept every request as an administrator.
+
+    The config router's ``_require_admin`` does lazy ``from ..auth`` /
+    ``from ..user_space`` imports inside the call, so patching those
+    source modules is what actually takes effect. Several security
+    endpoints (tool-guard, sandbox) are administrator-only now.
+    """
+
+    def _inject(_request) -> str | None:
+        return "admin"
+
+    monkeypatch.setattr(
+        "qwenpaw.app.user_space.get_request_username", _inject
+    )
+    monkeypatch.setattr(
+        "qwenpaw.app.auth.require_admin_access",
+        lambda _u: None,
+    )
+
+
 @pytest.fixture
 def app() -> FastAPI:
     application = FastAPI()
@@ -694,8 +716,26 @@ def test_put_sandbox_idempotent_same_value_no_save(client):
     mock_save.assert_not_called()
 
 
-def test_put_sandbox_non_admin_enabling_saves_with_unelevated(client):
-    """PUT enabling sandbox as non-admin must save and return unelevated."""
+def test_put_sandbox_non_admin_denied_after_auth_guard(client, monkeypatch):
+    """PUT enabling sandbox without an admin identity is refused.
+
+    The standalone global sandbox switch is security-sensitive, so the
+    endpoint now requires an administrator before it will even consider
+    the change; a non-admin caller gets 403 and the config is untouched.
+    """
+
+    def _deny(_username):
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator access required",
+        )
+
+    monkeypatch.setattr(
+        "qwenpaw.app.auth.require_admin_access",
+        _deny,
+    )
     fake_cfg = MagicMock()
     fake_cfg.security.sandbox_enabled = False
 
@@ -704,10 +744,6 @@ def test_put_sandbox_non_admin_enabling_saves_with_unelevated(client):
             "qwenpaw.app.routers.config.load_config",
             return_value=fake_cfg,
         ),
-        patch(
-            "qwenpaw.app.routers.config._sandbox_effective_status",
-            return_value=(True, "unelevated"),
-        ),
         patch("qwenpaw.app.routers.config.save_config") as mock_save,
     ):
         response = client.put(
@@ -715,12 +751,8 @@ def test_put_sandbox_non_admin_enabling_saves_with_unelevated(client):
             json={"enabled": True},
         )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["enabled"] is True
-    assert body["effective"] is True
-    assert body["reason"] == "unelevated"
-    mock_save.assert_called_once()
+    assert response.status_code == 403
+    mock_save.assert_not_called()
 
 
 def test_put_sandbox_admin_enabling_saves(client):

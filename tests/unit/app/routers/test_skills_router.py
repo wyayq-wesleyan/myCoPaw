@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
 """Unit tests for ``qwenpaw.app.routers.skills``.
 
-Per the issue acceptance criteria the focus is on:
+The offline edition deliberately disables the Skill Hub (it is an
+external service): these tests pin that behavior instead of the old
+live-hub wiring —
 
 - ``GET /skills`` — list workspace skills
-- ``GET /skills/hub/search`` — hub search wrapper
+- ``GET /skills/hub/search`` — always empty in offline mode
 - ``GET /skills/pool`` — pool listing
-- Hub install task lifecycle: start → status → cancel
-- ``GET /skills/hub/install/status/{id}`` 404 for unknown task
+- Hub install lifecycle: ``start`` always 400, ``status``/``cancel`` 404
+  because no task can ever be created offline
 
-Note: the install pipeline itself (``install_skill_from_hub``) is mocked
-out — that worker has its own dedicated tests; here we only check the
-router wires the lifecycle endpoints together correctly.
+Note: ``GET /skills`` still goes through ``get_agent_for_request``; it is
+patched here, the hub-heavy mocks of the past are gone.
 """
 # pylint: disable=protected-access,redefined-outer-name,unused-argument
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,18 +26,6 @@ from fastapi.testclient import TestClient
 
 from qwenpaw.app.routers import skills as skills_module
 from qwenpaw.app.routers.skills import router as skills_router
-
-
-@pytest.fixture(autouse=True)
-def _clear_install_registries():
-    """Each test starts with empty install task registries."""
-    skills_module._hub_install_tasks.clear()
-    skills_module._hub_install_runtime_tasks.clear()
-    skills_module._hub_install_cancel_events.clear()
-    yield
-    skills_module._hub_install_tasks.clear()
-    skills_module._hub_install_runtime_tasks.clear()
-    skills_module._hub_install_cancel_events.clear()
 
 
 @pytest.fixture
@@ -104,33 +92,17 @@ def test_list_skills_404_when_agent_lookup_fails(client):
 
 
 # ---------------------------------------------------------------------------
-# GET /skills/hub/search
+# GET /skills/hub/search — offline: the hub is unreachable by design
 # ---------------------------------------------------------------------------
 
 
-def test_search_hub_returns_mapped_specs(client):
-    from types import SimpleNamespace
-
-    fake_hub_result = SimpleNamespace(
-        slug="cool-skill",
-        name="Cool Skill",
-        description="useful",
-        version="1.0",
-        source_url="https://hub/cool",
-        author="alice",
-        icon_url="",
-    )
-    with patch(
-        "qwenpaw.app.routers.skills.search_hub_skills",
-        new=AsyncMock(return_value=[fake_hub_result]),
-    ) as search_mock:
-        response = client.get("/api/skills/hub/search?q=cool&limit=5")
+def test_search_hub_always_empty_offline(client):
+    """Skill Hub is an external service; offline deployment answers
+    with an empty list regardless of the query."""
+    response = client.get("/api/skills/hub/search?q=cool&limit=5")
 
     assert response.status_code == 200
-    body = response.json()
-    assert len(body) == 1
-    assert body[0]["slug"] == "cool-skill"
-    search_mock.assert_awaited_once_with("cool", limit=5)
+    assert response.json() == []
 
 
 # ---------------------------------------------------------------------------
@@ -151,53 +123,29 @@ def test_list_pool_skills_returns_pool_specs(client):
 
 
 # ---------------------------------------------------------------------------
-# Hub install lifecycle
+# Hub install lifecycle — offline: never starts, never has tasks
 # ---------------------------------------------------------------------------
 
 
-def test_start_install_registers_task_and_returns_id(
-    client,
-    patch_get_agent,
-):
-    # Replace the background worker with a no-op so the test does not
-    # touch the real install pipeline.
-    async def noop(*_args, **_kwargs):
-        return None
+def test_start_install_rejected_offline(client):
+    """POST /hub/install/start is a hard 400 in offline deployments."""
+    response = client.post(
+        "/api/skills/hub/install/start",
+        json={"bundle_url": "https://hub/example.zip"},
+    )
 
-    with patch(
-        "qwenpaw.app.routers.skills._run_hub_install_task",
-        new=noop,
-    ):
-        response = client.post(
-            "/api/skills/hub/install/start",
-            json={"bundle_url": "https://hub/example.zip"},
-        )
-
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["bundle_url"] == "https://hub/example.zip"
-    assert body["status"] == "pending"
-    task_id = body["task_id"]
-    assert task_id in skills_module._hub_install_tasks
+    assert response.status_code == 400
+    assert "Offline deployment" in response.json()["detail"]
+    # No install task was ever registered.
+    assert not skills_module._hub_install_tasks
 
 
-def test_get_install_status_returns_task(client, patch_get_agent):
-    async def noop(*_args, **_kwargs):
-        return None
+def test_get_install_status_offline_no_tasks(client):
+    """Offline mode cannot create install tasks, so any status lookup
+    referees to 404."""
+    response = client.get("/api/skills/hub/install/status/any-task-id")
 
-    with patch(
-        "qwenpaw.app.routers.skills._run_hub_install_task",
-        new=noop,
-    ):
-        start = client.post(
-            "/api/skills/hub/install/start",
-            json={"bundle_url": "https://hub/x.zip"},
-        )
-
-    task_id = start.json()["task_id"]
-    status = client.get(f"/api/skills/hub/install/status/{task_id}")
-    assert status.status_code == 200
-    assert status.json()["task_id"] == task_id
+    assert response.status_code == 404
 
 
 def test_get_install_status_404_for_unknown_task(client):
@@ -206,27 +154,12 @@ def test_get_install_status_404_for_unknown_task(client):
     assert response.status_code == 404
 
 
-def test_cancel_install_marks_task_cancelled(client, patch_get_agent):
-    async def noop(*_args, **_kwargs):
-        # Hold open so the cancel path sees it as not-yet-complete.
-        await asyncio.sleep(60)
+def test_cancel_install_offline_no_tasks(client):
+    """Offline mode cannot create install tasks, so any cancel request
+    referees to 404."""
+    response = client.post("/api/skills/hub/install/cancel/any-task-id")
 
-    with patch(
-        "qwenpaw.app.routers.skills._run_hub_install_task",
-        new=noop,
-    ):
-        start = client.post(
-            "/api/skills/hub/install/start",
-            json={"bundle_url": "https://hub/x.zip"},
-        )
-        task_id = start.json()["task_id"]
-
-        cancel = client.post(f"/api/skills/hub/install/cancel/{task_id}")
-
-    assert cancel.status_code == 200
-    assert cancel.json() == {"task_id": task_id, "status": "cancelled"}
-    cancel_event = skills_module._hub_install_cancel_events[task_id]
-    assert cancel_event.is_set()
+    assert response.status_code == 404
 
 
 def test_cancel_install_404_for_unknown_task(client):

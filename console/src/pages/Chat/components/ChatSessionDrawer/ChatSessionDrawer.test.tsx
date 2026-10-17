@@ -39,6 +39,8 @@ const {
   mockGetSessionList,
   mockNavigate,
   mockGetEffectiveSessionId,
+  mockExportChat,
+  mockImportChat,
 } = vi.hoisted(() => ({
   mockCreateSession: vi.fn().mockResolvedValue(undefined),
   mockSetCurrentSessionId: vi.fn(),
@@ -48,6 +50,12 @@ const {
   mockGetSessionList: vi.fn().mockResolvedValue([]),
   mockNavigate: vi.fn(),
   mockGetEffectiveSessionId: vi.fn((id: string) => id),
+  mockExportChat: vi.fn().mockResolvedValue(undefined),
+  mockImportChat: vi.fn().mockResolvedValue({
+    id: "imported-uuid",
+    name: "Imported Chat",
+    session_id: "console:imported:abc",
+  }),
 }));
 
 vi.mock("@agentscope-ai/chat", () => ({
@@ -61,7 +69,12 @@ vi.mock("@agentscope-ai/chat", () => ({
 }));
 
 vi.mock("@/api/modules/chat", () => ({
-  chatApi: { deleteChat: mockDeleteChat, updateChat: mockUpdateChat },
+  chatApi: {
+    deleteChat: mockDeleteChat,
+    updateChat: mockUpdateChat,
+    exportChat: mockExportChat,
+    importChat: mockImportChat,
+  },
   sessionApi: {
     listChats: vi.fn(),
     createChat: vi.fn(),
@@ -144,6 +157,7 @@ vi.mock("../../../../components/SessionItem", () => ({
     onEdit,
     onDelete,
     onPin,
+    onExport,
     onEditSubmit,
     onEditCancel,
   }: any) => (
@@ -157,6 +171,9 @@ vi.mock("../../../../components/SessionItem", () => ({
       </button>
       <button data-testid="pin-btn" onClick={() => onPin?.(sessionId)}>
         pin
+      </button>
+      <button data-testid="export-btn" onClick={() => onExport?.(sessionId)}>
+        export
       </button>
       <button data-testid="edit-submit-btn" onClick={onEditSubmit}>
         submit
@@ -416,5 +433,122 @@ describe("ChatSessionDrawer", () => {
     const items = await screen.findAllByTestId("session-item");
     expect(items[0]).toHaveTextContent("Pinned");
     expect(items[1]).toHaveTextContent("Unpinned");
+  });
+
+  describe("session export / import", () => {
+    it("export calls the export API with the backend id and the chat name", async () => {
+      withSession({ realId: "uuid-1", name: "Session One" });
+      const user = userEvent.setup();
+      renderWithProviders(<ChatSessionDrawer {...defaultProps} />);
+      await waitFor(() =>
+        expect(screen.getByTestId("export-btn")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByTestId("export-btn"));
+
+      // The backend needs the real UUID (the display id can be a timestamp),
+      // and the name is only the fallback used by the native save dialogs.
+      expect(mockExportChat).toHaveBeenCalledWith("uuid-1", "Session One");
+    });
+
+    it("a failed export does not throw out of the click handler", async () => {
+      mockExportChat.mockRejectedValueOnce(new Error("boom"));
+      withSession({ realId: "uuid-1" });
+      const user = userEvent.setup();
+      renderWithProviders(<ChatSessionDrawer {...defaultProps} />);
+      await waitFor(() =>
+        expect(screen.getByTestId("export-btn")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByTestId("export-btn"));
+
+      await waitFor(() => expect(mockExportChat).toHaveBeenCalledOnce());
+    });
+
+    it("import uploads the picked file and opens the new chat", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<ChatSessionDrawer {...defaultProps} />);
+      const input = screen.getByTestId("session-import-input") as HTMLInputElement;
+      const file = new File(["{}"], "chat.session.json", {
+        type: "application/json",
+      });
+      // Count, not "was ever called": the drawer also polls, so a bare
+      // toHaveBeenCalled() would pass even with the refresh removed.
+      const listsBefore = mockGetSessionList.mock.calls.length;
+
+      await user.upload(input, file);
+
+      await waitFor(() => expect(mockImportChat).toHaveBeenCalledOnce());
+      expect(mockImportChat.mock.calls[0][0]).toBe(file);
+      // The list must be refreshed before navigating: the switch resolves
+      // against it, so an unlisted session would open as "not found".
+      expect(mockGetSessionList.mock.calls.length).toBeGreaterThan(listsBefore);
+      await waitFor(() =>
+        expect(mockNavigate).toHaveBeenCalledWith("/chat/imported-uuid"),
+      );
+    });
+
+    it("import prefers the list's own id for the imported chat", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<ChatSessionDrawer {...defaultProps} />);
+      // The refreshed list surfaces the new chat under a display id that
+      // differs from the backend UUID.
+      mockGetSessionList.mockResolvedValue([
+        {
+          id: "s-new",
+          realId: "imported-uuid",
+          name: "Imported Chat",
+          updatedAt: new Date().toISOString(),
+        },
+      ]);
+      const input = screen.getByTestId("session-import-input") as HTMLInputElement;
+
+      await user.upload(
+        input,
+        new File(["{}"], "chat.session.json", { type: "application/json" }),
+      );
+
+      await waitFor(() =>
+        expect(mockNavigate).toHaveBeenCalledWith("/chat/s-new"),
+      );
+    });
+
+    it("a rejected import surfaces the server's reason", async () => {
+      mockImportChat.mockRejectedValueOnce(
+        new Error("Not a session export file (missing the expected format marker)"),
+      );
+      const user = userEvent.setup();
+      renderWithProviders(<ChatSessionDrawer {...defaultProps} />);
+      const input = screen.getByTestId("session-import-input") as HTMLInputElement;
+
+      await user.upload(
+        input,
+        new File(["{}"], "notes.json", { type: "application/json" }),
+      );
+
+      await waitFor(() => expect(mockImportChat).toHaveBeenCalledOnce());
+      // Importing a bad file must not navigate anywhere.
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    it("the import button is outside the session list", async () => {
+      withSession();
+      renderWithProviders(<ChatSessionDrawer {...defaultProps} />);
+      await waitFor(() =>
+        expect(screen.getByTestId("session-item")).toBeInTheDocument(),
+      );
+
+      // Import creates a new chat, so it belongs next to "new chat" and not
+      // inside any session row's action column (that is where export lives).
+      const list = document.querySelector("div[class*=listWrapper]");
+      // Guard against a vacuous pass: if that selector stopped matching, the
+      // "not inside the list" assertion below would hold for the wrong reason.
+      expect(list).not.toBeNull();
+      expect(list!.querySelector('[data-testid="session-item"]')).not.toBeNull();
+
+      const input = screen.getByTestId("session-import-input");
+      expect(list!.contains(input)).toBe(false);
+      expect(input.closest("div[class*=createSection]")).not.toBeNull();
+    });
   });
 });

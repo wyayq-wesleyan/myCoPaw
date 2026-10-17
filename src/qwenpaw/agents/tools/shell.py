@@ -30,6 +30,7 @@ from ...constant import WORKING_DIR
 from ...runtime.tool_registry import tool_descriptor
 from ...sandbox import ExecutionResult
 from ...sandbox.config import SandboxConfig
+from ...utils.io_pools import POOL_SUBPROCESS, run_in_pool
 from ...utils.io_utils import run_sync_io
 
 _SHELL_OUTPUT_MAX_BYTES = 1024 * 1024
@@ -669,9 +670,18 @@ async def _execute_windows_host(
         stop_event.set()
 
     bridge = asyncio.create_task(_bridge_cancel())
-    try:
-        returncode, stdout_str, stderr_str = await asyncio.to_thread(
-            _execute_subprocess_sync,
+    # A child process occupies its worker thread for the command's whole
+    # lifetime, so it runs on the subprocess pool instead of sharing the
+    # fast pool with short DB-ish operations. Run as a shielded inner task so
+    # the force-cancel path below can arm stop_event BEFORE waiting for the
+    # thread: the pool's drain-on-cancel would otherwise delay the ``finally``
+    # past the thread's completion, and the thread — waiting for the
+    # subprocess — would never observe the kill signal.
+    started = threading.Event()
+
+    def _execute_once_started(*_args: Any) -> tuple[int, str, str]:
+        started.set()
+        return _execute_subprocess_sync(
             cmd,
             cwd,
             sync_timeout,
@@ -679,9 +689,37 @@ async def _execute_windows_host(
             shell_executable,
             stop_event,
         )
+
+    inner = asyncio.ensure_future(
+        run_in_pool(POOL_SUBPROCESS, _execute_once_started),
+    )
+    try:
+        returncode, stdout_str, stderr_str = await asyncio.shield(inner)
         if ctx is not None and ctx.cancel_event.is_set():
             return -1, stdout_str, _cancel_stderr_message(timeout)
         return returncode, stdout_str, stderr_str
+    except asyncio.CancelledError:
+        # Force cancel: arm the kill signal first, so a thread that already
+        # started tears the process tree down immediately.
+        stop_event.set()
+        if started.is_set():
+            # The thread observed the signal; give it a short bound to finish
+            # so the tree is dead before this returns.
+            try:
+                await asyncio.wait_for(asyncio.shield(inner), 2.0)
+            except BaseException:
+                pass
+        else:
+            # Not on a thread yet. Cancelling drops the admission wait; but
+            # if the job already passed admission and is queued inside the
+            # executor, the pool's drain-on-cancel would wait for it to run —
+            # potentially minutes behind other commands. Bound that wait too.
+            inner.cancel()
+            try:
+                await asyncio.wait_for(inner, 2.0)
+            except BaseException:
+                pass
+        raise
     finally:
         # Always arm stop: if the awaiting task is cancelled (force cancel)
         # without cancel_event, the worker thread must still kill the tree.

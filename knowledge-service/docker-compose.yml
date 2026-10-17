@@ -84,6 +84,11 @@ services:
       - .env
     environment:
       KNOWLEDGE_ROLE: worker
+      # Stable per-replica identity for job ownership: recovery reclaims a job
+      # when its owner worker's heartbeat goes stale, and a restarting worker
+      # reclaims its own previous-life jobs immediately. Multiple replicas must
+      # each get a different value.
+      KNOWLEDGE_WORKER_ID: "${KNOWLEDGE_WORKER_ID:-worker-1}"
       KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"

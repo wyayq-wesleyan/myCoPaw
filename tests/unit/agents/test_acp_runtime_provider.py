@@ -342,7 +342,7 @@ async def test_runtime_failure_is_an_acp_request_error(monkeypatch):
 
     assert exc_info.value.code == -32603
     assert exc_info.value.data == {
-        "details": "QwenPaw runtime failed",
+        "details": "汇智小助手 runtime failed",
     }
     assert "secret-token" not in str(conn.updates)
 

@@ -197,7 +197,7 @@ def test_list_agents_preserves_unknown_backend(client, fake_config):
 # ---------------------------------------------------------------------------
 
 
-def test_get_agent_returns_config(client):
+def test_get_agent_returns_config(client, fake_config):
     cfg = AgentProfileConfig(
         id="bot",
         name="Bot",
@@ -205,9 +205,16 @@ def test_get_agent_returns_config(client):
         workspace_dir="/tmp/ws/bot",
     )
 
-    with patch(
-        "qwenpaw.app.routers.agents.load_agent_config",
-        return_value=cfg,
+    with (
+        # The route resolves ownership through the global config first.
+        patch(
+            "qwenpaw.app.routers.agents.load_config",
+            return_value=fake_config,
+        ),
+        patch(
+            "qwenpaw.app.routers.agents.load_agent_config",
+            return_value=cfg,
+        ),
     ):
         response = client.get("/api/agents/bot")
 
@@ -215,7 +222,7 @@ def test_get_agent_returns_config(client):
     assert response.json()["id"] == "bot"
 
 
-def test_update_backend_settings_from_chat(client):
+def test_update_backend_settings_from_chat(client, fake_config):
     cfg = AgentProfileConfig(
         id="bot",
         name="Bot",
@@ -225,6 +232,11 @@ def test_update_backend_settings_from_chat(client):
     )
 
     with (
+        # The route resolves ownership through the global config first.
+        patch(
+            "qwenpaw.app.routers.agents.load_config",
+            return_value=fake_config,
+        ),
         patch(
             "qwenpaw.app.routers.agents.load_agent_config",
             return_value=cfg,

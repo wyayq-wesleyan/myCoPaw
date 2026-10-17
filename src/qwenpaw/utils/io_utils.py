@@ -35,11 +35,12 @@ import threading
 import weakref
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ParamSpec, TextIO, TypeVar
+from typing import Any, TextIO, TypeVar
 
 import yaml
 
-_P = ParamSpec("_P")
+from .io_pools import POOL_FAST, run_in_pool
+
 _R = TypeVar("_R")
 
 _PATH_LOCKS: weakref.WeakValueDictionary[
@@ -93,10 +94,11 @@ def get_sync_path_lock(path: Path | str) -> threading.RLock:
 
 
 async def run_sync_io(
-    operation: Callable[_P, _R],
+    operation: Callable[..., _R],
     /,
-    *args: _P.args,
-    **kwargs: _P.kwargs,
+    *args: Any,
+    pool: str = POOL_FAST,
+    **kwargs: Any,
 ) -> _R:
     """Run one composed synchronous I/O operation in a worker thread.
 
@@ -104,21 +106,21 @@ async def run_sync_io(
     legacy operations that already combine multiple blocking steps, such
     as a subprocess download followed by file validation. It provides no
     locking or atomicity by itself.
+
+    ``pool`` selects which named thread pool runs the work (see
+    :mod:`qwenpaw.utils.io_pools`). Choose by the *shape* of the operation, not
+    by importance:
+
+    * ``POOL_FAST`` (default) — DB queries, config reads, stat calls.
+    * ``POOL_FILE`` — multi-megabyte writes such as session checkpoints.
+    * ``POOL_SUBPROCESS`` — shell, git, soffice, any child process.
+
+    Keeping a 4 MB checkpoint write out of the pool that serves DB reads is the
+    whole point: previously they shared one executor and the write starved the
+    read. Do not nest two ``run_sync_io`` calls on the same pool — a thread
+    waiting on a slot it can never get is a self-deadlock.
     """
-    task = asyncio.create_task(
-        asyncio.to_thread(operation, *args, **kwargs),
-    )
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # A worker thread cannot be cancelled. Wait for it before allowing
-        # the caller to release a path or domain lock; otherwise another
-        # coroutine could overlap the still-running filesystem operation.
-        try:
-            await task
-        except BaseException:
-            pass
-        raise
+    return await run_in_pool(pool, operation, *args, **kwargs)
 
 
 def _read_text(
@@ -419,12 +421,16 @@ async def write_text_atomic_async(
     *,
     encoding: str = "utf-8",
     new_file_mode: int = 0o600,
+    pool: str = POOL_FAST,
 ) -> None:
     """Atomically replace text without blocking the event loop.
 
     Choose this for overwrite semantics. New files default to owner-only
     state; user workspace artifacts should pass ``new_file_mode=0o644``.
     Callers should not add another ``to_thread`` layer.
+
+    Pass ``pool=POOL_FILE`` for large, bursty, durable state (session
+    checkpoints) so it cannot starve DB queries sharing the fast pool.
     """
     await run_sync_io(
         write_text_atomic,
@@ -432,6 +438,7 @@ async def write_text_atomic_async(
         content,
         encoding=encoding,
         new_file_mode=new_file_mode,
+        pool=pool,
     )
 
 
@@ -442,11 +449,16 @@ async def write_json_atomic_async(
     indent: int | None = 2,
     sort_keys: bool = False,
     new_file_mode: int = 0o600,
+    pool: str = POOL_FAST,
 ) -> None:
     """Serialize and atomically replace JSON off the event loop.
 
     Choose this for durable JSON state and configuration files. User
     workspace artifacts should pass ``new_file_mode=0o644``.
+
+    Pass ``pool=POOL_FILE`` for session checkpoints: they serialise megabytes
+    every couple of seconds, and letting that share the fast pool is what made
+    unrelated DB reads queue behind them.
     """
     await run_sync_io(
         write_json_atomic,
@@ -455,6 +467,7 @@ async def write_json_atomic_async(
         indent=indent,
         sort_keys=sort_keys,
         new_file_mode=new_file_mode,
+        pool=pool,
     )
 
 

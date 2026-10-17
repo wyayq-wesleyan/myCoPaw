@@ -104,8 +104,13 @@ export interface SessionListData {
   handleSessionClick: (sessionId: string) => void;
   handleEditStart: (sessionId: string, currentName: string) => void;
   handleDelete: (sessionId: string) => void;
-  handlePinToggle: (sessionId: string) => void;
-  handleArchiveToggle: (sessionId: string) => void;
+    handlePinToggle: (sessionId: string) => void;
+    handleArchiveToggle: (sessionId: string) => void;
+    handleExport: (sessionId: string) => void;
+    handleImportFile: (file: File) => Promise<void>;
+    onImportInputChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+    importing: boolean;
+
   handleEditChange: (value: string) => void;
   handleEditSubmit: () => void;
   handleEditCancel: () => void;
@@ -143,6 +148,7 @@ export function useSessionListData(
   );
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [importing, setImporting] = useState(false);
 
   const sharedContextMenu = useContextMenu();
   const [contextMenuSessionId, setContextMenuSessionId] = useState<
@@ -399,6 +405,66 @@ export function useSessionListData(
     [sessions, currentSessionId, refreshSessions, message, t],
   );
 
+  /** Download one conversation as a `.session.json` file. */
+  const handleExport = useCallback(
+    async (sessionId: string) => {
+      const session = sessions.find((s) => s.id === sessionId);
+      const backendId = session ? getBackendId(session) : null;
+      if (!backendId) return;
+      try {
+        await chatApi.exportChat(backendId, session?.name || "session");
+      } catch (err) {
+        console.error("Failed to export session:", err);
+        message.error(t("chat.exportFailed", "Failed to export this chat"));
+      }
+    },
+    [sessions, message, t],
+  );
+
+  /** Import a session file: create it, then open the new conversation. */
+  const handleImportFile = useCallback(
+    async (file: File) => {
+      const owner = sessionApi.getActiveOwner();
+      setImporting(true);
+      try {
+        const created = await chatApi.importChat(file);
+        if (!sessionApi.isActiveOwner(owner)) return;
+
+        // Refresh before navigating: the switch resolves against the session
+        // list, so the imported chat has to be in it first or the console lands
+        // on a session it cannot find.
+        await refreshSessions();
+        if (!sessionApi.isActiveOwner(owner)) return;
+        message.success(
+          t("chat.importSuccess", "Chat imported: {{name}}", {
+            name: created.name,
+          }),
+        );
+        onSessionClick(created.id);
+      } catch (err) {
+        console.error("Failed to import session:", err);
+        message.error(
+          err instanceof Error && err.message
+            ? err.message
+            : t("chat.importFailed", "Failed to import the session file"),
+        );
+      } finally {
+        setImporting(false);
+      }
+    },
+    [refreshSessions, onSessionClick, message, t],
+  );
+
+  const onImportInputChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      // Reset first so picking the same file twice still fires a change event.
+      event.target.value = "";
+      if (file) await handleImportFile(file);
+    },
+    [handleImportFile],
+  );
+
   const handleItemContextMenu = useCallback(
     (sessionId: string, event: React.MouseEvent) => {
       setContextMenuSessionId(sessionId);
@@ -467,6 +533,10 @@ export function useSessionListData(
     handleDelete,
     handlePinToggle,
     handleArchiveToggle,
+    handleExport,
+    handleImportFile,
+    onImportInputChange,
+    importing,
     handleEditChange,
     handleEditSubmit,
     handleEditCancel,

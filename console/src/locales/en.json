@@ -2970,6 +2970,10 @@
     "normalModeTooltip": "Normal mode",
     "allChats": "All Chats",
     "createNewChat": "Create New Chat",
+    "importChat": "Import",
+    "importSuccess": "Chat imported: {{name}}",
+    "importFailed": "Failed to import the session file",
+    "exportFailed": "Failed to export this chat",
     "pinDrawer": "Pin",
     "unpinDrawer": "Unpin",
     "statusIdle": "Idle",
@@ -3070,7 +3074,8 @@
       "rename": "Rename",
       "pin": "Pin",
       "unpin": "Unpin",
-      "delete": "Delete"
+      "delete": "Delete",
+      "export": "Export"
     },
     "queue": {
       "title": "Message Queue",

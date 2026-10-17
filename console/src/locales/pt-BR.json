@@ -2664,6 +2664,10 @@
     "normalModeTooltip": "Modo normal",
     "allChats": "Todos Chats",
     "createNewChat": "Criar Novo Chat",
+    "importChat": "Importar",
+    "importSuccess": "Conversa importada: {{name}}",
+    "importFailed": "Falha ao importar a conversa",
+    "exportFailed": "Falha ao exportar a conversa",
     "pinDrawer": "Fixar",
     "unpinDrawer": "Desafixar",
     "statusIdle": "Idle",
@@ -2761,7 +2765,8 @@
       "rename": "Rename",
       "pin": "Pin",
       "unpin": "Unpin",
-      "delete": "Excluir"
+      "delete": "Excluir",
+      "export": "Exportar"
     },
     "queue": {
       "title": "Fila de mensagens",

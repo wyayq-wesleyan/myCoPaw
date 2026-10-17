@@ -2829,6 +2829,10 @@
     "normalModeTooltip": "正常模式",
     "allChats": "全部聊天",
     "createNewChat": "创建新聊天",
+    "importChat": "导入",
+    "importSuccess": "已导入会话：{{name}}",
+    "importFailed": "导入会话失败",
+    "exportFailed": "导出会话失败",
     "pinDrawer": "固定",
     "unpinDrawer": "取消固定",
     "statusIdle": "空闲",
@@ -2929,7 +2933,8 @@
       "rename": "重命名",
       "pin": "置顶",
       "unpin": "取消置顶",
-      "delete": "删除"
+      "delete": "删除",
+      "export": "导出"
     },
     "queue": {
       "title": "消息队列",

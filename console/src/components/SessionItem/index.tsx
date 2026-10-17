@@ -9,6 +9,7 @@ import {
   SparkMarkLine,
   SparkMarkFill,
   SparkAistorageLine,
+  SparkDownloadLine,
 } from "@agentscope-ai/icons";
 import { ChannelIcon } from "../../pages/Control/Channels/components";
 import type { ChatStatus } from "../../api/types/chat";
@@ -41,6 +42,7 @@ export interface SessionItemProps {
   onDelete?: (sessionId: string) => void;
   onPin?: (sessionId: string) => void;
   onArchive?: (sessionId: string) => void;
+  onExport?: (sessionId: string) => void;
   onEditChange?: (value: string) => void;
   onEditSubmit?: () => void;
   onEditCancel?: () => void;
@@ -66,6 +68,7 @@ const SessionItem: React.FC<SessionItemProps> = ({
   onDelete,
   onPin,
   onArchive,
+  onExport,
   onEditChange,
   onEditSubmit,
   onEditCancel,
@@ -128,6 +131,12 @@ const SessionItem: React.FC<SessionItemProps> = ({
           : t("sessions.archive.action", "Archive"),
         onClick: () => onArchive?.(sessionId),
       },
+      {
+        key: "export",
+        icon: <SparkDownloadLine size={14} />,
+        label: t("chat.contextMenu.export", "Export"),
+        onClick: () => onExport?.(sessionId),
+      },
       { type: "divider" as const },
       {
         key: "delete",
@@ -144,6 +153,7 @@ const SessionItem: React.FC<SessionItemProps> = ({
       t,
       onPin,
       onArchive,
+      onExport,
       onDelete,
       handleStartEdit,
     ],

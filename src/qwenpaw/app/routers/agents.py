@@ -912,7 +912,12 @@ async def copy_agent(
 
     _initialize_agent_workspace(
         workspace_dir,
-        skill_names=None,
+        # A copy is not a fresh agent: its skills come from the source
+        # workspace (``_copy_selected_workspace_files``) when the user asked
+        # for them, and none otherwise. ``None`` here would install **every**
+        # initial skill even when ``copy_skills=False`` — ``None`` means
+        # "install all" to ``_install_initial_skills``.
+        skill_names=[],
         language=language,
         apply_md_templates=request.copy_md_files,
         create_skills_dir=request.copy_skills,

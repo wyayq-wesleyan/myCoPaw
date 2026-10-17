@@ -1,4 +1,4 @@
-import { useEffect, useState, useDeferredValue } from "react";
+import { useCallback, useEffect, useRef, useState, useDeferredValue } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, Form, Modal, Table, Button, Tabs } from "@agentscope-ai/design";
 import { Checkbox, Spin } from "antd";
@@ -25,6 +25,8 @@ function SessionsPage() {
   const {
     sessions,
     loading,
+    exportSession,
+    importSession,
     updateSession,
     deleteSession,
     batchDeleteSessions,
@@ -42,6 +44,8 @@ function SessionsPage() {
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<Session>();
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
 
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [shareSession, setShareSession] = useState<Session | null>(null);
@@ -243,12 +247,29 @@ function SessionsPage() {
 
   const isArchivedTab = activeTab === "archived";
 
+  const onImportInputChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      // Reset first so picking the same file twice still fires a change event.
+      event.target.value = "";
+      if (!file) return;
+      setImporting(true);
+      try {
+        await importSession(file);
+      } finally {
+        setImporting(false);
+      }
+    },
+    [importSession],
+  );
+
   const columns = createColumns({
     onEdit: handleEdit,
     onDelete: handleDelete,
     onView: handleView,
     onArchiveToggle: handleArchiveToggle,
     onShare: (session) => void handleOpenShare(session),
+    onExport: (session) => void exportSession(session.id, session.name),
     isArchivedTab,
   });
 
@@ -276,6 +297,23 @@ function SessionsPage() {
               onUserIdChange={setFilterUserId}
               onChannelChange={setFilterChannel}
               onTitleChange={setFilterTitle}
+            />
+            {/* Import sits beside the filters and outside the table: it makes a
+                new conversation, so it is not an action on any row — the
+                per-row action is export. */}
+            <Button
+              onClick={() => importInputRef.current?.click()}
+              disabled={importing}
+            >
+              {t("chat.importChat", "Import")}
+            </Button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              hidden
+              data-testid="session-import-input"
+              onChange={onImportInputChange}
             />
             {selectedRowKeys.length > 0 && (
               <>
@@ -360,6 +398,13 @@ function SessionsPage() {
                     <Button
                       size="small"
                       className={styles.mobileActionBtn}
+                      onClick={() => void exportSession(session.id, session.name)}
+                    >
+                      {t("chat.contextMenu.export", "Export")}
+                    </Button>
+                    <Button
+                      size="small"
+                      className={styles.mobileActionBtn}
                       danger
                       onClick={() => handleDelete(session.id)}
                     >
@@ -395,6 +440,13 @@ function SessionsPage() {
                       onClick={() => void handleOpenShare(session)}
                     >
                       分享
+                    </Button>
+                    <Button
+                      size="small"
+                      className={styles.mobileActionBtn}
+                      onClick={() => void exportSession(session.id, session.name)}
+                    >
+                      {t("chat.contextMenu.export", "Export")}
                     </Button>
                     <Button
                       size="small"

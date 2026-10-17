@@ -63,6 +63,11 @@ class _FakeGovernor:
     def audit(self, tc_spec, decision):  # noqa: ANN
         self.audits.append((tc_spec, decision))
 
+    async def audit_async(self, tc_spec, decision):  # noqa: ANN
+        # The tool-guard hooks record off the event loop; the fake mirrors the
+        # real governor's interface so a call-site change cannot silently pass.
+        self.audits.append((tc_spec, decision))
+
     async def add_approved_rule(
         self,
         tc_spec,

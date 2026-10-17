@@ -293,15 +293,16 @@ class Store:
             # The API and worker containers start together. A transaction-level
             # advisory lock keeps their first-run schema creation serialized.
             db.execute("SELECT pg_advisory_xact_lock(2026082201)")
-            for statement in statements:
-                db.execute(statement)
-            # A database created by an older release predates some columns. A
-            # failed statement aborts the surrounding PostgreSQL transaction, so
-            # letting one failure escape silently skipped every later migration
-            # -- that is how jobs.stage stayed missing after an upgrade while
-            # the job queries kept failing. Each statement now runs in its own
-            # savepoint so the rest still apply, and failures are logged instead
-            # of swallowed.
+            # Every statement here runs in its own savepoint. A failed statement
+            # aborts the surrounding PostgreSQL transaction, and an aborted
+            # transaction poisons *everything* after it -- including statements
+            # that are themselves wrapped in a savepoint, so the isolation below
+            # only holds while no bare statement runs. Two outages came from
+            # missing that: jobs.stage stayed missing after an upgrade while the
+            # job queries kept failing, and a database without the vector
+            # extension killed this process at import time.
+            self._migrate(db, statements)
+            # A database created by an older release predates some columns.
             self._migrate(
                 db,
                 [
@@ -314,6 +315,13 @@ class Store:
                     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS log_excerpt TEXT",
                     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ",
                     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stage TEXT",
+                    # Which worker instance owns a processing job. Recovery
+                    # checks the **owner's** heartbeat freshness rather than
+                    # matching heartbeat rows to job ids: a heartbeat row is
+                    # keyed by worker and updated every ~10s regardless of
+                    # which job it names, so "some worker heartbeated recently"
+                    # must never be confused with "this job's owner is alive".
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS owner_worker_id TEXT",
                 ],
             )
             # ── pgvector 向量列 ──────────────────────────────────────────────
@@ -325,6 +333,19 @@ class Store:
             # 后台任务做，回填完再建 HNSW 索引。任何一步失败都只降级到原来的
             # jsonb 全量比对，不影响可用性。
             self._migrate(db, ["CREATE EXTENSION IF NOT EXISTS vector"])
+            if not self._vector_type_available(db):
+                # A database without pgvector is a supported (degraded) install,
+                # not a broken one: retrieval falls back to the in-Python jsonb
+                # path. Say so loudly, because the operator otherwise only sees
+                # semantic search being slow, with nothing to explain why.
+                logger.warning(
+                    "pgvector: the 'vector' extension is unavailable on this "
+                    "database, so semantic search stays on the jsonb fallback. "
+                    "Install it to enable the vector path "
+                    "(see knowledge-service/docker-compose.postgres.yml, which "
+                    "uses the pgvector/pgvector:pg17 image for this reason)."
+                )
+                return
             dimensions = self._resolve_embedding_dimensions(db)
             if dimensions:
                 self._migrate(
@@ -395,6 +416,32 @@ class Store:
         except Exception:  # noqa: BLE001
             return 0
 
+    @staticmethod
+    def _vector_type_available(db: Any) -> bool:
+        """Whether the ``vector`` type exists, i.e. pgvector is installed.
+
+        Asked with ``to_regtype`` rather than by attempting a cast. A cast that
+        fails raises ``undefined_object``, and an error raised without a
+        savepoint around it marks the **whole** transaction aborted — after
+        which every later statement fails, including the ones ``_migrate`` wraps
+        in savepoints, and ``_init_db`` dies on commit. ``main.py`` builds this
+        store at import time, so that killed the API process on any database
+        without pgvector instead of degrading to the jsonb path.
+
+        The savepoint here is belt-and-braces: ``to_regtype`` returns NULL for an
+        unknown type rather than raising, but the guard costs nothing and keeps
+        the invariant "no bare statement runs in this transaction" true.
+        """
+        try:
+            with db.transaction():
+                row = db.execute(
+                    "SELECT to_regtype('vector') IS NOT NULL AS ok",
+                ).fetchone()
+            return bool(row and row.get("ok"))
+        except Exception as exc:  # noqa: BLE001 - unreachable DB is "not yet"
+            logger.warning("pgvector: capability probe failed: %s", exc)
+            return False
+
     @classmethod
     def _resolve_embedding_dimensions(cls, db: Any) -> int | None:
         """Width of the ``vector`` column, or ``None`` to skip the pgvector path.
@@ -411,17 +458,25 @@ class Store:
 
         measured: int | None = None
         try:
-            row = db.execute(
-                "SELECT vector_dims((vector_json::text)::vector) AS dims "
-                "FROM chunk_embeddings "
-                "WHERE jsonb_typeof(vector_json) = 'array' "
-                "  AND jsonb_array_length(vector_json) BETWEEN 1 AND 8192 "
-                "LIMIT 1",
-            ).fetchone()
+            # Savepoint: this probe casts through the ``vector`` type, so on a
+            # database that has the extension listed but not usable it raises.
+            # Unwrapped, that error would poison the caller's transaction.
+            with db.transaction():
+                row = db.execute(
+                    "SELECT vector_dims((vector_json::text)::vector) AS dims "
+                    "FROM chunk_embeddings "
+                    "WHERE jsonb_typeof(vector_json) = 'array' "
+                    "  AND jsonb_array_length(vector_json) BETWEEN 1 AND 8192 "
+                    "LIMIT 1",
+                ).fetchone()
             if row and row.get("dims"):
                 measured = int(row["dims"])
         except Exception as exc:  # noqa: BLE001 - extension or data shape missing
-            logger.debug("pgvector: could not measure existing dimensions: %s", exc)
+            # WARNING, not DEBUG: failing to measure means the column width comes
+            # from a default or an env var, and a wrong width silently disables
+            # the whole vector path. At the production ``info`` level a debug
+            # line here is invisible.
+            logger.warning("pgvector: could not measure existing dimensions: %s", exc)
 
         if configured_n and measured and configured_n != measured:
             logger.warning(
@@ -731,8 +786,17 @@ class Store:
             row = db.execute("SELECT * FROM documents WHERE id = %s", (document_id,)).fetchone()
         return dict(row) if row else None
 
-    def claim_job(self) -> dict[str, Any] | None:
-        """Claim one queued job safely across multiple worker processes."""
+    def claim_job(
+        self,
+        worker_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Claim one queued job safely across multiple worker processes.
+
+        The owner and a fresh heartbeat are written **in the same transaction**
+        as the claim. Without that, a claim that committed before its owner
+        managed to write a heartbeat looks unowned to a concurrent recovery
+        pass, which would then steal — and duplicate — the job.
+        """
         timestamp = now_utc()
         with self._connect() as db:
             row = db.execute(
@@ -748,13 +812,24 @@ class Store:
             if row is None:
                 return None
             db.execute(
-                "UPDATE jobs SET status = 'processing', stage = 'parsing', attempts = attempts + 1, updated_at = %s WHERE id = %s",
-                (timestamp, row["id"]),
+                "UPDATE jobs SET status = 'processing', stage = 'parsing', attempts = attempts + 1, updated_at = %s, owner_worker_id = %s WHERE id = %s",
+                (timestamp, worker_id, row["id"]),
             )
             db.execute(
                 "UPDATE documents SET status = 'processing', processing_stage = 'parsing', started_at = COALESCE(started_at, %s), updated_at = %s WHERE id = %s",
                 (timestamp, timestamp, row["document_id"]),
             )
+            if worker_id:
+                db.execute(
+                    """INSERT INTO worker_heartbeats (worker_id, status, job_id, stage, updated_at)
+                       VALUES (%s, 'processing', %s, 'parsing', %s)
+                       ON CONFLICT (worker_id) DO UPDATE SET
+                         status = EXCLUDED.status,
+                         job_id = EXCLUDED.job_id,
+                         stage = EXCLUDED.stage,
+                         updated_at = EXCLUDED.updated_at""",
+                    (worker_id, row["id"], timestamp),
+                )
             row["attempts"] = int(row.get("attempts") or 0) + 1
             row["stage"] = "parsing"
         return dict(row)
@@ -814,26 +889,104 @@ class Store:
             "reason": None if available else "知识处理 Worker 心跳已超时，请检查 worker 容器和数据库连接",
         }
 
-    def recover_interrupted_jobs(self) -> int:
-        """Requeue jobs left in processing state by a process/container stop."""
+    # A job is treated as abandoned only when its owner has been silent for
+    # longer than this. Workers heartbeat every ~10s, so 60s tolerates several
+    # missed ticks (GC pause, slow local DB) without ever stranding a job.
+    RECOVERY_HEARTBEAT_GRACE_SECONDS = 60
+
+    # Heartbeat rows whose worker has been silent for a full day are deleted:
+    # every restart leaves one row behind (the id is per instance), so without
+    # a cap the table only ever grows.
+    HEARTBEAT_RETENTION_SECONDS = 86400
+
+    def recover_interrupted_jobs(
+        self,
+        grace_seconds: int | None = None,
+        reclaim_owner: str | None = None,
+    ) -> int:
+        """Requeue jobs left in ``processing`` by a worker that stopped.
+
+        Ownership is decided per **worker**, not per job row. Every claim
+        records ``jobs.owner_worker_id`` and the owner keeps its heartbeat row
+        fresh every ~10s (updated unconditionally by the heartbeat thread, not
+        only on stage changes), so "abandoned" means exactly one of:
+
+        * the owner's heartbeat row is stale (older than the grace window) —
+          the worker holding the job is dead, no matter which job its row
+          names;
+        * the row has no recorded owner at all — written by a pre-upgrade
+          worker; fall back to the claim's own age plus "no fresh heartbeat
+          names this job" for those;
+        * ``reclaim_owner`` matches — the caller is the **same worker instance
+          restarting**. A worker only runs while it holds a session-level
+          advisory lock on its id, so two live processes cannot share one id;
+          when this instance boots, every job owned by its id provably has no
+          live owner and is reclaimed immediately, without waiting out the
+          grace window (the pre-upgrade behaviour for a fast container
+          restart).
+
+        The condition must never be "some worker heartbeated recently": that
+        would make a restart leave a dead worker's job unrecoverable for as
+        long as the *surviving* workers keep heartbeating — up to the slow
+        ``requeue_stale_jobs`` threshold, i.e. an hour.
+
+        The idle loop's periodic sweep calls this without ``reclaim_owner``:
+        a worker that died without a restart (OOM kill, crash loop) has its
+        jobs reclaimed once the grace window passes, on the next idle tick,
+        instead of waiting for the hour-scale stale sweep.
+        """
+        grace = (
+            self.RECOVERY_HEARTBEAT_GRACE_SECONDS
+            if grace_seconds is None
+            else max(0, int(grace_seconds))
+        )
         timestamp = now_utc()
+        cutoff = timestamp - timedelta(seconds=grace)
+        retention_cutoff = timestamp - timedelta(
+            seconds=self.HEARTBEAT_RETENTION_SECONDS,
+        )
         with self._connect() as db:
-            row = db.execute(
+            requeued = db.execute(
                 """
                 UPDATE jobs SET status = 'queued', stage = 'queued', updated_at = %s,
                     next_retry_at = NULL,
                     error = COALESCE(error, '任务因服务重启中断，已自动恢复')
                 WHERE status = 'processing'
-                RETURNING id
+                  AND (
+                        (owner_worker_id IS NOT NULL AND NOT EXISTS (
+                            SELECT 1 FROM worker_heartbeats h
+                            WHERE h.worker_id = jobs.owner_worker_id
+                              AND h.updated_at > %s
+                        ))
+                     OR (owner_worker_id IS NULL
+                         AND jobs.updated_at < %s
+                         AND NOT EXISTS (
+                             SELECT 1 FROM worker_heartbeats h
+                             WHERE h.job_id = jobs.id
+                               AND h.updated_at > %s
+                         ))
+                     OR (%s::text IS NOT NULL AND owner_worker_id = %s)
+                  )
+                RETURNING id, document_id
                 """,
-                (timestamp,),
+                (timestamp, cutoff, cutoff, cutoff, reclaim_owner, reclaim_owner),
             ).fetchall()
+            # Reset only the documents whose own job was actually reclaimed:
+            # a document still owned by a live worker must keep its
+            # "processing" stage, or the UI would show it as queued while it
+            # is in fact running.
+            for row in requeued:
+                db.execute(
+                    """UPDATE documents SET status = 'queued',
+                           processing_stage = 'queued', updated_at = %s
+                       WHERE id = %s""",
+                    (timestamp, row["document_id"]),
+                )
             db.execute(
-                """UPDATE documents SET status = 'queued', processing_stage = 'queued', updated_at = %s
-                 WHERE status = 'processing'""",
-                (timestamp,),
+                "DELETE FROM worker_heartbeats WHERE updated_at < %s",
+                (retention_cutoff,),
             )
-        return len(row)
+        return len(requeued)
 
     def requeue_stale_jobs(self, max_age_seconds: int, max_attempts: int) -> int:
         """Reclaim jobs whose processing has gone silent for too long.

@@ -154,4 +154,91 @@ describe("useSessionListData cross-agent ownership", () => {
 
     await waitFor(() => expect(listSpy).toHaveBeenCalledTimes(2));
   });
+
+});
+describe("useSessionListData session file transfer", () => {
+  // 侧边栏（simple mode）与抽屉共用这个 hook。导出/导入原先只接在抽屉上，
+  // 于是简单模式下的用户根本看不到这两个入口 —— 这组测试钉住 hook 这一层，
+  // 两处列表都靠它。
+  const BACKEND_ID = "11111111-1111-4111-8111-111111111111";
+
+  it("handleExport uses the backend id and passes the chat name", async () => {
+    sessionApi.setActiveAgent("agent-a");
+    const exportSpy = vi
+      .spyOn(chatApi, "exportChat")
+      .mockResolvedValue(undefined);
+    const session = {
+      ...makeSession("s1"),
+      realId: BACKEND_ID,
+      name: "季度复盘",
+    } as ExtendedChatSession;
+
+    const { hook } = renderListData([session]);
+
+    await act(async () => {
+      await hook.result.current.handleExport("s1");
+    });
+
+    expect(exportSpy).toHaveBeenCalledWith(BACKEND_ID, "季度复盘");
+  });
+
+  it("handleImportFile opens the newly imported chat", async () => {
+    sessionApi.setActiveAgent("agent-a");
+    vi.spyOn(chatApi, "importChat").mockResolvedValue({
+      id: "imported-uuid",
+      name: "Imported Chat",
+      session_id: "console:imported:abc",
+    } as Awaited<ReturnType<typeof chatApi.importChat>>);
+    const listSpy = vi.spyOn(api, "listChats").mockResolvedValue([] as ChatSpec[]);
+    const onSessionClick = vi.fn();
+
+    const hook = renderHook(
+      () =>
+        useSessionListData([], vi.fn(), {
+          active: false,
+          currentSessionId: undefined,
+          onSessionClick,
+        }),
+      { wrapper },
+    );
+    const before = listSpy.mock.calls.length;
+
+    await act(async () => {
+      await hook.result.current.handleImportFile(
+        new File(["{}"], "chat.session.json", { type: "application/json" }),
+      );
+      await new Promise((res) => setTimeout(res, 0));
+    });
+
+    // 刷新必须在跳转之前：切换是按列表解析的，没进列表就会跳到一个找不到的会话。
+    expect(listSpy.mock.calls.length).toBeGreaterThan(before);
+    expect(onSessionClick).toHaveBeenCalledWith("imported-uuid");
+  });
+
+  it("a rejected import does not navigate", async () => {
+    sessionApi.setActiveAgent("agent-a");
+    vi.spyOn(chatApi, "importChat").mockRejectedValue(
+      new Error("Not a session export file (missing the expected format marker)"),
+    );
+    const onSessionClick = vi.fn();
+
+    const hook = renderHook(
+      () =>
+        useSessionListData([], vi.fn(), {
+          active: false,
+          currentSessionId: undefined,
+          onSessionClick,
+        }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await hook.result.current.handleImportFile(
+        new File(["{}"], "notes.json", { type: "application/json" }),
+      );
+      await new Promise((res) => setTimeout(res, 0));
+    });
+
+    expect(onSessionClick).not.toHaveBeenCalled();
+  });
 });
