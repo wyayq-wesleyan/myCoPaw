@@ -25,6 +25,9 @@ mkdir -p "${APP_DIR}/src/qwenpaw/console"
 cp -R console/dist/. "${APP_DIR}/src/qwenpaw/console/"
 
 cp pyproject.toml setup.py README.md README_zh.md "${APP_DIR}/"
+# 运维脚本随包：资源上限推导按宿主机容量生成 .env 区块，没有它就只能手算。
+mkdir -p "${APP_DIR}/scripts"
+cp scripts/derive_resource_limits.sh "${APP_DIR}/scripts/"
 
 find "${APP_DIR}" \
   \( -name "__pycache__" -o -name "*.pyc" -o -name "*.pyo" -o -name ".DS_Store" \) \
