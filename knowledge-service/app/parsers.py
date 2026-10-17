@@ -5,8 +5,10 @@ import csv
 import importlib.util
 import json
 import mimetypes
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import logging
@@ -201,14 +203,18 @@ class MinerUParser:
             raise ParseError("MinerU is not available. Install it in the image and set MINERU_COMMAND.")
         with tempfile.TemporaryDirectory(prefix="huizhi-mineru-") as output_dir:
             command = self.command.format(input=str(path), output=output_dir)
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.timeout_seconds,
-            )
+            try:
+                result = _run_child(
+                    command,
+                    shell=True,
+                    timeout=self.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ParseError(
+                    f"MinerU timed out after {self.timeout_seconds}s "
+                    "(the process tree was terminated)",
+                ) from exc
+
             if result.returncode != 0:
                 raise ParseError(f"MinerU failed: {result.stderr[-1000:] or result.stdout[-1000:]}")
             json_files = sorted(Path(output_dir).rglob("*.json"))
@@ -450,25 +456,155 @@ def parse_document(
     return "simple", reader.parse(path)
 
 
+def _kill_process_group(process: subprocess.Popen) -> None:
+    """Kill *process* together with everything it forked.
+
+    ``subprocess.run(timeout=...)`` kills only the direct child. Both callers
+    here start a tree: ``soffice`` is a shell wrapper that execs ``soffice.bin``
+    (which itself forks), and MinerU runs under ``shell=True`` so the direct
+    child is only ``/bin/sh``. On timeout the real workers kept running.
+
+    That is how a few stuck conversions exhausted the container's PID budget:
+    once ``pids.max`` is reached, every further ``fork`` fails — visible as
+    ``soffice: Cannot fork`` — and ``asyncio.to_thread`` fails with
+    ``can't start new thread``, which took the whole document-list endpoint down
+    for minutes until the orphans exited on their own.
+    """
+    if os.name != "posix":
+        process.kill()
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Already gone, or the group is not ours to signal.
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+
+
+def _cpu_budget() -> int:
+    """How many CPUs this process may actually use.
+
+    ``os.cpu_count()`` reports the **host's** core count inside a container:
+    ``cpus: 4`` in Compose is a CFS quota, not an affinity mask, so the process
+    still sees 256. Libraries that size their thread pools from it (PyTorch /
+    OpenMP / MKL, all of which MinerU pulls in) then start one worker per host
+    core — 256 threads for a container allowed to run 4 cores' worth of work.
+
+    Reads the cgroup quota where available and falls back to the affinity mask,
+    then to ``os.cpu_count()``.
+    """
+    # cgroup v2
+    try:
+        with open("/sys/fs/cgroup/cpu.max", encoding="utf-8") as handle:
+            quota, period = handle.read().split()[:2]
+        if quota != "max" and int(period) > 0:
+            return max(1, round(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+    # cgroup v1
+    try:
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", encoding="utf-8") as handle:
+            quota = int(handle.read().strip())
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", encoding="utf-8") as handle:
+            period = int(handle.read().strip())
+        if quota > 0 and period > 0:
+            return max(1, round(quota / period))
+    except (OSError, ValueError):
+        pass
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return max(1, os.cpu_count() or 1)
+
+
+def _child_env() -> dict[str, str]:
+    """Environment for parser subprocesses, with thread pools sized to the quota.
+
+    MinerU imports PyTorch. With no explicit limit PyTorch starts
+    ``os.cpu_count()`` intra-op threads — on this deployment 256 per process,
+    against a 4-CPU quota. A handful of concurrent parses then exhausts the
+    container's PID budget (threads are tasks too), after which every ``fork``
+    fails: that is the ``soffice: Cannot fork`` /
+    ``RuntimeError: can't start new thread`` cascade.
+
+    Capping here rather than only in Compose keeps it correct for anyone who
+    runs the service outside Docker too.
+    """
+    env = dict(os.environ)
+    budget = _cpu_budget()
+    # An explicit operator setting wins: they may know the workload better.
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        env.setdefault(name, str(budget))
+    return env
+
+
+def _run_child(
+    command: str | list[str],
+    *,
+    shell: bool,
+    timeout: float,
+) -> subprocess.CompletedProcess:
+    """Run a child process in its own session, killing the whole tree on timeout.
+
+    ``start_new_session=True`` puts the child in a new process group so
+    ``_kill_process_group`` can reach its descendants. Thread pools are capped
+    via ``_child_env`` so one parse cannot claim the whole host's cores. Used by
+    both the LibreOffice and MinerU calls — see ``_kill_process_group`` for why
+    that matters.
+    """
+    process = subprocess.Popen(
+        command,
+        shell=shell,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env=_child_env(),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        try:
+            # Reap the corpse so the PID is released before we return.
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.warning("child process %s survived SIGKILL", process.pid)
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def _convert_to_pdf(path: Path) -> Path:
     """Convert DOC/DOCX to PDF with headless LibreOffice; returns the new PDF path."""
     with tempfile.TemporaryDirectory(prefix="huizhi-convert-") as output_dir:
-        result = subprocess.run(
-            [
-                "soffice",
-                "--headless",
-                "--norestore",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                output_dir,
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=300,
-        )
+        try:
+            result = _run_child(
+                [
+                    "soffice",
+                    "--headless",
+                    "--norestore",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    output_dir,
+                    str(path),
+                ],
+                shell=False,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ParseError(
+                "LibreOffice conversion timed out after 300s "
+                "(the process tree was terminated)",
+            ) from exc
         pdf_files = list(Path(output_dir).glob("*.pdf"))
         if result.returncode != 0 or not pdf_files:
             detail = (result.stderr or result.stdout or "")[-500:]

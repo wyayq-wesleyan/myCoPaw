@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import re
 import tempfile
 import uuid
@@ -165,6 +166,15 @@ def _start_graph_migration() -> asyncio.Task | None:
         return None
 
 
+# 同时进行的文件解析数上限。每次解析都会拉起一棵子进程树（LibreOffice 会 fork，
+# MinerU 在 shell 下运行），并发上传时不设闸门会把容器的 fork 能力耗尽；超出的请求
+# 在此排队，而不是让情况更糟。可通过环境变量调整。
+_PARSE_CONCURRENCY = max(
+    1,
+    int(os.environ.get("KNOWLEDGE_PARSE_CONCURRENCY", "2") or 2),
+)
+_PARSE_SLOTS = asyncio.Semaphore(_PARSE_CONCURRENCY)
+
 app = FastAPI(title="汇智知识服务", version="0.1.4", lifespan=lifespan)
 
 
@@ -310,7 +320,21 @@ async def reprocess_document(document_id: str, scope: tuple[str, bool] = Depends
 
 @app.post("/v1/documents/parse", dependencies=[Depends(require_api_key)])
 async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
-    """Parse an uploaded file and return extracted text."""
+    """Parse an uploaded file and return extracted text.
+
+    Two things here are deliberately defensive, both learned from a production
+    incident where a chat upload took the whole knowledge page down:
+
+    * The parse runs in a worker thread. It used to run inline on the event
+      loop, so a single DOCX conversion (``soffice``, up to 300s) blocked every
+      other request in this process — health checks, the document list, and the
+      SSE streams the console holds open.
+    * At most ``_PARSE_CONCURRENCY`` parses run at once. Each one can spawn a
+      process tree (LibreOffice forks, MinerU forks under a shell), and without
+      a ceiling a burst of uploads piles up children until ``fork`` starts
+      failing. Requests past the limit wait their turn instead of making the
+      situation worse.
+    """
     suffix = Path(file.filename or "").suffix.lower()
     supported = {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".xls", ".json"}
     if suffix not in supported:
@@ -318,20 +342,23 @@ async def parse_uploaded_file(file: UploadFile = File(...)) -> dict[str, Any]:
     data = await file.read()
     if len(data) > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large (max 50MB)")
-    with tempfile.TemporaryDirectory(prefix="huizhi-parse-") as tmp_dir:
-        tmp_path = Path(tmp_dir) / (file.filename or f"upload{suffix}")
-        tmp_path.write_bytes(data)
-        try:
-            result = extract_text_from_file(
-                tmp_path,
-                settings.parser_backend,
-                settings.mineru_command,
-                offline=settings.knowledge_offline,
-                mineru_timeout_seconds=settings.mineru_timeout_seconds,
-            )
-        except Exception as exc:
-            logger.exception("document parse failed: filename=%s", file.filename)
-            raise HTTPException(status_code=500, detail=f"Parse failed: {exc}")
+
+    async with _PARSE_SLOTS:
+        with tempfile.TemporaryDirectory(prefix="huizhi-parse-") as tmp_dir:
+            tmp_path = Path(tmp_dir) / (file.filename or f"upload{suffix}")
+            tmp_path.write_bytes(data)
+            try:
+                result = await asyncio.to_thread(
+                    extract_text_from_file,
+                    tmp_path,
+                    settings.parser_backend,
+                    settings.mineru_command,
+                    offline=settings.knowledge_offline,
+                    mineru_timeout_seconds=settings.mineru_timeout_seconds,
+                )
+            except Exception as exc:
+                logger.exception("document parse failed: filename=%s", file.filename)
+                raise HTTPException(status_code=500, detail=f"Parse failed: {exc}")
     return result
 
 
@@ -401,7 +428,18 @@ async def list_all_documents(
         page=page,
         page_size=page_size,
     )
-    pending_count = await asyncio.to_thread(store.count_pending_jobs, owner_id)
+    # ``pending_count`` only drives the "processing" badge. Losing it must not
+    # take the document list down: under thread pressure this one call raised
+    # ``RuntimeError: can't start new thread`` and turned every list request
+    # into a 500 while the list data itself was perfectly available.
+    try:
+        pending_count = await asyncio.to_thread(store.count_pending_jobs, owner_id)
+    except Exception:  # noqa: BLE001 - a badge is not worth failing the page
+        logger.warning(
+            "pending_count unavailable for owner; returning the list without it",
+            exc_info=True,
+        )
+        pending_count = 0
     return {"items": items, "total": total, "page": page, "page_size": page_size, "pending_count": pending_count}
 
 
@@ -485,7 +523,14 @@ async def count_pending_jobs(scope: tuple[str, bool] = Depends(request_scope)) -
     （FastAPI 按声明顺序匹配）。
     """
     owner_id, _is_admin = scope
-    pending = await asyncio.to_thread(store.count_pending_jobs, owner_id)
+    try:
+        pending = await asyncio.to_thread(store.count_pending_jobs, owner_id)
+    except Exception:  # noqa: BLE001 - a badge is not worth a 500
+        # 这两个接口存在的意义是让「处理中」角标在切换筛选时不凭空消失。
+        # 线程或数据库暂时不可用时，与其让轮询拿到 500（控制台会判定知识服务离线、
+        # 整页报错），不如返回 0 —— 下一次轮询就会恢复真实值。
+        logger.warning("pending count unavailable; reporting 0", exc_info=True)
+        pending = 0
     return {"pending": int(pending)}
 
 
@@ -502,7 +547,11 @@ async def list_pending_documents(
     必须声明在 ``/v1/jobs/{job_id}`` 之前。
     """
     owner_id, _is_admin = scope
-    pending = await asyncio.to_thread(store.list_pending_document_ids, owner_id)
+    try:
+        pending = await asyncio.to_thread(store.list_pending_document_ids, owner_id)
+    except Exception:  # noqa: BLE001 - a badge is not worth a 500
+        logger.warning("pending documents unavailable; reporting none", exc_info=True)
+        pending = []
     return {"document_ids": pending}
 
 

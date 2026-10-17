@@ -47,6 +47,16 @@ services:
       - .env
     environment:
       KNOWLEDGE_ROLE: api
+      # 线程池上限。容器用 cpus 配额而不是 CPU 亲和性，进程看到的仍是宿主机
+      # 核数（本机 256 核）；PyTorch / OpenMP / MKL 不认配额，会按 256 开线程，
+      # 一次 MinerU 解析就能占满容器的 pids 配额，随后所有 fork 失败
+      # （soffice: Cannot fork / asyncio to_thread: can't start new thread）。
+      # 应与 KNOWLEDGE_API_CPU_LIMIT / KNOWLEDGE_WORKER_CPU_LIMIT 保持一致；
+      # 单副本按 4 核算，可在 .env 里用 KNOWLEDGE_NUM_THREADS 覆盖。
+      OMP_NUM_THREADS: "${KNOWLEDGE_NUM_THREADS:-4}"
+      MKL_NUM_THREADS: "${KNOWLEDGE_NUM_THREADS:-4}"
+      OPENBLAS_NUM_THREADS: "${KNOWLEDGE_NUM_THREADS:-4}"
+
       KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
@@ -84,6 +94,16 @@ services:
       - .env
     environment:
       KNOWLEDGE_ROLE: worker
+      # 线程池上限。容器用 cpus 配额而不是 CPU 亲和性，进程看到的仍是宿主机
+      # 核数（本机 256 核）；PyTorch / OpenMP / MKL 不认配额，会按 256 开线程，
+      # 一次 MinerU 解析就能占满容器的 pids 配额，随后所有 fork 失败
+      # （soffice: Cannot fork / asyncio to_thread: can't start new thread）。
+      # 应与 KNOWLEDGE_API_CPU_LIMIT / KNOWLEDGE_WORKER_CPU_LIMIT 保持一致；
+      # 单副本按 4 核算，可在 .env 里用 KNOWLEDGE_NUM_THREADS 覆盖。
+      OMP_NUM_THREADS: "${KNOWLEDGE_NUM_THREADS:-4}"
+      MKL_NUM_THREADS: "${KNOWLEDGE_NUM_THREADS:-4}"
+      OPENBLAS_NUM_THREADS: "${KNOWLEDGE_NUM_THREADS:-4}"
+
       # Stable per-replica identity for job ownership: recovery reclaims a job
       # when its owner worker's heartbeat goes stale, and a restarting worker
       # reclaims its own previous-life jobs immediately. Multiple replicas must
