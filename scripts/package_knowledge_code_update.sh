@@ -18,6 +18,7 @@ cp "${ROOT_DIR}/knowledge-service/pyproject.toml" "${ROOT_DIR}/knowledge-service
 cp "${ROOT_DIR}/knowledge-service/docker-compose.code-mount.amd64.yml" \
    "${ROOT_DIR}/knowledge-service/docker-compose.code-mount.arm64.yml" \
    "${ROOT_DIR}/knowledge-service/docker-compose.postgres.yml" \
+   "${ROOT_DIR}/knowledge-service/.env.example" \
    "${STAGE_DIR}/knowledge-service/"
 # docker-compose.postgres.yml bind-mounts ./initdb, so the directory has to
 # travel with it. Without it a fresh data directory skips the graph-database
