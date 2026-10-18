@@ -425,6 +425,32 @@ def path_of_resource(resource_kind: str, resource_id: str) -> str | None:
     return rows[0]["path_id"] if rows else None
 
 
+def paths_of_resources(resource_kind: str, resource_ids: list[str]) -> dict[str, str]:
+    """Map each resource id to the path it currently belongs to.
+
+    Batch form of :func:`path_of_resource`, which answers one id per round trip.
+    The "assign resources to this case" picker asks for *every* document in the
+    account — one query per document meant a thousand sequential queries on the
+    event loop for a thousand-document account.
+
+    Resources with no binding are absent from the result (callers treat a missing
+    key as "public / unassigned"), which is why this returns a dict rather than a
+    list of nullable rows.
+    """
+    if not resource_ids:
+        return {}
+    rows = _query(
+        'SELECT resource_id, path_id FROM "platform".resource_bindings '
+        "WHERE resource_kind = %s AND resource_id = ANY(%s)",
+        (resource_kind, [str(rid) for rid in resource_ids]),
+    )
+    return {
+        str(row["resource_id"]): row["path_id"]
+        for row in rows
+        if row.get("path_id")
+    }
+
+
 def resources_in_path(path_id: str) -> list[dict[str, Any]]:
     return _query(
         'SELECT resource_kind, resource_id FROM "platform".resource_bindings '

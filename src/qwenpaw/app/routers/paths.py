@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from ...platform_store import paths as path_store
 from ..user_space import get_request_username, user_agent_ids
+from ...utils.io_utils import run_sync_io
 from ...config import load_config
 
 logger = logging.getLogger(__name__)
@@ -283,9 +284,13 @@ async def path_tree_with_contents(request: Request) -> dict[str, Any]:
         misread as "already isolated".
     """
     username = _username(request)
-    _ensure_account_root(username)
+    # 这段是同步 psycopg2。放在事件循环上会随节点数放大：每个节点至少 5 次查询
+    # （节点本身、绑定资源、可见文档、可见表、授权智能体），30 个案件就是
+    # 150-200 次串行查询；平台池满时每次取连接还会 sleep 自旋，整页跟着卡住。
+    # 下面三处同步段全部下放到线程池。
+    await run_sync_io(_ensure_account_root, username)
     try:
-        roots = path_store.list_path_tree(username)
+        roots = await run_sync_io(path_store.list_path_tree, username)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"路径列表读取失败：{exc}") from exc
 
@@ -297,15 +302,15 @@ async def path_tree_with_contents(request: Request) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.warning("paths: knowledge enrichment unavailable", exc_info=True)
 
-    table_ids: list[str] = []
-    tables_by_id: dict[str, dict[str, Any]] = {}
-    pending_tables: set[str] = set()
-    try:
+    def _load_tables() -> tuple[list[str], dict[str, dict[str, Any]], set[str]]:
         from ...data_tables.store import (
             SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn,
         )
         import psycopg2.extras
 
+        ids: list[str] = []
+        by_id: dict[str, dict[str, Any]] = {}
+        pending: set[str] = set()
         conn = _get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -315,17 +320,24 @@ async def path_tree_with_contents(request: Request) -> dict[str, Any]:
                     (username,),
                 )
                 for row in cur.fetchall():
-                    table_ids.append(str(row["id"]))
-                    tables_by_id[str(row["id"])] = dict(row)
+                    ids.append(str(row["id"]))
+                    by_id[str(row["id"])] = dict(row)
                 # Which tables have an import still running, so the badge can sit
                 # on the table's own path rather than on the whole page.
                 cur.execute(
                     f"SELECT DISTINCT table_id FROM {SYSTEM_TABLE_IMPORT_JOB} "
                     "WHERE status IN ('pending', 'parsing', 'loading')",
                 )
-                pending_tables = {str(r["table_id"]) for r in cur.fetchall()}
+                pending = {str(r["table_id"]) for r in cur.fetchall()}
         finally:
             _put_conn(conn)
+        return ids, by_id, pending
+
+    table_ids: list[str] = []
+    tables_by_id: dict[str, dict[str, Any]] = {}
+    pending_tables: set[str] = set()
+    try:
+        table_ids, tables_by_id, pending_tables = await run_sync_io(_load_tables)
     except Exception:  # noqa: BLE001
         logger.warning("paths: data table enrichment unavailable", exc_info=True)
 
@@ -360,7 +372,9 @@ async def path_tree_with_contents(request: Request) -> dict[str, Any]:
         data["children"] = [decorate(child) for child in node.children]
         return data
 
-    return {"tree": [decorate(root) for root in roots]}
+    return {
+        "tree": await run_sync_io(lambda: [decorate(root) for root in roots]),
+    }
 
 
 @router.get("/grants")
@@ -551,6 +565,11 @@ async def list_assignable_resources(
                     rows = cur.fetchall()
             finally:
                 _put_conn(conn)
+            # 一次查完，而不是每行一次。1000 张表 = 1000 次串行查询，全部落在
+            # 事件循环上。
+            bound = path_store.paths_of_resources(
+                kind, [str(row["id"]) for row in rows],
+            )
             for row in rows:
                 resource_id = str(row["id"])
                 items.append(
@@ -558,7 +577,7 @@ async def list_assignable_resources(
                         "id": resource_id,
                         "name": row["display_name"] or row["table_name"],
                         "detail": f"{row['row_count'] or 0} 行",
-                        "current_path_id": path_store.path_of_resource(kind, resource_id),
+                        "current_path_id": bound.get(resource_id),
                     },
                 )
         else:
@@ -583,19 +602,22 @@ async def list_assignable_resources(
                         documents = (
                             payload.get("items") if isinstance(payload, dict) else payload
                         ) or []
-                        for document in documents:
-                            resource_id = str(document.get("id") or "")
-                            if not resource_id:
-                                continue
+                        page_rows = [
+                            doc for doc in documents if doc.get("id")
+                        ]
+                        # 批量取归属：这一页 100 个文档只查一次，而不是 100 次。
+                        bound = path_store.paths_of_resources(
+                            kind, [str(d["id"]) for d in page_rows],
+                        )
+                        for document in page_rows:
+                            resource_id = str(document["id"])
                             size = document.get("size") or 0
                             items.append(
                                 {
                                     "id": resource_id,
                                     "name": str(document.get("filename") or resource_id),
                                     "detail": _human_size(size),
-                                    "current_path_id": path_store.path_of_resource(
-                                        kind, resource_id,
-                                    ),
+                                    "current_path_id": bound.get(resource_id),
                                 },
                             )
                         total = (

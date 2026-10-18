@@ -450,7 +450,19 @@ def scan_skill_directory(
     else:
         scanner = _get_scanner()
 
-        with futures.ThreadPoolExecutor(max_workers=1) as executor:
+        # 不放在 `with` 里：`ThreadPoolExecutor.__exit__` 等价于
+        # `shutdown(wait=True)`，会等那个**卡住的**扫描线程结束 —— 于是
+        # `future.result(timeout=...)` 的超时形同虚设（实测 0.5s 的超时实际
+        # 阻塞 3s；扫描若永久挂起就永久阻塞调用方）。而调用方是 `async def` 的
+        # 建/存技能端点，阻塞的就是整个事件循环，所有请求（含健康检查）一起停住。
+        #
+        # `shutdown(wait=False)` 让超时真的返回。代价是那个线程会继续跑到结束
+        # 才释放；Python 不能强杀线程，要彻底解决需把扫描放进子进程。
+        executor = futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="qwenpaw-skill-scan",
+        )
+        try:
             future = executor.submit(
                 scanner.scan_skill,
                 resolved,
@@ -460,12 +472,16 @@ def scan_skill_directory(
                 result = future.result(timeout=effective_timeout)
             except futures.TimeoutError:
                 logger.warning(
-                    "Security scan of skill '%s' timed out after %.0fs",
+                    "Security scan of skill '%s' timed out after %.0fs; "
+                    "abandoning the scan thread (it cannot be killed)",
                     effective_name,
                     effective_timeout,
                 )
                 future.cancel()
                 return None
+        finally:
+            # wait=False：被放弃的扫描线程不拖住调用方。
+            executor.shutdown(wait=False)
 
         _store_cached_result(resolved, result)
 
