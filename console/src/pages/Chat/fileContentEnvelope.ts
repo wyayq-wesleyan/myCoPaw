@@ -89,10 +89,25 @@ export function collapseInjectedFileContentParts<
   T extends { type: string; [key: string]: unknown },
 >(parts: T[]): T[] {
   const hasFilePart = parts.some((part) => part.type === "file");
+  const hasMediaPart = parts.some((part) =>
+    ["file", "image", "audio", "video"].includes(part.type),
+  );
   const out: T[] = [];
   for (const part of parts) {
     if (part.type !== "text" || typeof part.text !== "string") {
       out.push(part);
+      continue;
+    }
+    // 后端为了让模型知道图片/文件的落盘位置，会注入一行
+    // “用户上传文件，已经下载到 <路径>”。这条消息里已经有媒体块时，
+    // 控制台渲染媒体本身即可；这行内部提示不应出现在对话里（也不应泄露
+    // 服务器绝对路径）。没有媒体块时保留它，至少让用户知道上传过什么。
+    if (
+      hasMediaPart &&
+      /^(?:用户上传文件，已经下载到|User uploaded a file, downloaded to)\s+.+$/.test(
+        part.text.trim(),
+      )
+    ) {
       continue;
     }
     const envelope = parseInjectedFileContent(part.text);

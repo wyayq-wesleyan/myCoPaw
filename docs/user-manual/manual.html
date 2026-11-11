@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>汇智小助手使用手册</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 14mm 18mm;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: #1f2937;
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.68;
+  }
+  h1, h2, h3, h4 { color: #143c69; }
+  h2 {
+    margin: 0 0 4mm;
+    padding-bottom: 2.5mm;
+    border-bottom: 2px solid #dbe6f4;
+    font-size: 19pt;
+    line-height: 1.3;
+  }
+  h2 .num {
+    display: inline-block;
+    width: 9mm;
+    height: 9mm;
+    margin-right: 2.5mm;
+    border-radius: 3mm;
+    background: #143c69;
+    color: #fff;
+    font-size: 12pt;
+    line-height: 9mm;
+    text-align: center;
+    vertical-align: 2px;
+  }
+  h3 {
+    margin: 6mm 0 2.5mm;
+    font-size: 13pt;
+    break-after: avoid;
+  }
+  h4 {
+    margin: 4mm 0 1.5mm;
+    font-size: 11pt;
+    break-after: avoid;
+  }
+  p { margin: 2mm 0; }
+  ul, ol { margin: 2mm 0 3mm; padding-left: 6mm; }
+  li { margin: 1.1mm 0; }
+  strong { color: #0f3057; }
+  code {
+    padding: 0.3mm 1.2mm;
+    border-radius: 1mm;
+    background: #eef3fa;
+    color: #1d4f91;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 9.5pt;
+  }
+  .chapter { page-break-before: always; }
+  .cover {
+    height: 250mm;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    text-align: center;
+    page-break-after: always;
+    background: linear-gradient(160deg, #f7faff 0%, #e8f0fa 55%, #fdf8ee 100%);
+    border: 1px solid #dbe6f4;
+    border-radius: 8mm;
+    padding: 24mm 16mm;
+  }
+  .cover img { width: 26mm; height: 26mm; margin: 0 auto 8mm; }
+  .cover h1 {
+    margin: 0;
+    color: #143c69;
+    font-size: 34pt;
+    letter-spacing: 2mm;
+  }
+  .cover .sub {
+    margin: 4mm 0 16mm;
+    color: #58708c;
+    font-size: 14pt;
+    letter-spacing: 1mm;
+  }
+  .cover .meta {
+    margin-top: 22mm;
+    color: #6b7f95;
+    font-size: 10.5pt;
+    line-height: 2;
+  }
+  .cover .rule {
+    width: 46mm;
+    height: 1.2mm;
+    margin: 8mm auto;
+    border-radius: 1mm;
+    background: #d2a55d;
+  }
+  .toc { page-break-after: always; }
+  .toc h2 { margin-bottom: 6mm; }
+  .toc ol {
+    margin: 0;
+    padding-left: 7mm;
+    font-size: 11.5pt;
+    line-height: 2.1;
+  }
+  .toc ol ol {
+    padding-left: 7mm;
+    font-size: 10pt;
+    line-height: 1.8;
+    color: #4b5f76;
+  }
+  .callout {
+    margin: 4mm 0;
+    padding: 3mm 4mm;
+    border-left: 1.4mm solid #2a63ad;
+    border-radius: 1.5mm;
+    background: #f2f7fe;
+    break-inside: avoid;
+  }
+  .callout.warn {
+    border-left-color: #d2a55d;
+    background: #fdf9ef;
+  }
+  .callout .title {
+    margin-bottom: 1mm;
+    color: #143c69;
+    font-weight: 700;
+  }
+  .prompt {
+    margin: 3mm 0;
+    padding: 3mm 4mm;
+    border: 1px dashed #9db6d6;
+    border-radius: 2mm;
+    background: #fbfdff;
+    color: #173a61;
+    font-size: 10pt;
+    break-inside: avoid;
+  }
+  .prompt::before {
+    content: "可直接复制到对话框";
+    display: block;
+    margin-bottom: 1.5mm;
+    color: #7b8ea5;
+    font-size: 8pt;
+    letter-spacing: 0.5px;
+  }
+  figure {
+    margin: 5mm 0 6mm;
+    break-inside: avoid;
+  }
+  figure img {
+    display: block;
+    width: 100%;
+    border: 1px solid #d9e3f0;
+    border-radius: 2mm;
+    box-shadow: 0 1.5mm 4mm rgba(20, 60, 105, 0.08);
+  }
+  figcaption {
+    margin-top: 1.8mm;
+    color: #6b7f95;
+    font-size: 9pt;
+    text-align: center;
+  }
+  table {
+    width: 100%;
+    margin: 3mm 0 4mm;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+    break-inside: avoid;
+  }
+  th, td {
+    padding: 2mm 2.5mm;
+    border: 1px solid #d9e3f0;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #eef4fb; color: #143c69; }
+  td:first-child { white-space: nowrap; }
+  .steps { counter-reset: step; }
+  .step {
+    position: relative;
+    margin: 3mm 0;
+    padding-left: 9mm;
+    break-inside: avoid;
+  }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 0.1mm;
+    width: 6mm;
+    height: 6mm;
+    border-radius: 3mm;
+    background: #2a63ad;
+    color: #fff;
+    font-size: 9pt;
+    line-height: 6mm;
+    text-align: center;
+    font-weight: 700;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
+  .card {
+    padding: 3mm 4mm;
+    border: 1px solid #dbe6f4;
+    border-radius: 2mm;
+    background: #fbfdff;
+    break-inside: avoid;
+  }
+  .card h4 { margin-top: 0; }
+  .footer-note {
+    margin-top: 8mm;
+    padding-top: 3mm;
+    border-top: 1px solid #dbe6f4;
+    color: #7b8ea5;
+    font-size: 8.5pt;
+  }
+  .small { font-size: 9pt; color: #5b7088; }
+  .img-half img { width: 100%; }
+  .scope-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4mm;
+    margin: 4mm 0;
+    break-inside: avoid;
+  }
+  .scope-grid figure { margin: 0; }
+  .scope-grid figcaption { margin-top: 1.4mm; }
+  figure.login img { width: 66%; margin: 0 auto; }
+  figure.login figcaption { margin-top: 2mm; }
+</style>
+</head>
+<body>
+
+<section class="cover">
+  <img src="images/logo.svg" alt="汇智小助手" />
+  <h1>汇智小助手</h1>
+  <div class="sub">使用手册</div>
+  <div class="rule"></div>
+  <p style="color:#58708c;font-size:11.5pt;">
+    从登录到会话、文件、知识空间、数据空间、技能、智能体与定时任务
+  </p>
+  <div class="meta">
+    适用版本：v2.2.1<br />
+    文档版本：2026-11<br />
+    适用对象：首次使用系统的业务人员
+  </div>
+</section>
+
+<section class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li>快速开始
+      <ol>
+        <li>登录系统</li>
+        <li>认识主界面</li>
+        <li>选择智能体</li>
+      </ol>
+    </li>
+    <li>会话（聊天）
+      <ol>
+        <li>发起一次对话</li>
+        <li>附件、文件引用与工具调用</li>
+        <li>会话管理：重命名、归档、搜索、分享、导出与导入</li>
+        <li>知识/数据空间的勾选与隔离</li>
+        <li>在聊天中自动归入知识空间、创建数据空间和定时任务</li>
+      </ol>
+    </li>
+    <li>文件
+      <ol>
+        <li>文件页面与目录说明</li>
+        <li>上传大文件与自动解压</li>
+        <li>预览、编辑、重命名与删除</li>
+        <li>多选与批量删除</li>
+      </ol>
+    </li>
+    <li>知识空间
+      <ol>
+        <li>知识空间是什么</li>
+        <li>上传资料与解析状态</li>
+        <li>检索与引用</li>
+        <li>让智能体在聊天中自动入库</li>
+      </ol>
+    </li>
+    <li>数据空间
+      <ol>
+        <li>数据空间是什么</li>
+        <li>新建数据表与导入数据</li>
+        <li>查看数据与提问分析</li>
+        <li>让智能体在聊天中自动建表和分析</li>
+      </ol>
+    </li>
+    <li>技能
+      <ol>
+        <li>技能是什么</li>
+        <li>查看、启用与添加技能</li>
+        <li>技能分享与审批</li>
+      </ol>
+    </li>
+    <li>智能体管理
+      <ol>
+        <li>智能体与工作区</li>
+        <li>创建、复制与配置智能体</li>
+        <li>切换智能体</li>
+      </ol>
+    </li>
+    <li>定时任务
+      <ol>
+        <li>定时任务页面</li>
+        <li>手动创建定时任务</li>
+        <li>在聊天中自动创建定时任务</li>
+        <li>执行记录与收件箱</li>
+      </ol>
+    </li>
+    <li>安全与数据隔离</li>
+    <li>典型业务场景与常见问题</li>
+    <li>附录：限制、格式与常用规则</li>
+  </ol>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">1</span>快速开始</h2>
+
+  <h3>1.1 登录系统</h3>
+  <p>在浏览器中打开系统访问地址，进入登录页。输入用户名和密码后点击“登录”。</p>
+  <figure class="login">
+    <img src="images/11-login-card.png" alt="登录页面" />
+    <figcaption>图 1-1 登录页面；登录框下方可直接下载本使用手册 PDF</figcaption>
+  </figure>
+  <ul>
+    <li>使用已开通的账号登录；登录框下方的“使用手册（PDF）”可以随时下载本文档，便于离线查阅。</li>
+    <li>账号信息由系统统一管理；如忘记密码或账号不可用，请联系系统支持人员。</li>
+  </ul>
+  <div class="callout warn">
+    <div class="title">账号空间</div>
+    用户的文件、知识空间、数据表、会话都按账号归属自己所属的物理空间，彼此隔离。
+  </div>
+
+  <h3>1.2 认识主界面</h3>
+  <p>登录后默认进入“聊天”。左侧是功能导航，右侧是当前功能的操作区。</p>
+  <table>
+    <tr><th>区域</th><th>主要功能</th></tr>
+    <tr><td>左上角智能体</td><td>显示当前智能体，点击可切换；括号里的数字表示该账号下共有几个智能体。</td></tr>
+    <tr><td>聊天</td><td>与智能体对话，创建和使用知识空间、数据空间、定时任务。</td></tr>
+    <tr><td>知识空间</td><td>保存可检索的业务资料，支持上传、解析、查询和引用。</td></tr>
+    <tr><td>数据空间</td><td>把 CSV / Excel 变成可查询的数据表，支持智能体分析。</td></tr>
+    <tr><td>收件箱</td><td>查看定时任务结果、系统通知等。</td></tr>
+    <tr><td>控制</td><td>会话、定时任务。</td></tr>
+    <tr><td>工作区</td><td>文件、技能、工具。</td></tr>
+    <tr><td>设置</td><td>智能体管理、词元消耗。</td></tr>
+  </table>
+  <p class="small">“工具”用于查看当前智能体可调用的工具，通常保持默认即可；“词元消耗”用于查看当前账号的模型调用用量。</p>
+
+  <h3>1.3 选择智能体</h3>
+  <p>一个智能体相当于一位“数字同事”，拥有独立的会话、文件工作区、技能和运行配置。点击左上角的智能体下拉框即可切换。</p>
+  <ul>
+    <li>新账号默认有一个“默认智能体”。</li>
+    <li>不同智能体的文件与知识内容互不影响；切换智能体后，左侧会话列表和文件页会随之切换。</li>
+    <li>如果找不到某个文件或会话，先确认左上角选中的是不是当时使用的智能体。</li>
+  </ul>
+  <div class="callout">
+    <div class="title">建议的使用习惯</div>
+    按业务线拆分智能体，例如“社区警务助手”“反诈宣传助手”“台账分析助手”。这样文件、技能和会话天然分开，后续交接也更清楚。
+  </div>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">2</span>会话（聊天）</h2>
+
+  <h3>2.1 发起一次对话</h3>
+  <div class="steps">
+    <div class="step">点击左侧“聊天”，或点击顶部的“新建对话”按钮。</div>
+    <div class="step">在底部输入框输入问题，按 <code>Enter</code> 发送；需要换行时按 <code>Shift + Enter</code>。</div>
+    <div class="step">等待智能体回复。过程中可以展开“工具调用”查看它读取了哪些文件、执行了哪些操作。</div>
+    <div class="step">需要重新开始时，点击顶部“新建对话”；历史会话会保留在左侧“历史会话”中。</div>
+  </div>
+  <p>输入框左侧的回形针用于添加附件，右侧显示当前工作方式（默认、计划等）。输入框支持 <code>/</code> 快捷指令，例如输入 <code>/skills</code> 查看可用技能。</p>
+
+  <h3>2.2 附件、文件引用与工具调用</h3>
+  <ul>
+    <li><strong>聊天附件</strong>适合临时的小文件（单个不超过 20MB），会随消息一起发送给模型。</li>
+    <li><strong>大文件不要走聊天附件</strong>，请先到“文件 → 工作区 → upload”上传，再在聊天中让智能体按路径分析。</li>
+    <li>智能体读取工作区文件时，会以工具卡片形式展示文件名和结果；点击卡片可以查看详情。</li>
+    <li>如果回复中带有“来源：文件名 · 页码/章节”，说明内容来自知识空间检索，建议核对原文。</li>
+  </ul>
+
+  <h3>2.3 会话管理</h3>
+  <figure>
+    <img src="images/10-sessions.png" alt="会话管理页面" />
+    <figcaption>图 2-1 “控制 → 会话”页面：筛选、归档、分享、导出、导入和删除</figcaption>
+  </figure>
+  <table>
+    <tr><th>操作</th><th>说明</th></tr>
+    <tr><td>重命名</td><td>在会话列表的“编辑”中修改标题，便于按案件或事项归档。</td></tr>
+    <tr><td>归档</td><td>暂时不用的会话移到“已归档”，不占用日常列表。</td></tr>
+    <tr><td>查看</td><td>打开会话继续对话，历史消息会完整恢复。</td></tr>
+    <tr><td>分享</td><td>把会话快照发送给对方，需对方在审批中确认后接收。</td></tr>
+    <tr><td>导出</td><td>导出为 <code>.session.json</code>，包含会话状态与完整对话记录，可用于备份或迁移。</td></tr>
+    <tr><td>导入</td><td>从导出的文件新建一个会话，不会覆盖原有会话，也不会带入原账号身份。</td></tr>
+    <tr><td>删除</td><td>删除会话及其历史记录；删除前请确认没有需要保留的材料。</td></tr>
+  </table>
+  <div class="callout">
+    <div class="title">会话隔离</div>
+    会话属于当前账号和当前智能体。切换账号或智能体后，看不到对方的会话；导出文件也不包含原账号、原会话 ID 等身份信息。
+  </div>
+
+  <h3>2.4 知识/数据空间的勾选与隔离</h3>
+  <p>聊天页右上角有“知识空间”和“数据空间”两个按钮，按钮上的数字表示当前智能体已勾选的路径数量。它们控制同一件事：<strong>当前智能体在对话中能读取哪些路径下的资料</strong>。</p>
+  <div class="scope-grid">
+    <figure>
+      <img src="images/15-knowledge-scope-crop.png" alt="知识空间勾选面板" />
+      <figcaption>知识空间：勾选当前智能体可读取的路径</figcaption>
+    </figure>
+    <figure>
+      <img src="images/16-data-scope-crop.png" alt="数据空间勾选面板" />
+      <figcaption>数据空间：同一套路径授权的另一个入口</figcaption>
+    </figure>
+  </div>
+  <h4>勾选规则</h4>
+  <ul>
+    <li><strong>勾选一条路径</strong>：当前智能体在<strong>所有会话</strong>中都能读取该路径下的知识文档和数据表。</li>
+    <li><strong>不勾选</strong>：即使资料仍然存在，智能体在检索知识、查询数据表时也读不到，避免不相关的知识混入当前任务。</li>
+    <li>“知识空间”和“数据空间”两个按钮共用同一套路径授权：在任一入口勾选后，另一个入口也会同步显示为已勾选。隔离单位是<strong>路径</strong>，不是“知识”或“数据”的类型。</li>
+    <li>“公共区（未归类）”本身也是一条路径；不勾选它，智能体就读不到公共区里的资料。</li>
+    <li>修改会对当前智能体的所有对话立即生效，不需要重新打开会话；但不会删除任何资料，管理页面仍然可以看到账号下的全部内容。</li>
+  </ul>
+  <h4>按业务做隔离的建议</h4>
+  <p>不同类型的知识、不同案件的台账，建议放在不同路径里，并只给对应智能体勾选对应路径：</p>
+  <table>
+    <tr><th>智能体</th><th>建议只勾选</th><th>效果</th></tr>
+    <tr><td>反诈宣传助手</td><td>反诈宣传知识库</td><td>只检索反诈口径、案例，不会把社区台账或其他案件内容混进回答。</td></tr>
+    <tr><td>台账分析助手</td><td>社区警务数据空间</td><td>只查询该数据空间下的表，不会误用其他业务的数据。</td></tr>
+    <tr><td>综合研判助手</td><td>与当前任务直接相关的 2–3 条路径</td><td>需要跨业务时才同时勾选；任务结束后取消无关路径。</td></tr>
+  </table>
+  <div class="callout warn">
+    <div class="title">未勾选不等于删除</div>
+    取消勾选只是让当前智能体“读不到”，资料仍然保留在账号空间中。不要把所有资料都放在“公共区”，否则所有被勾选公共区的智能体都会看到，容易造成知识污染。新路径在聊天中创建时会自动授权给当前智能体；其他智能体需要各自到勾选面板中手动勾选。
+  </div>
+
+  <h3>2.5 在聊天中自动归入知识空间、创建数据空间和定时任务</h3>
+  <p>这是本系统最常用的“自然语言操作”方式：不需要先到对应页面点按钮，直接在聊天里说明目标即可。智能体会调用相应工具完成创建，并把结果显示在对应页面。</p>
+
+  <h4>（1）自动归入知识空间（路径不存在时自动新建）</h4>
+  <p><strong>适用场景：</strong>手里有一份反复查阅的规范、口径、案例汇编，希望以后能“问一句就找到”，并带出处。</p>
+  <div class="prompt">
+    请把 upload/反诈宣传素材/宣传口径-刷单返利.md 存到知识空间路径「反诈宣传知识库」。
+    如果这个路径不存在就新建，存在就直接归入该路径。存好后告诉我解析状态。
+  </div>
+  <figure>
+    <img src="images/02-chat-knowledge.png" alt="聊天中归入知识空间路径" />
+    <figcaption>图 2-2 在聊天中指定知识空间路径，智能体归入文件并回答带出处的问题</figcaption>
+  </figure>
+  <div class="steps">
+    <div class="step">先把文件上传到“文件 → 工作区 → upload”。</div>
+    <div class="step">在聊天中说明文件名和目标路径，例如“存到知识空间路径「反诈宣传知识库」”。</div>
+    <div class="step">智能体检查该路径：不存在就新建，存在就复用；随后上传文件并归入该路径，完成后报告解析状态。</div>
+    <div class="step">之后直接提问，例如“冒充公检法类诈骗的宣传要点是什么？请注明来源”。</div>
+  </div>
+  <div class="callout">
+    <div class="title">指定路径与默认区的区别</div>
+    没有指定路径时，文件进入“公共区（未归类）”；明确指定路径时，文件进入该路径，路径不存在会自动创建。如果名称有歧义（例如同时存在两个相近路径），智能体会先向你确认，不会自行猜测。
+  </div>
+  <div class="callout warn">
+    <div class="title">只上传需要长期保留的材料</div>
+    只是临时读一下的文件不需要入库。入库会触发解析和索引，文件越多等待越久；建议先按业务分类，再批量入库。
+  </div>
+
+  <h4>（2）自动创建数据空间并分析</h4>
+  <p><strong>适用场景：</strong>拿到一份 CSV / Excel 台账，希望快速统计、筛选、排序，或者让智能体直接给出结论。</p>
+  <div class="prompt">
+    请把 upload/社区警务月度台账.csv 建成数据表，表名用「社区警务月度台账」，字段按表头识别。
+    然后统计各社区累计受理量，从高到低排序，并给出前三名的宣传建议。
+  </div>
+  <figure>
+    <img src="images/03-chat-data.png" alt="聊天中创建数据空间" />
+    <figcaption>图 2-3 在聊天中建表、导入并直接得到统计结果</figcaption>
+  </figure>
+  <div class="steps">
+    <div class="step">确认 CSV / Excel 的第一行是表头，列含义清楚。</div>
+    <div class="step">在聊天中说明文件路径、表名和分析目标。</div>
+    <div class="step">智能体会创建数据表、导入数据，并用查询工具返回结果；复杂问题会分多步执行。</div>
+    <div class="step">之后可以继续追问，例如“按季度看趋势”“只看东湖社区”。</div>
+  </div>
+
+  <h4>（3）自动创建定时任务</h4>
+  <p><strong>适用场景：</strong>每天/每周固定生成日报、周报、台账汇总，或定时检查某些数据。</p>
+  <div class="prompt">
+    每周一早上 9 点，汇总上周各社区反诈宣传与警情数据，生成一份 Word 周报，
+    发送到当前会话，并保存到收件箱。
+  </div>
+  <figure>
+    <img src="images/01-chat-cron.png" alt="聊天中创建定时任务" />
+    <figcaption>图 2-4 在聊天中创建定时任务，并查看最近一次执行结果</figcaption>
+  </figure>
+  <div class="steps">
+    <div class="step">说清楚“什么时候执行”（每周一 9 点、每天 18 点、每月 1 号等）。</div>
+    <div class="step">说清楚“做什么”（汇总哪些数据、生成什么格式）。</div>
+    <div class="step">说清楚“结果去哪里”（当前会话、收件箱、指定会话）。</div>
+    <div class="step">创建后到“控制 → 定时任务”核对执行时间、时区和启用状态。</div>
+  </div>
+  <div class="callout">
+    <div class="title">时区很重要</div>
+    定时任务使用任务里设置的时区。创建后请在“定时任务”页面确认时区是 <code>Asia/Shanghai</code>，避免出现“明明设置 9 点却在下午执行”的情况。
+  </div>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">3</span>文件</h2>
+
+  <h3>3.1 文件页面与目录说明</h3>
+  <p>“文件”页面左侧是文件树，右侧是预览/编辑区。顶部有“工作区 / 档案 / 日记 / 知识总结”四个来源，日常业务文件主要使用“工作区”。</p>
+  <figure>
+    <img src="images/04-files-upload.png" alt="文件页面" />
+    <figcaption>图 3-1 文件 → 工作区 → upload；upload 下每个条目右侧的“⋯”用于重命名和删除</figcaption>
+  </figure>
+  <ul>
+    <li><strong>配置目录 / 工作区</strong>：当前智能体的工作目录。页面上的目录身份卡片会显示目录名和路径。</li>
+    <li><strong>upload</strong>：<strong>所有通过上传按钮进入的文件都固定放在这里</strong>。日常只需要关心这个目录。</li>
+    <li>其余目录（<code>digest</code>、<code>memory</code>、<code>sessions</code>、<code>skills</code> 等）是系统内部目录，不要手动修改或删除。</li>
+    <li>“档案 / 日记 / 知识总结”分别对应长期记忆、日记和知识总结，属于智能体的记忆与沉淀内容。</li>
+  </ul>
+
+  <h3>3.2 上传大文件与自动解压</h3>
+  <div class="steps">
+    <div class="step">点击文件树右上角的上传图标，选择一个或多个文件。</div>
+    <div class="step">按钮下方会出现进度条，显示文件名和上传百分比；大文件请保持页面打开，直到提示上传完成。</div>
+    <div class="step">上传完成后页面会自动切到“工作区”并展开 <code>upload</code>，可以看到新文件。</div>
+    <div class="step">如果是 zip、tar、tar.gz、tgz、gz，服务器会自动解压到 <code>upload</code> 下的同名目录；解压成功后原压缩包自动删除。</div>
+  </div>
+  <table>
+    <tr><th>项目</th><th>说明</th></tr>
+    <tr><td>单文件上限</td><td>默认 10GB（由部署参数决定）。</td></tr>
+    <tr><td>自动解压格式</td><td>zip、tar、tar.gz、tgz、gz。</td></tr>
+    <tr><td>不会自动解压</td><td>7z、rar 等格式只保存原文件，需要先转换格式。</td></tr>
+    <tr><td>解压失败</td><td>保留原压缩包，并在提示中给出失败原因；可以重新上传或改用其他格式。</td></tr>
+    <tr><td>安全限制</td><td>拒绝路径穿越、符号链接、压缩炸弹；默认最多 20 万个文件、50GB 解压总量。</td></tr>
+  </table>
+
+  <h3>3.3 预览、编辑、重命名与删除</h3>
+  <ul>
+    <li>点击文件即可在右侧预览；文本文件可以直接编辑并保存。</li>
+    <li>鼠标移到 <code>upload</code> 下的文件或目录，右侧出现“⋯”菜单，包含“重命名”和“删除”。</li>
+    <li>重命名只改文件/目录名，不允许输入路径分隔符；目标名称已存在时会提示冲突，不会覆盖。</li>
+    <li>删除目录会连同目录内全部内容一起删除；确认框会明确提示，此操作不可恢复。</li>
+    <li>只有 <code>upload</code> 下的内容可以管理；系统内部目录不会出现“⋯”菜单，后端也会拒绝越界操作。</li>
+  </ul>
+
+  <h3>3.4 多选与批量删除</h3>
+  <p>文件很多时，不需要逐个删除。点击文件树右上角的“多选”按钮（列表图标），进入多选模式。</p>
+  <figure>
+    <img src="images/05-files-multiselect.png" alt="多选删除" />
+    <figcaption>图 3-2 多选模式：勾选目录即代表删除该目录及全部内容；顶部显示已选数量</figcaption>
+  </figure>
+  <div class="steps">
+    <div class="step">点击“多选”按钮，<code>upload</code> 下每个条目左侧出现复选框。</div>
+    <div class="step">勾选要删除的文件；<strong>勾选目录等于删除整个目录</strong>，解压出来的大目录一次就能选中。</div>
+    <div class="step">可以继续展开其他目录继续勾选，已选数量会累加。</div>
+    <div class="step">点击“删除选中”，确认后执行；提示会显示实际删除数量和释放空间。</div>
+    <div class="step">“全选”会选中 upload 根下的所有条目，适合清空整个上传区；不会删除 upload 目录本身。</div>
+  </div>
+  <div class="callout">
+    <div class="title">删除是真的删除</div>
+    服务端会对每个路径执行删除并复核，确认路径不存在后才计为成功；提示中的“释放空间”按磁盘实际占用统计。
+  </div>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">4</span>知识空间</h2>
+
+  <h3>4.1 知识空间是什么</h3>
+  <p>知识空间是账号级的“可检索资料库”。和普通文件不同，资料上传后会经过解析、切分和索引，智能体可以先检索相关片段，再基于片段回答问题，并给出文件名、页码或章节等出处。</p>
+  <ul>
+    <li>适合放：规范、口径、案例汇编、历史报告、常见问答、政策文件。</li>
+    <li>不适合放：一次性临时文件、超大二进制包、与业务无关的素材。</li>
+    <li>左侧“路径”用于分类：全部、公共区（未归类）、自定义路径。未指定路径的资料进入公共区；指定路径的资料归入该路径，路径不存在时可在对话中自动新建。公共区对所有挂载该路径的智能体可见，适合共享资料。</li>
+  </ul>
+
+  <h3>4.2 上传资料与解析状态</h3>
+  <figure>
+    <img src="images/05-knowledge.png" alt="知识空间页面" />
+    <figcaption>图 4-1 知识空间：左侧路径分类（示例选中「反诈宣传知识库」），右侧资料列表、状态和操作</figcaption>
+  </figure>
+  <div class="steps">
+    <div class="step">在左侧选择要归入的路径（不确定就选“公共区”）。</div>
+    <div class="step">点击右上角“上传资料”，选择文件。支持 PDF、Word、Excel、CSV、TXT、Markdown、JSON 等常见格式。</div>
+    <div class="step">上传后列表会出现状态：<strong>正在解析 / 已入库 / 等待重试 / 解析失败</strong>。</div>
+    <div class="step">“已入库”表示可以检索；“正在解析”需要等待，页面顶部“任务”可以查看处理队列。</div>
+    <div class="step">点击文件名可以预览已解析内容；右侧操作可以查看详情、按当前规则重新入库、删除。</div>
+  </div>
+  <table>
+    <tr><th>状态</th><th>含义与处理</th></tr>
+    <tr><td>正在解析</td><td>正在抽取文字、切分和建立索引，等待即可。</td></tr>
+    <tr><td>已入库</td><td>可被检索和引用。</td></tr>
+    <tr><td>等待重试</td><td>首次解析失败，系统会在退避时间后自动重试；可查看错误原因。</td></tr>
+    <tr><td>解析失败</td><td>检查文件是否加密、损坏或格式不支持；必要时转换格式后重新上传。</td></tr>
+  </table>
+
+  <h3>4.3 检索与引用</h3>
+  <ul>
+    <li>页面顶部可以按处理状态、上传日期、文件名筛选，也可以在“检索问答关键词”中输入问题做快速检索。</li>
+    <li>在聊天中提问时，智能体会自动调用知识检索工具；回答中应出现文件名、页码/章节等来源。</li>
+    <li>如果回答没有出处，或者明显与原文不符，要求智能体“给出原文片段和文件名”，必要时打开文档核对。</li>
+    <li>知识检索只读取、不修改原文件；删除资料请在知识空间列表中操作。</li>
+  </ul>
+
+  <h3>4.4 让智能体在聊天中自动入库</h3>
+  <p>除了页面按钮，也可以完全用对话完成。推荐说法：</p>
+  <div class="prompt">
+    请把 upload/反诈宣传素材/宣传口径-刷单返利.md 存到知识空间路径「反诈宣传知识库」。
+    如果这个路径不存在就新建，存在就直接归入。完成后告诉我解析状态。
+  </div>
+  <div class="prompt">
+    在「反诈宣传知识库」路径里查一下：冒充公检法类诈骗有哪些主要提醒点？
+    请列出原文依据，并注明来源文件和章节。
+  </div>
+  <div class="callout">
+    <div class="title">指定路径与默认区的区别</div>
+    不指定路径时，文件进入“公共区（未归类）”；指定路径时，文件进入该路径，看不到这个路径就自动创建。按业务命名路径（如“反诈宣传知识库”“社区治理政策库”），比全部堆在公共区里更容易得到准确答案。名称有歧义时，智能体会先确认再操作。
+  </div>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">5</span>数据空间</h2>
+
+  <h3>5.1 数据空间是什么</h3>
+  <p>数据空间把 CSV / Excel 表格变成可查询的数据表。智能体可以用 SQL 做统计、筛选、排序和分组，并把结果解释成业务结论。</p>
+  <ul>
+    <li>适合放：台账、清单、统计表、问卷结果、警情明细等结构化数据。</li>
+    <li>第一行必须是表头，列名尽量使用业务语言，避免合并单元格和多余标题行。</li>
+    <li>数据表按账号和路径归属；删除表会同时删除已导入的数据。</li>
+  </ul>
+
+  <h3>5.2 新建数据表与导入数据</h3>
+  <figure>
+    <img src="images/11-data.png" alt="数据空间列表" />
+    <figcaption>图 5-1 数据空间：左侧路径分类，右侧数据表列表与新建入口</figcaption>
+  </figure>
+  <div class="steps">
+    <div class="step">点击“新建数据表”，填写表名、描述和每一列的含义。列含义会帮助智能体理解字段，建议认真填写。</div>
+    <div class="step">创建后在列表点击该表，进入“数据录入”面板。</div>
+    <div class="step">把 CSV / XLS / XLSX 拖到上传区，或点击选择文件；单文件默认不超过 10GB。</div>
+    <div class="step">系统自动解析并导入，下方“数据预览”会显示前若干行。</div>
+    <div class="step">导入任务可以在“任务”中查看进度、成功行数、失败行数和错误详情。</div>
+  </div>
+  <figure>
+    <img src="images/11-data-detail.png" alt="数据表导入与预览" />
+    <figcaption>图 5-2 数据录入面板：上传区、数据预览和导入结果</figcaption>
+  </figure>
+
+  <h3>5.3 查看数据与提问分析</h3>
+  <ul>
+    <li>在数据表中可以查看列结构、行数、导入次数和导入状态。</li>
+    <li>直接到聊天中提问即可，例如“统计各社区累计受理量，按从高到低排序”。</li>
+    <li>智能体会先理解表结构，再生成查询；遇到业务术语不明确时，会先查知识空间中的定义。</li>
+    <li>得到结果后建议追问“把明细列出来”“按季度拆分”，便于核对。</li>
+  </ul>
+
+  <h3>5.4 让智能体在聊天中自动建表和分析</h3>
+  <div class="prompt">
+    请把 upload/社区警务月度台账.csv 建成数据表，表名「社区警务月度台账」，
+    描述写“各社区按月统计的电信网络诈骗警情受理量”。
+    字段按表头识别：日期、社区、警情类型、受理量、环比变化。
+  </div>
+  <div class="prompt">
+    在这张表里统计各社区累计受理量，从高到低排序，列出前五名；
+    再按季度看东湖社区的变化趋势，并给出下周宣传建议。
+  </div>
+  <div class="callout warn">
+    <div class="title">数据质量决定分析质量</div>
+    导入前先检查：表头是否完整、是否有合计行、日期格式是否统一、数字列是否混入单位。脏数据会让统计结果偏差。
+  </div>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">6</span>技能</h2>
+
+  <h3>6.1 技能是什么</h3>
+  <p>技能是一组可复用的工作方法或工具包，通常包含说明文档、脚本和模板。启用后，智能体在遇到匹配的任务时会自动参考或调用，例如生成 Word 报告、处理 Excel、读取 PDF。</p>
+
+  <h3>6.2 查看、启用与添加技能</h3>
+  <figure>
+    <img src="images/07-skills.png" alt="技能页面" />
+    <figcaption>图 6-1 技能页面：已启用技能、适用频道、更新时间和说明</figcaption>
+  </figure>
+  <ul>
+    <li>技能卡片右上角显示“已启用/已停用”，点击开关即可切换。</li>
+    <li>“添加技能”支持：创建技能、通过 ZIP 上传、从技能池载入。</li>
+    <li>“批量操作”可以一次启用、停用或删除多个技能。</li>
+    <li>顶部可以按名称、标签筛选；卡片视图和列表视图可切换。</li>
+  </ul>
+  <div class="callout">
+    <div class="title">技能不是越多越好</div>
+    只启用当前业务需要的技能。启用过多会增加模型选择成本，也可能让回答偏离任务。建议按智能体职责配置技能。
+  </div>
+
+  <h3>6.3 技能分享与审批</h3>
+  <p>技能可以分享给其他账号，但不会直接写入对方工作区：对方需要在审批中同意后，技能才会复制到自己的技能列表。这样既方便复用，又避免未经确认的技能进入他人环境。</p>
+  <p>在聊天中可以直接说：“用 docx 技能把这份分析结果生成一份 Word 周报。”智能体会根据已启用技能选择合适的能力。</p>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">7</span>智能体管理</h2>
+
+  <h3>7.1 智能体与工作区</h3>
+  <p>每个智能体都有独立的：会话列表、文件工作区、技能配置、运行参数和知识/数据访问范围。可以把智能体理解为“带独立资料柜的数字同事”。</p>
+
+  <h3>7.2 创建、复制与配置智能体</h3>
+  <figure>
+    <img src="images/08-agents.png" alt="智能体管理" />
+    <figcaption>图 7-1 智能体管理：创建、复制、编辑、启用/停用和删除</figcaption>
+  </figure>
+  <div class="steps">
+    <div class="step">进入“设置 → 智能体管理”，点击“创建智能体”。</div>
+    <div class="step">填写名称和描述，例如“社区警务助手 / 面向社区民警的反诈宣传与台账分析”。</div>
+    <div class="step">选择模型、工具和技能；不确定时先使用默认配置，后续再调整。</div>
+    <div class="step">创建后可以在列表中复制一个现有智能体，快速得到相似配置。</div>
+    <div class="step">停用智能体不会删除其数据；删除前请确认会话和文件不再需要。</div>
+  </div>
+  <table>
+    <tr><th>配置项</th><th>作用</th></tr>
+    <tr><td>名称 / 描述</td><td>用于识别智能体；描述也会帮助模型理解自己的职责。</td></tr>
+    <tr><td>模型</td><td>决定推理能力、速度和成本；可用模型由系统统一配置。</td></tr>
+    <tr><td>工具</td><td>决定能否读写文件、执行命令、检索知识、查询数据等。</td></tr>
+    <tr><td>技能</td><td>决定是否具备 Word/Excel/PDF 等专项能力。</td></tr>
+    <tr><td>工作目录</td><td>该智能体的文件根目录；不同智能体互相隔离。</td></tr>
+  </table>
+
+  <h3>7.3 切换智能体</h3>
+  <p>点击左上角智能体名称，在下拉框中选择目标智能体。切换后，聊天、文件、技能等页面会自动切换到该智能体的数据。</p>
+  <div class="callout warn">
+    <div class="title">找不到文件时先看左上角</div>
+    绝大多数“文件不见了”的情况，是因为切换到了另一个智能体。确认左上角名称，再回到原智能体即可。
+  </div>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">8</span>定时任务</h2>
+
+  <h3>8.1 定时任务页面</h3>
+  <figure>
+    <img src="images/09-cron.png" alt="定时任务列表" />
+    <figcaption>图 8-1 定时任务列表：任务名称、启用状态、调度类型、执行时间和操作</figcaption>
+  </figure>
+  <p>“控制 → 定时任务”用于管理周期性任务。列表显示任务 ID、名称、启用状态、调度类型、执行时间和操作按钮。</p>
+  <ul>
+    <li><strong>禁用/启用</strong>：暂停或恢复调度，不会删除任务。</li>
+    <li><strong>立即执行</strong>：手动触发一次，用于验证配置。</li>
+    <li><strong>执行记录</strong>：查看每次执行的时间、状态和错误信息。</li>
+    <li>右侧“⋯”还可以编辑、删除任务。</li>
+  </ul>
+
+  <h3>8.2 手动创建定时任务</h3>
+  <figure>
+    <img src="images/14-cron-create.png" alt="创建定时任务" />
+    <figcaption>图 8-2 创建任务抽屉：名称、启用状态、收件箱、调度类型、执行时间、时区和请求内容（示例时区为默认 UTC，实际请选择 Asia/Shanghai）</figcaption>
+  </figure>
+  <table>
+    <tr><th>字段</th><th>填写建议</th></tr>
+    <tr><td>任务名称</td><td>用业务语言命名，例如“每周反诈宣传周报”。</td></tr>
+    <tr><td>启用状态</td><td>创建后先关闭，验证内容无误再启用。</td></tr>
+    <tr><td>运行结果存进收件箱</td><td>建议开启，方便事后查看结果和失败原因。</td></tr>
+    <tr><td>调度类型</td><td>“循环任务”用于每天/每周/每月；“单次任务”用于指定日期执行一次。</td></tr>
+    <tr><td>执行时间 / Cron</td><td>选择预设频率，或直接填写 5 段 Cron 表达式。</td></tr>
+    <tr><td>时区</td><td>选择 <code>Asia/Shanghai</code>，避免时差。</td></tr>
+    <tr><td>任务类型</td><td><code>agent</code> 表示让智能体执行；<code>text</code> 表示只发送固定文本。</td></tr>
+    <tr><td>请求内容</td><td>写清楚要做什么、输出什么格式、结果发给谁。</td></tr>
+  </table>
+
+  <h3>8.3 在聊天中自动创建定时任务</h3>
+  <p>推荐直接用自然语言描述“时间 + 任务 + 结果去向”：</p>
+  <div class="prompt">
+    每周一早上 9 点，汇总上周各社区反诈宣传与警情数据，生成 Word 周报，
+    发送到当前会话，并保存到收件箱。时区用 Asia/Shanghai。
+  </div>
+  <div class="prompt">
+    每天下午 6 点检查 upload/历史归档 下是否有新文件，如果有，按文件类型统计数量并提醒我。
+  </div>
+  <p>创建后务必到“定时任务”页面核对：任务是否启用、Cron 是否为 <code>0 9 * * mon</code>、时区是否正确、请求内容是否包含输出格式。可以先点“立即执行”验证一次，再等正式调度。</p>
+
+  <h3>8.4 执行记录与收件箱</h3>
+  <ul>
+    <li>执行记录会显示每次运行的状态（成功/失败/运行中）、开始时间和错误信息。</li>
+    <li>开启“运行结果存进收件箱”后，结果会出现在“收件箱”，即使当时不在线也能事后查看。</li>
+    <li>任务失败时，先看错误信息：常见原因是模型不可用、文件不存在、知识/数据服务未就绪。</li>
+    <li>修改任务后建议先“立即执行”验证，再恢复周期调度。</li>
+  </ul>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">9</span>安全与数据隔离</h2>
+  <ul>
+    <li><strong>账号隔离</strong>：普通用户只能访问自己账号下的会话、文件、知识空间和数据表；工具层会校验路径归属，越界访问会被拒绝。</li>
+    <li><strong>智能体隔离</strong>：不同智能体有独立工作区；切换智能体不会看到对方文件。</li>
+    <li><strong>上传目录限制</strong>：文件管理（重命名/删除）只允许操作当前账号 <code>upload</code> 下的内容，系统目录和内部任务文件不可操作。</li>
+    <li><strong>删除可验证</strong>：服务端删除后会复核路径是否真的不存在，并按磁盘实际占用统计释放空间。</li>
+    <li><strong>技能分享需审批</strong>：技能不会自动进入他人工作区，必须经对方同意后才复制。</li>
+  </ul>
+  <div class="callout warn">
+    <div class="title">不要把密级信息交给不可信指令</div>
+    智能体可能受到文件内容、网页内容中的恶意指令影响。涉及跨账号、删除、外发等高风险操作时，务必人工确认；不要把账号密码、密钥、身份证号等敏感信息直接粘贴到对话中。
+  </div>
+  <p>建议按密级拆分账号与智能体：高密级材料使用独立账号/独立智能体，低密级宣传材料另设智能体；知识空间按业务条线命名，避免混用。</p>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">10</span>典型业务场景与常见问题</h2>
+
+  <h3>10.1 场景一：案件/业务材料入库并检索</h3>
+  <div class="steps">
+    <div class="step">把材料上传到“文件 → upload”。</div>
+    <div class="step">在聊天中让智能体存入知识空间路径，例如“存入路径「社区治理政策库」”。</div>
+    <div class="step">等待“已入库”，再提问具体条款、流程或案例。</div>
+    <div class="step">要求回答注明文件名和章节，人工核对关键结论。</div>
+  </div>
+
+  <h3>10.2 场景二：台账快速分析</h3>
+  <div class="steps">
+    <div class="step">把 CSV/Excel 上传到 upload。</div>
+    <div class="step">在聊天中让智能体建表并导入。</div>
+    <div class="step">先问总体排名，再追问趋势、异常和原因。</div>
+    <div class="step">让智能体给出“结论 + 依据 + 建议”，不要只看一个总数。</div>
+  </div>
+
+  <h3>10.3 场景三：每周自动生成周报</h3>
+  <div class="steps">
+    <div class="step">先手动跑通一次：让智能体汇总数据并生成 Word。</div>
+    <div class="step">确认输出格式、文件名和内容结构符合要求。</div>
+    <div class="step">再创建定时任务，设置每周一 9 点、Asia/Shanghai、结果存入收件箱。</div>
+    <div class="step">第一周检查执行记录和收件箱，必要时调整提示词。</div>
+  </div>
+
+  <h3>10.4 场景四：批量清理上传文件</h3>
+  <ul>
+    <li>少量文件：文件页“多选”后删除。</li>
+    <li>整个解压目录：勾选目录本身即可递归删除。</li>
+    <li>按规则清理：在聊天中说“把 upload/历史归档 下 30 天前的 .log 删掉，先列出清单让我确认”。智能体会先列出待删除项和释放空间，确认后再执行。</li>
+  </ul>
+
+  <h3>10.5 常见问题</h3>
+  <table>
+    <tr><th>现象</th><th>排查方法</th></tr>
+    <tr><td>上传后看不到文件</td><td>确认左上角智能体是否正确；确认页面已切到“工作区”并展开 upload；刷新列表。</td></tr>
+    <tr><td>压缩包没有解压</td><td>确认格式是 zip/tar/tar.gz/tgz/gz；7z/rar 不会自动解压；查看上传提示中的失败原因。</td></tr>
+    <tr><td>知识文档一直“正在解析”</td><td>到知识空间“任务”查看队列；确认嵌入模型和 Worker 正常；必要时重新入库。</td></tr>
+    <tr><td>数据表显示“待导入”</td><td>需要先上传 CSV/Excel 并完成导入，表结构有了数据才可查询。</td></tr>
+    <tr><td>定时任务没有执行</td><td>检查任务是否启用、Cron 和时区是否正确；查看执行记录中的错误。</td></tr>
+    <tr><td>删除后空间没变化</td><td>大目录删除需要时间；刷新页面查看；系统会复核删除结果。</td></tr>
+    <tr><td>智能体说找不到文件</td><td>确认文件在 upload 下，并在提问中给出相对路径，例如 upload/xxx.csv。</td></tr>
+  </table>
+</section>
+
+<section class="chapter">
+  <h2><span class="num">11</span>附录：限制、格式与常用规则</h2>
+
+  <h3>11.1 常用限制</h3>
+  <table>
+    <tr><th>项目</th><th>默认值</th></tr>
+    <tr><td>聊天附件</td><td>单个 20MB</td></tr>
+    <tr><td>文件页单文件上传</td><td>10GB</td></tr>
+    <tr><td>单压缩包解压总量</td><td>50GB、20 万文件、目录深度 32</td></tr>
+    <tr><td>数据导入单文件</td><td>10GB；CSV / XLS / XLSX</td></tr>
+    <tr><td>知识空间文档格式</td><td>PDF、DOC/DOCX、XLS/XLSX/XLSM、CSV、TXT、MD、JSON</td></tr>
+    <tr><td>自动解压格式</td><td>zip、tar、tar.gz、tgz、gz</td></tr>
+  </table>
+
+  <h3>11.2 常用 Cron 表达式</h3>
+  <table>
+    <tr><th>需求</th><th>Cron（5 段）</th></tr>
+    <tr><td>每天 9:00</td><td><code>0 9 * * *</code></td></tr>
+    <tr><td>每周一 9:00</td><td><code>0 9 * * mon</code></td></tr>
+    <tr><td>每周五 18:00</td><td><code>0 18 * * fri</code></td></tr>
+    <tr><td>每月 1 日 8:00</td><td><code>0 8 1 * *</code></td></tr>
+    <tr><td>每 2 小时</td><td><code>0 */2 * * *</code></td></tr>
+  </table>
+  <p class="small">Cron 顺序为：分钟 小时 日 月 星期。本系统使用 5 段表达式，不支持秒级。</p>
+
+  <h3>11.3 推荐的提问模板</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4>知识检索</h4>
+      <p class="small">“请在「XX知识库」中查找关于 XX 的规定，列出原文依据并注明来源文件和章节。”</p>
+    </div>
+    <div class="card">
+      <h4>数据分析</h4>
+      <p class="small">“在「XX数据表」中统计 XX，按 XX 分组，从高到低排序，给出结论和依据。”</p>
+    </div>
+    <div class="card">
+      <h4>生成材料</h4>
+      <p class="small">“根据以上分析，用 docx 技能生成一份 XX 主题的周报，包含标题、数据摘要、问题分析和下周建议。”</p>
+    </div>
+    <div class="card">
+      <h4>定时任务</h4>
+      <p class="small">“每周一 9 点，执行 XX，生成 XX 格式，发送到当前会话并保存到收件箱，时区 Asia/Shanghai。”</p>
+    </div>
+  </div>
+
+  <div class="footer-note">
+    本手册中的截图来自演示环境，数据均为示例。实际界面以部署版本为准。<br />
+    如需重新下载本手册，请回到登录页，点击“使用手册（PDF）”。
+  </div>
+</section>
+
+</body>
+</html>

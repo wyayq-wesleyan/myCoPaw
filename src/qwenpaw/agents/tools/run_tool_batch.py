@@ -590,6 +590,9 @@ def _lookup_arg(path: str, args: dict[str, Any]) -> Any:
 # --- Single-step execution ------------------------------------------------
 
 
+_MAX_POST_TERMINAL_CHUNKS = 64
+
+
 async def _call_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -625,16 +628,32 @@ async def _call_tool(
     )
 
     tool_stream = None
+    # AgentScope's ``call_tool`` yields its final ToolResponse from a
+    # ``finally`` block. Closing that generator at the interrupted yield
+    # therefore raises "async generator ignored GeneratorExit". Drain to EOF
+    # instead; the cap only guards a tool that ignores cancellation.
+    extra_after_terminal = 0
     try:
         response: ToolChunk | None = None
         tool_stream = toolkit.call_tool(tool_call, agent_state)
         async for chunk in tool_stream:
+            if getattr(response, "state", None) == ToolResultState.INTERRUPTED:
+                if extra_after_terminal >= _MAX_POST_TERMINAL_CHUNKS:
+                    logger.warning(
+                        "Tool %s kept streaming after interruption; stopped "
+                        "draining at %d chunks",
+                        tool_name,
+                        extra_after_terminal,
+                    )
+                    break
+                extra_after_terminal += 1
+                continue
             response = chunk
-            # An INTERRUPTED chunk is terminal: keep it as the response and
-            # stop consuming so a later chunk can't overwrite the signal.
-            # (Post-loop callers detect interruption via ``response.state``.)
+            # An INTERRUPTED chunk is terminal: keep it as the response so a
+            # later chunk can't overwrite the signal. Post-loop callers
+            # detect interruption via ``response.state``.
             if getattr(chunk, "state", None) == ToolResultState.INTERRUPTED:
-                break
+                extra_after_terminal = 0
         if response is None:
             return _json_tool_response(
                 {
@@ -648,6 +667,15 @@ async def _call_tool(
             await tool_stream.aclose()
         raise
     except Exception as exc:  # pylint: disable=broad-except
+        if getattr(response, "state", None) == ToolResultState.INTERRUPTED:
+            # Cleanup failed after the tool was already interrupted; the
+            # interruption is the useful signal, don't replace it with an error.
+            logger.warning(
+                "Tool stream cleanup failed after interruption: %s",
+                tool_name,
+                exc_info=True,
+            )
+            return response
         return _json_tool_response(
             {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
         )

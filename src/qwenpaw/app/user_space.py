@@ -133,10 +133,17 @@ def is_admin_user(username: str | None) -> bool:
     if not username:
         return False
     try:
-        from .auth import get_user_info
+        from .auth import get_user_info, is_auth_enabled
 
         user = get_user_info(username)
-        return bool(user and user.get("role") == "admin")
+        if user is not None:
+            return bool(user.get("role") == "admin")
+        # Single-user deployments run without an auth database.  The one
+        # implicit account is the administrator; treating it as a regular user
+        # would sandbox the person who owns the host.
+        if not is_auth_enabled() and _slug(username) == "admin":
+            return True
+        return False
     except Exception:  # noqa: BLE001
         return _slug(username) == "admin"
 
@@ -263,7 +270,7 @@ def owner_for_workspace_dir(workspace_dir: "Path | str | None") -> str | None:
 def _ensure_account_directories(username: str) -> None:
     """Create the account-level file categories inside its isolated root."""
     root = get_user_root(username)
-    for name in ("archives", "diary", "knowledge"):
+    for name in ("archives", "diary", "knowledge", "outputs", "scripts"):
         (root / name).mkdir(parents=True, exist_ok=True)
 
 

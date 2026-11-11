@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { renderWithProviders } from "@/test/common_setup";
 import ChatHeaderTitle from "./index";
 
@@ -50,5 +50,29 @@ describe("ChatHeaderTitle", () => {
     renderWithProviders(<ChatHeaderTitle />);
     expect(screen.getAllByText("Chat B")[0]).toBeInTheDocument();
     expect(screen.queryByText("Chat A")).not.toBeInTheDocument();
+  });
+
+  it("shows the total session count and opens a scrollable session list", async () => {
+    const setCurrentSessionId = vi.fn();
+    mockUseChatAnywhereSessionsState.mockReturnValue({
+      sessions: [
+        { id: "sess-1", name: "Chat A" },
+        { id: "sess-2", name: "Chat B" },
+        { id: "sess-3", name: "Chat C" },
+      ],
+      currentSessionId: "sess-2",
+      setCurrentSessionId,
+    });
+
+    renderWithProviders(<ChatHeaderTitle />);
+
+    expect(screen.getByTestId("chat-session-count")).toHaveTextContent("3");
+    fireEvent.click(screen.getAllByText("Chat B")[0]);
+    const panel = await screen.findByTestId("chat-session-panel");
+    expect(panel).toHaveTextContent("Chat A");
+    expect(panel).toHaveTextContent("Chat C");
+
+    fireEvent.click(screen.getByText("Chat A"));
+    expect(setCurrentSessionId).toHaveBeenCalledWith("sess-1");
   });
 });

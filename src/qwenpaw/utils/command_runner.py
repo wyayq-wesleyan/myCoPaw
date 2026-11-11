@@ -149,6 +149,10 @@ class ManagedProcess:
     def stdout(self) -> Any | None:
         return getattr(self._process, "stdout", None)
 
+    @property
+    def stderr(self) -> Any | None:
+        return getattr(self._process, "stderr", None)
+
     async def wait(self) -> int:
         if hasattr(self._process, "wait"):
             return await self._process.wait()

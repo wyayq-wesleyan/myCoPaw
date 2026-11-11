@@ -193,6 +193,12 @@ def make_lsp_tool(  # noqa: C901  pylint: disable=too-many-statements
         query: str = "",
     ) -> ToolChunk:
         # pylint: disable=too-many-return-statements,too-many-branches
+        from .admin_guard import admin_denial, denial_chunk
+
+        denial = admin_denial("语言服务器")
+        if denial:
+            return denial_chunk(denial)
+
         if operation not in _ALL_OPERATIONS:
             return _make_response(
                 f"Error: unknown operation `{operation}`. Valid: "

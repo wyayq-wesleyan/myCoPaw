@@ -716,3 +716,31 @@ def test_schema_init_runs_the_orphan_cleanup(owner):
     assert P.path_is_empty(path_id), (
         "启动时没有执行孤儿清理：老部署升级后计数仍会虚高、案件仍删不掉"
     )
+
+
+@requires_platform_db
+def test_path_enrichment_index_loads_bindings_and_agents_in_bulk(owner):
+    """The tree page's bulk index must match the per-node semantics.
+
+    It exists to replace 2-3 queries per node; this pins that bindings for both
+    resource kinds and agent grants still come back completely.
+    """
+    root = P.ensure_root_path(owner)
+    case = P.create_path(owner, "案件")
+    doc_root = f"{owner}-doc-root"
+    doc_case = f"{owner}-doc-case"
+    table_case = f"{owner}-table-case"
+    P.bind_resource(root, P.KIND_KNOWLEDGE_DOCUMENT, doc_root)
+    P.bind_resource(case, P.KIND_KNOWLEDGE_DOCUMENT, doc_case)
+    P.bind_resource(case, P.KIND_DATA_TABLE, table_case)
+    agent = f"{owner}-agent"
+    P.grant_root_to_agent(owner, agent)
+
+    bindings, any_bound, agents = P.path_enrichment_index(owner)
+
+    assert bindings[(P.KIND_KNOWLEDGE_DOCUMENT, root)] == {doc_root}
+    assert bindings[(P.KIND_KNOWLEDGE_DOCUMENT, case)] == {doc_case}
+    assert bindings[(P.KIND_DATA_TABLE, case)] == {table_case}
+    assert any_bound[P.KIND_KNOWLEDGE_DOCUMENT] == {doc_root, doc_case}
+    assert any_bound[P.KIND_DATA_TABLE] == {table_case}
+    assert agents[root] == [agent]

@@ -13,8 +13,11 @@ import asyncio
 import io
 import json
 import logging
+import os
+import shutil
 import sys
 import zipfile
+from contextlib import suppress
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
@@ -25,7 +28,11 @@ from ..agent_context import get_agent_for_request, get_agent_project_dir
 from ..user_space import get_request_username, get_user_root
 from ..utils import safe_project_dest
 from ...constant import CODING_PROJECT_SUBDIR
-from ...utils.command_runner import run_command_async, start_command_async
+from ...utils.command_runner import (
+    ManagedProcess,
+    run_command_async,
+    start_command_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,78 @@ router = APIRouter(
     prefix="/workspace/project-directory",
     tags=["project-directory"],
 )
+
+# A clone that never finishes — dead network, a repository that needs
+# credentials, an enormous tree — holds its process (and children) until the
+# container is restarted. The budget is a wall-clock ceiling for the whole
+# clone; raise or lower it with ``QWENPAW_GIT_CLONE_TIMEOUT_SECONDS``.
+_CLONE_TIMEOUT_ENV = "QWENPAW_GIT_CLONE_TIMEOUT_SECONDS"
+_CLONE_TIMEOUT_DEFAULT = 1800.0
+
+
+def _clone_timeout_seconds() -> float:
+    """Wall-clock budget for one ``git clone``, read per request."""
+    raw = os.environ.get(_CLONE_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _CLONE_TIMEOUT_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Ignoring non-numeric %s=%r", _CLONE_TIMEOUT_ENV, raw)
+        return _CLONE_TIMEOUT_DEFAULT
+    return value if value > 0 else _CLONE_TIMEOUT_DEFAULT
+
+
+def _split_progress_lines(buf: str) -> tuple[list[str], str]:
+    """Split git's progress output on ``\\r`` or ``\\n`` (or ``\\r\\n``).
+
+    Progress records are carriage-return separated while they update in place,
+    so line splitting cannot rely on ``\\n`` alone. Returns the complete lines
+    plus whatever partial tail is left in *buf*.
+    """
+    lines: list[str] = []
+    while True:
+        idx = -1
+        sep_len = 0
+        for sep in ("\r\n", "\r", "\n"):
+            pos = buf.find(sep)
+            if pos != -1 and (idx == -1 or pos < idx):
+                idx = pos
+                sep_len = len(sep)
+        if idx == -1:
+            break
+        line = buf[:idx].strip()
+        buf = buf[idx + sep_len :]
+        if line:
+            lines.append(line)
+    return lines, buf
+
+
+async def _reap_killed(proc: ManagedProcess, *, within: float = 5.0) -> None:
+    """Wait (bounded) for a killed process to be reaped.
+
+    Only useful to order cleanup after death: the caller wipes the partially
+    written tree, and doing that while git is still writing would leave the
+    deleting and the writing racing each other.
+    """
+    with suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(proc.wait(), within)
+
+
+async def _discard_partial_clone(target: Path, *, created_by_us: bool) -> None:
+    """Remove a clone that was aborted before it finished.
+
+    Only when this request created the directory: ``git clone`` also fails
+    with "destination path already exists" for a directory the user already
+    had, and wiping that would destroy data we never wrote.
+    """
+    if not created_by_us:
+        return
+    if not await asyncio.to_thread(target.exists):
+        # git removes its own leftovers when it fails on its own.
+        return
+    await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+    logger.info("Discarded partial clone at %s", target)
 
 
 # ---------------------------------------------------------------------------
@@ -263,53 +342,77 @@ async def clone_project(
         )
 
     target = safe_project_dest(base, repo_name)
+    # Cloning into an existing directory fails; remember whether the failure we
+    # may clean up after is one we caused.
+    pre_existing = target.exists()
 
     agent_id = workspace.agent_id  # capture before entering generator
 
     async def event_stream():
+        proc: ManagedProcess | None = None
+        completed = False
         try:
             base.mkdir(parents=True, exist_ok=True)
 
+            timeout_seconds = _clone_timeout_seconds()
             proc = await start_command_async(
                 ["git", "clone", "--progress", url, str(target)],
                 stdout=asyncio.subprocess.PIPE,
                 # git writes progress to stderr
                 stderr=asyncio.subprocess.STDOUT,
+                # A URL that wants credentials otherwise waits on a prompt that
+                # can never be answered: nobody is attached to this stdin.
+                stdin=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                # clone spawns helpers (git-remote-https, index-pack); a bare
+                # kill() signals only the direct child and lets them run on.
+                start_new_session=True,
             )
 
             assert proc.stdout is not None
             buf = ""  # raw read: \r progress arrives real-time
-            while True:
-                raw = await proc.stdout.read(4096)
-                if not raw:
-                    break
-                buf += raw.decode("utf-8", errors="replace")
-                # Split on \r or \n (or \r\n)
-                while True:
-                    idx = -1
-                    for sep in ("\r\n", "\r", "\n"):
-                        pos = buf.find(sep)
-                        if pos != -1 and (idx == -1 or pos < idx):
-                            idx = pos
-                            sep_len = len(sep)
-                    if idx == -1:
-                        break
-                    line = buf[:idx].strip()
-                    buf = buf[idx + sep_len :]
-                    if line:
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    while True:
+                        raw = await proc.stdout.read(4096)
+                        if not raw:
+                            break
+                        buf += raw.decode("utf-8", errors="replace")
+                        lines, buf = _split_progress_lines(buf)
+                        for line in lines:
+                            payload = json.dumps(
+                                {"type": "log", "line": line},
+                            )
+                            yield f"data: {payload}\n\n"
+                    # Flush remaining buffer (unterminated last record included)
+                    lines, buf = _split_progress_lines(buf + "\n")
+                    for line in lines:
                         payload = json.dumps(
                             {"type": "log", "line": line},
                         )
                         yield f"data: {payload}\n\n"
-            # Flush remaining buffer
-            remaining = buf.strip()
-            if remaining:
+
+                    rc = await proc.wait()
+            except TimeoutError:
+                logger.warning(
+                    "git clone timed out after %.0fs: %s",
+                    timeout_seconds,
+                    url,
+                )
+                proc.kill()
+                await _reap_killed(proc)
                 payload = json.dumps(
-                    {"type": "log", "line": remaining},
+                    {
+                        "type": "error",
+                        "detail": (
+                            "git clone timed out after "
+                            f"{timeout_seconds:g}s"
+                        ),
+                    },
                 )
                 yield f"data: {payload}\n\n"
+                return
 
-            rc = await proc.wait()
             if rc != 0:
                 payload = json.dumps(
                     {
@@ -323,6 +426,7 @@ async def clone_project(
             # Set as active project
             await asyncio.to_thread(_save_project_dir, agent_id, str(target))
 
+            completed = True
             payload = json.dumps(
                 {"type": "done", "path": str(target), "name": target.name},
             )
@@ -333,6 +437,24 @@ async def clone_project(
         except Exception as exc:
             payload = json.dumps({"type": "error", "detail": str(exc)})
             yield f"data: {payload}\n\n"
+        finally:
+            # Also reached when the client goes away mid-stream: Starlette
+            # closes the generator at the pending yield, so anything after it
+            # never runs. Two things must still happen — and nothing here may
+            # await, because an async generator that awaits after GeneratorExit
+            # raises RuntimeError.
+            if proc is not None and proc.is_alive():
+                proc.kill()
+            if not completed:
+                try:
+                    asyncio.create_task(
+                        _discard_partial_clone(
+                            target,
+                            created_by_us=not pre_existing,
+                        ),
+                    )
+                except RuntimeError:  # pragma: no cover - no running loop
+                    pass
 
     return StreamingResponse(
         event_stream(),

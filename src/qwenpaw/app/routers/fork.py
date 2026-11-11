@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -17,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ...config.config import load_agent_config
+from ...utils.command_runner import ManagedProcess, start_command_async
 from ..chats.session import sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -25,7 +27,22 @@ router = APIRouter(prefix="/fork", tags=["fork"])
 
 _WORKTREE_BASE = ".qwenpaw/worktrees"
 
+# Checking out a large repository can take a while, but never forever: a hung
+# git would hold the repository's index lock and block every later git call.
+_WORKTREE_TIMEOUT_SECONDS = 60.0
+
 _LOCALHOST_ADDRS = {"127.0.0.1", "::1", "localhost"}
+
+
+async def _kill_and_reap(proc: ManagedProcess, *, within: float = 5.0) -> None:
+    """Kill a process (and its group) and wait for it to be gone.
+
+    The wait is bounded because the caller is already on an error path; a
+    process wedged in uninterruptible sleep must not turn a 500 into a hang.
+    """
+    proc.kill()
+    with suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(proc.wait(), within)
 
 
 class ForkAgentRequest(BaseModel):
@@ -211,29 +228,36 @@ async def _create_worktree(
     worktree_path = project_dir / _WORKTREE_BASE / worktree_id
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "worktree",
-        "add",
-        str(worktree_path),
-        "-b",
-        branch,
+    # ``start_new_session`` puts git in its own process group: it spawns
+    # helpers (checkout, index-pack), and a bare kill() would signal only the
+    # parent and let those keep running.
+    # stdout is discarded rather than piped: only stderr is read below, and an
+    # unread pipe would block git once it filled.
+    proc = await start_command_async(
+        ["git", "worktree", "add", str(worktree_path), "-b", branch],
         cwd=str(project_dir),
-        stdout=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
-        _, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=60,
-        )
-    except asyncio.TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+        async with asyncio.timeout(_WORKTREE_TIMEOUT_SECONDS):
+            stderr = await proc.stderr.read()
+            await proc.wait()
+    except TimeoutError as exc:
+        await _kill_and_reap(proc)
         raise HTTPException(
             status_code=500,
-            detail="git worktree add timed out (60s)",
+            detail=(
+                "git worktree add timed out "
+                f"({_WORKTREE_TIMEOUT_SECONDS:g}s)"
+            ),
         ) from exc
+    except (asyncio.CancelledError, GeneratorExit):
+        # The caller walked away mid-checkout. Leaving it running holds the
+        # repository's index lock, which blocks every later git operation.
+        await _kill_and_reap(proc)
+        raise
     if proc.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace").strip()
         raise HTTPException(

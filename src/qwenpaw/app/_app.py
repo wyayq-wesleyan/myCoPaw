@@ -268,6 +268,35 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     logger.debug("Checking for legacy config migration...")
     migrate_legacy_workspace_to_default_agent()
     ensure_default_agent_exists()
+
+    # The no-Landlock sandbox relies on Unix group modes. Harden every existing
+    # account root on boot so an account that has not run shell yet cannot be
+    # read by another account's first command. No-op when Landlock is enabled.
+    try:
+        from ..sandbox.user_isolation import (
+            _landlock_enabled,
+            _seccomp_available,
+            prepare_all_accounts,
+        )
+
+        if (
+            not _landlock_enabled()
+            and sys.platform == "linux"
+            and os.geteuid() == 0
+            and _seccomp_available()
+        ):
+            prepared = await asyncio.to_thread(prepare_all_accounts)
+            logger.info(
+                "sandbox: hardened %d account root(s) for UID/group mode",
+                prepared,
+            )
+    except Exception:  # noqa: BLE001 - shell will fail closed if this matters
+        logger.warning(
+            "sandbox: account-root hardening failed; "
+            "ordinary-user shell may be unavailable",
+            exc_info=True,
+        )
+
     migrate_legacy_skills_to_skill_pool()
     ensure_qa_agent_exists()
     sync_admin_initial_skills()
@@ -906,9 +935,12 @@ def read_root():
 
 @app.get("/api/version")
 def get_version():
-    """Return the current application version (public-safe payload)."""
+    """Return the current application and deployment versions."""
+    from ..deployment_version import deployment_version_info
+
     return {
         "version": __version__,
+        **deployment_version_info(),
     }
 
 

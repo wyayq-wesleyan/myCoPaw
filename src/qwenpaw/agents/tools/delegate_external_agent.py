@@ -1003,6 +1003,12 @@ async def delegate_external_agent(
             requests, status, or errors.
     """
 
+    from .admin_guard import admin_denial, denial_chunk
+
+    denial = admin_denial("外部智能体代理")
+    if denial:
+        return denial_chunk(denial)
+
     workspace_dir = _current_workspace_dir()
     execution_cwd = _resolve_execution_cwd(cwd, workspace_dir)
     action_name = str(action or "").strip().lower()

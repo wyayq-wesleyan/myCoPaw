@@ -88,24 +88,103 @@
   }
 }
 
-/* ---- Dropdown menu items ---- */
-.menuItem {
+/* ---- Session count + scrollable session dropdown ---- */
+.sessionCount {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: var(--ant-color-text-secondary, #6b7f95);
+  background: var(--ant-color-fill-secondary, #eef2f7);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.sessionChevron {
+  flex-shrink: 0;
+  color: var(--ant-color-text-tertiary, #8a9bb0);
+  font-size: 9px;
+}
+
+.sessionPanel {
+  width: 300px;
+  max-width: min(360px, 90vw);
+  padding: 6px;
+  border: 1px solid var(--ant-color-border-secondary, #dbe6f4);
+  border-radius: 10px;
+  background: var(--ant-color-bg-elevated, #fff);
+  box-shadow: 0 8px 24px rgba(20, 60, 105, 0.14);
+}
+
+.sessionPanelHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  min-width: 200px;
+  padding: 6px 8px 8px;
+  border-bottom: 1px solid var(--ant-color-border-secondary, #dbe6f4);
+  color: var(--ant-color-text, rgba(0, 0, 0, 0.88));
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.menuItemName {
+.sessionPanelCount {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  color: var(--colorPrimary, #2a63ad);
+  background: var(--ant-color-primary-bg, #eaf2fd);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.sessionPanelList {
+  max-height: min(60vh, 360px);
+  padding-top: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sessionRow {
+  width: 100%;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--ant-color-fill-secondary, #eef2f7);
+  }
+}
+
+.sessionRowActive {
+  color: var(--colorPrimary, #2a63ad);
+  background: var(--ant-color-primary-bg, #eaf2fd);
+
+  &:hover {
+    background: var(--ant-color-primary-bg, #eaf2fd);
+  }
+}
+
+.sessionRowName {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
 }
 
-.menuItemActive {
+.sessionRowCheck {
+  flex-shrink: 0;
   color: var(--colorPrimary, #2a63ad);
   font-size: 12px;
-  flex-shrink: 0;
 }

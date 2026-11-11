@@ -59,6 +59,7 @@ from ...agents.memory.agent_md_manager import AgentMdManager
 from ...agents.templates import get_workspace_md_template_id
 from ...agents.utils import copy_workspace_md_files
 from ...constant import BUILTIN_QA_AGENT_ID, SUPPORTED_AGENT_LANGUAGES
+from ...services import upload_inbox as inbox_store
 from ...services.workspace_files import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_PAGE_SIZE,
@@ -700,6 +701,244 @@ def _prepare_upload_targets(
         seen_names.add(comparable_name)
         upload_targets.append((upload, filename, target))
     return upload_targets, conflicts
+
+
+class InboxRenameBody(BaseModel):
+    path: str
+    new_name: str
+
+
+class InboxDeleteBody(BaseModel):
+    path: str
+    recursive: bool = False
+
+
+class InboxDeleteBatchBody(BaseModel):
+    paths: list[str]
+    recursive: bool = False
+
+
+@router.post(
+    "/inbox-upload",
+    summary="Upload files into the workspace upload/ inbox",
+)
+async def upload_inbox_files(
+    request: Request,
+    files: list[UploadFile] = File(...),
+) -> dict:
+    """Stream uploads into ``<workspace>/upload`` and extract archives.
+
+    One fixed destination on purpose: the Files page has a single upload
+    action, so users never have to think about which directory is current.
+    zip / tar / tar.gz / gz are extracted by a background job; a successfully
+    extracted archive is deleted afterwards, while a failed one is kept.
+    """
+    workspace = await get_agent_for_request(request)
+    inbox = await asyncio.to_thread(
+        inbox_store.inbox_dir,
+        workspace.workspace_dir,
+    )
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for upload in files:
+        try:
+            filename = inbox_store.safe_filename(upload.filename)
+            target = await asyncio.to_thread(
+                inbox_store.reserve_target,
+                inbox,
+                filename,
+            )
+            size, sha256 = await asyncio.to_thread(
+                inbox_store.save_upload,
+                upload,
+                target,
+            )
+            kind = await asyncio.to_thread(
+                inbox_store.detect_archive,
+                target,
+            )
+            job_id = None
+            extract_status = None
+            if kind is not None:
+                job = await asyncio.to_thread(
+                    inbox_store.create_extract_job,
+                    workspace.workspace_dir,
+                    target,
+                )
+                job_id = job["id"]
+                extract_status = job["status"]
+                inbox_store.start_extract_job(
+                    workspace.workspace_dir,
+                    job_id,
+                )
+            results.append(
+                {
+                    "name": target.name,
+                    "path": target.relative_to(
+                        workspace.workspace_dir,
+                    ).as_posix(),
+                    "size": size,
+                    "sha256": sha256,
+                    "archive": kind,
+                    "job_id": job_id,
+                    "extract_status": extract_status,
+                },
+            )
+        except inbox_store.InboxUploadError as exc:
+            errors.append(
+                {"name": upload.filename or "", "error": str(exc)},
+            )
+        except OSError as exc:
+            logger.exception("inbox upload failed")
+            errors.append(
+                {
+                    "name": upload.filename or "",
+                    "error": f"上传失败：{exc}",
+                },
+            )
+    if errors and not results:
+        # Nothing landed; report the first reason as the request failure.
+        raise HTTPException(status_code=400, detail=errors[0]["error"])
+    return {"files": results, "errors": errors}
+
+
+@router.get(
+    "/inbox-jobs/{job_id}",
+    summary="Read one upload extraction job",
+)
+async def get_inbox_job(job_id: str, request: Request) -> dict:
+    """Return extraction progress for one uploaded archive."""
+    workspace = await get_agent_for_request(request)
+    try:
+        job = await asyncio.to_thread(
+            inbox_store.read_job,
+            workspace.workspace_dir,
+            job_id,
+        )
+    except inbox_store.InboxUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return job
+
+
+@router.post(
+    "/inbox-rename",
+    summary="Rename a file or directory under upload/",
+)
+async def rename_inbox_entry(
+    body: InboxRenameBody,
+    request: Request,
+) -> dict:
+    """Rename one entry; only paths inside ``upload/`` are accepted."""
+    workspace = await get_agent_for_request(request)
+    try:
+        path = await asyncio.to_thread(
+            inbox_store.rename_inbox_entry,
+            workspace.workspace_dir,
+            body.path,
+            body.new_name,
+        )
+    except inbox_store.InboxConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="文件不存在") from exc
+    except inbox_store.InboxUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("inbox rename failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"重命名失败：{exc}",
+        ) from exc
+    return {"path": path}
+
+
+@router.post(
+    "/inbox-delete",
+    summary="Delete a file or directory under upload/",
+)
+async def delete_inbox_entry(
+    body: InboxDeleteBody,
+    request: Request,
+) -> dict:
+    """Delete one entry; directories require ``recursive=true``."""
+    workspace = await get_agent_for_request(request)
+    try:
+        source = await asyncio.to_thread(
+            inbox_store.inbox_entry_path,
+            workspace.workspace_dir,
+            body.path,
+        )
+        freed_bytes = await asyncio.to_thread(
+            inbox_store.entry_disk_usage,
+            source,
+        )
+        await asyncio.to_thread(
+            inbox_store.delete_inbox_entry,
+            workspace.workspace_dir,
+            body.path,
+            recursive=body.recursive,
+        )
+        if await asyncio.to_thread(os.path.lexists, source):
+            raise HTTPException(
+                status_code=500,
+                detail="删除后文件仍然存在",
+            )
+    except inbox_store.InboxConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="文件不存在") from exc
+    except inbox_store.InboxUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("inbox delete failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"删除失败：{exc}",
+        ) from exc
+    return {"deleted": body.path, "freed_bytes": freed_bytes}
+
+
+@router.post(
+    "/inbox-delete-batch",
+    summary="Delete several files or directories under upload/",
+)
+async def delete_inbox_entries_batch(
+    body: InboxDeleteBatchBody,
+    request: Request,
+) -> dict:
+    """Delete selected entries; paths outside upload/ reject the whole batch."""
+    if not body.paths:
+        raise HTTPException(status_code=400, detail="未选择任何文件")
+    workspace = await get_agent_for_request(request)
+    try:
+        result = await asyncio.to_thread(
+            inbox_store.delete_inbox_entries,
+            workspace.workspace_dir,
+            body.paths,
+            recursive=body.recursive,
+        )
+    except inbox_store.InboxUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("inbox batch delete failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"删除失败：{exc}",
+        ) from exc
+    if not result["deleted"] and result["failed"]:
+        raise HTTPException(
+            status_code=400,
+            detail=result["failed"][0]["error"],
+        )
+    logger.info(
+        "inbox batch delete: %d deleted, %d failed, %d bytes freed",
+        len(result["deleted"]),
+        len(result["failed"]),
+        result["freed_bytes"],
+    )
+    return result
 
 
 @router.post(

@@ -64,15 +64,16 @@ class PlatformDbConfig:
 
         An explicitly configured host is used alone: silently falling back to a
         different server would connect to the wrong database. Only the built-in
-        default tries the container gateway first, because that is where the
-        bundled PostgreSQL lives under host networking.
+        default is a guess, and that guess is ``127.0.0.1``: every container
+        runs with ``network_mode: host``, so the bundled PostgreSQL is on the
+        host's own loopback (see knowledge-service/docker-compose.postgres.yml).
         """
         configured = _env("QWENPAW_PLATFORM_DB_HOST") or _env(
             "QWENPAW_DATA_TABLES_DB_HOST",
         )
         if configured:
             return [configured]
-        return ["host.docker.internal", "127.0.0.1"]
+        return ["127.0.0.1"]
 
     def connect_kwargs(self, host: str) -> dict:
         """Connection kwargs for ``psycopg2`` against *host*."""

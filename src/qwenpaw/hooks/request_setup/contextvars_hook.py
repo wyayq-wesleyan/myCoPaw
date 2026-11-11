@@ -77,7 +77,13 @@ class ContextVarsSetupHook(LifecycleHook):
         #      cron/heartbeat/ACP runs resolve to a real account instead of the
         #      dispatch target (``"main"``/``"cron"``/an IM sender id), a value
         #      that produced a nonexistent workspace and mis-attributed usage.
-        # Left unset when neither is available; the tools then fail closed.
+        #   3. with authentication disabled, the deployment has exactly one
+        #      account and it is the administrator. Scheduled runs there carry
+        #      a dispatch target ("main"/"cron"/an IM sender id) in
+        #      ``request.user_id``; without this fallback the resolver treated
+        #      that target as an unknown ordinary account, so admin-only tools
+        #      and the shell misbehaved in single-user deployments.
+        # Left unset otherwise; the tools then fail closed.
         resolved_account = (
             account_username
             if isinstance(account_username, str) and account_username.strip()
@@ -92,6 +98,17 @@ class ContextVarsSetupHook(LifecycleHook):
                 logger.debug(
                     "could not resolve the owning account for agent %s",
                     ctx.agent_id,
+                    exc_info=True,
+                )
+        if resolved_account is None:
+            try:
+                from ...app.auth import is_auth_enabled
+
+                if not is_auth_enabled():
+                    resolved_account = "admin"
+            except Exception:  # noqa: BLE001 - attribution stays fail-closed
+                logger.debug(
+                    "could not determine whether auth is enabled",
                     exc_info=True,
                 )
         set_current_account_username(resolved_account)

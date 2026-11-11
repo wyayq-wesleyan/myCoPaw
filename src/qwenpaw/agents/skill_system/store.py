@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 _RegistryResult = TypeVar("_RegistryResult")
 _MAX_ZIP_BYTES = 200 * 1024 * 1024
+# 临时目录前缀固定，不插值技能名：技能名可能来自 zip 的 frontmatter，
+# 属于外部输入。真正的边界由 safe_skill_dir 保证（见 #8065）。
+_SKILL_STAGE_PREFIX = "qwenpaw_skill_stage_"
 _REQUIREMENTS_METADATA_NAMESPACES = ("openclaw", "qwenpaw", "clawdbot")
 _FRONTMATTER_ENCODINGS = (
     "utf-8-sig",
@@ -679,6 +682,9 @@ def _create_files_from_tree(base_dir: Path, tree: dict[str, Any]) -> None:
         if isinstance(value, dict):
             path.mkdir(parents=True, exist_ok=True)
             _create_files_from_tree(path, value)
+        elif isinstance(value, bytes):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(value)
         elif value is None or isinstance(value, str):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(value or "", encoding="utf-8")
@@ -1059,7 +1065,9 @@ def import_skill_dir(
     if not post.get("name") or not post.get("description"):
         return False
 
-    target_dir = target_root / skill_name
+    # 技能名来自 zip 的 frontmatter / 调用方，必须解析后再落盘：
+    # ``target_root / "../x"`` 会逃出目标根目录（已实测可写到他处）。
+    target_dir = safe_skill_dir(target_root, skill_name)
     if target_dir.exists():
         return False
     copy_skill_dir(src_dir, target_dir)
@@ -1138,12 +1146,15 @@ def scan_skill_dir_or_raise(skill_dir: Path, skill_name: str) -> None:
 
 @contextmanager
 def staged_skill_dir(skill_name: str) -> Iterator[Path]:
-    """Create a temporary skill directory used for staged writes."""
-    temp_root = Path(
-        tempfile.mkdtemp(prefix=f"qwenpaw_skill_stage_{skill_name}_"),
-    )
-    stage_dir = temp_root / skill_name
+    """Create a temporary skill directory used for staged writes.
+
+    The temp root uses a fixed prefix and the stage directory is resolved via
+    ``safe_skill_dir``, so a caller-supplied ``skill_name`` can never escape
+    the temp root. Current callers already normalize the name; this keeps the
+    guarantee local to the function instead of relying on every caller.
+    """
+    temp_root = Path(tempfile.mkdtemp(prefix=_SKILL_STAGE_PREFIX))
     try:
-        yield stage_dir
+        yield safe_skill_dir(temp_root, skill_name)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

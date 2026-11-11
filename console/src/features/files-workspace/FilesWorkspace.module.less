@@ -130,6 +130,16 @@
   flex: 0 0 auto;
 }
 
+.iconButton[data-active="true"] {
+  border-color: color-mix(
+    in srgb,
+    var(--files-accent) 38%,
+    var(--files-line)
+  );
+  color: var(--files-accent);
+  background: var(--files-accent-soft);
+}
+
 .secondaryButton,
 .primaryButton {
   padding: 0 12px;
@@ -586,6 +596,68 @@
   }
 }
 
+.uploadProgress {
+  padding: 0 12px 8px;
+}
+
+.uploadProgressLabel {
+  display: block;
+  margin-bottom: 4px;
+  overflow: hidden;
+  color: var(--files-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selectionBar {
+  padding: 0 12px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--files-muted);
+  font-size: 11px;
+}
+
+.selectionActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.selectionDelete,
+.selectionCancel {
+  height: 26px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.selectionDelete {
+  color: #b42318;
+  background: #fef3f2;
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+}
+
+.selectionCancel {
+  color: var(--files-muted);
+  background: transparent;
+
+  &:hover {
+    background: color-mix(in srgb, var(--files-ink) 6%, transparent);
+  }
+}
+
 .tree {
   flex: 1;
   min-height: 0;
@@ -623,6 +695,79 @@
 .treeRowSelected {
   color: var(--files-accent);
   background: var(--files-accent-soft);
+}
+
+.managedRow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 7px;
+
+  .treeRow {
+    flex: 1;
+    min-width: 0;
+    padding-right: 34px;
+  }
+
+  &:hover .entryActionsButton,
+  &:focus-within .entryActionsButton {
+    opacity: 1;
+  }
+}
+
+.managedRowSelected .treeRow {
+  color: var(--files-accent);
+  background: var(--files-accent-soft);
+}
+
+.entryCheckbox {
+  flex: none;
+  margin-inline-start: 4px;
+}
+
+.treeChevron {
+  display: inline-flex;
+  align-items: center;
+}
+
+.entryActionsButton {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  color: var(--files-muted);
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 120ms ease,
+    background 120ms ease;
+
+  &:hover,
+  &:focus-visible {
+    color: var(--files-ink);
+    background: color-mix(in srgb, var(--files-ink) 8%, transparent);
+    opacity: 1;
+  }
+}
+
+@media (hover: none) {
+  .entryActionsButton {
+    opacity: 1;
+  }
+}
+
+.renameDescription {
+  margin: 0 0 10px;
+  color: var(--files-muted);
+  font-size: 12px;
 }
 
 .memoryDirectoryRow {

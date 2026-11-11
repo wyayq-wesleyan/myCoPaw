@@ -36,63 +36,22 @@ from ...utils.io_utils import run_sync_io
 _SHELL_OUTPUT_MAX_BYTES = 1024 * 1024
 _SHELL_OUTPUT_DRAIN_GRACE_SECS = 10.0
 
-# Absolute paths that belong to another account's area. A command naming one of
-# them is refused.
-#
-# This is a best-effort guard, deliberately narrow: it inspects the literal
-# string, so it cannot see through quoting, variables, globs or a script that
-# walks the filesystem at runtime (e.g. ``python -c "open('/…')"``). It raises
-# the cost of an accidental cross-account read; it is NOT a containment
-# boundary. Real isolation for an arbitrary command requires the sandbox, which
-# is disabled in this deployment (``security.sandbox_enabled=False``).
-_OTHER_ACCOUNT_PATH_RE = None
+# Inline Python/SQL in a shell call keeps the code out of scripts/, triggers
+# approval prompts for heredocs, and makes successful runs impossible to
+# reproduce. Ordinary users are told to write the file first and execute it.
+_INLINE_CODE_RE = re.compile(
+    r"(?im)(?:^|[;&|]\s*)(?:python3?|psql|sqlite3)\b[^\n]*<<"
+    r"|\bpython3?\s+-c\b"
+    r"|\bpsql\s+-c\b",
+)
 
-
-def _other_account_path_pattern():
-    """Compiled regex matching any workspace path outside the caller's root."""
-    global _OTHER_ACCOUNT_PATH_RE
-    if _OTHER_ACCOUNT_PATH_RE is None:
-        import re
-
-        # Every account's workspace lives under this parent, so naming any
-        # account's directory segment here is always outside the caller's own
-        # root unless it is the caller's own (checked separately).
-        _OTHER_ACCOUNT_PATH_RE = re.compile(
-            r"(?P<path>[\w./~-]*workspaces/[A-Za-z0-9_]+)",
-        )
-    return _OTHER_ACCOUNT_PATH_RE
-
-
-def _outside_account_command_error(command: str) -> str | None:
-    """Return a refusal message when *command* names another account's area."""
-    from .user_files import account_root
-
-    if not command:
-        return None
-    root = account_root()
-    if root is None:
-        return None
-
-    from pathlib import PurePosixPath
-
-    for match in _other_account_path_pattern().finditer(command):
-        candidate = match.group("path")
-        try:
-            resolved = PurePosixPath(candidate)
-        except (TypeError, ValueError):
-            continue
-        # Compare on the account directory name: the caller's own directory is
-        # allowed anywhere it appears.
-        parts = [p for p in resolved.parts if p not in ("/", "", ".")]
-        if not parts:
-            continue
-        if root.name not in parts and "workspaces" in parts:
-            return (
-                "只能访问自己账号工作区内的文件，已拒绝该命令："
-                f"命令中出现了其他账号的路径 {candidate}。\n"
-                f"你的工作区根目录是：{root}"
-            )
-    return None
+_INLINE_CODE_HINT = (
+    "不要用 shell 的内联 Python/SQL（heredoc、python -c、psql -c）执行多行代码。\n"
+    "请先用 `write_file` 把代码写到 `scripts/<name>.py`（SQL 写到 "
+    "`scripts/<name>.sql` 或由 Python 读取），再执行：\n"
+    "`python3 scripts/<name>.py`\n"
+    "这样代码可复用、可审计，也不会触发沙箱审批。"
+)
 
 
 def _kill_process_tree_win32(pid: int) -> None:
@@ -847,6 +806,41 @@ async def _execute_in_sandbox(
         raise
 
 
+def _sandbox_result_chunk(result: ExecutionResult) -> ToolChunk:
+    """Translate a sandbox ExecutionResult into the tool's user-visible chunk."""
+    if result.sandbox_violation:
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.DENIED,
+            content=[
+                TextBlock(
+                    type="text",
+                    text=(
+                        f"Sandbox violation: {result.sandbox_violation}\n"
+                        "Command was blocked by sandbox security policy."
+                    ),
+                ),
+            ],
+            metadata={"sandbox_violation": result.sandbox_violation},
+        )
+    if result.exit_code == 0:
+        response_text = result.stdout or "Command executed successfully (no output)."
+        if result.stderr:
+            response_text += f"\n[stderr]\n{result.stderr}"
+    else:
+        parts = [f"Command failed with exit code {result.exit_code}."]
+        if result.stdout:
+            parts.append(f"\n[stdout]\n{result.stdout}")
+        if result.stderr:
+            parts.append(f"\n[stderr]\n{result.stderr}")
+        response_text = "".join(parts)
+    return ToolChunk(
+        is_last=True,
+        state=ToolResultState.SUCCESS,
+        content=[TextBlock(type="text", text=response_text)],
+    )
+
+
 _DANGER_NAMES = {
     "python",
     "pythonw",
@@ -1156,11 +1150,14 @@ async def execute_shell_command(
             or WORKING_DIR
         )
 
-    # Confine execution to the caller's own account. Approval is hard-disabled
-    # and the sandbox is off, so nothing downstream restricts this: without the
-    # check a normal account could run the command with cwd set to another
-    # account's workspace.
-    from .user_files import AccountScopeError, ensure_inside_account
+    # Confine the working directory to the caller's own account.  The kernel
+    # sandbox below is the actual boundary; this check makes the failure a
+    # readable tool result before a process is even started.
+    from .user_files import (
+        AccountScopeError,
+        ensure_inside_account,
+        resolve_account_username,
+    )
 
     try:
         working_dir = ensure_inside_account(working_dir)
@@ -1171,13 +1168,80 @@ async def execute_shell_command(
             content=[TextBlock(type="text", text=f"Error: {exc}")],
         )
 
-    command_error = _outside_account_command_error(command)
-    if command_error:
+    # Ordinary accounts never run a shell on the host.  The sandbox is
+    # mandatory here and is not controlled by the governance sandbox switch:
+    # a misconfiguration must deny execution, not silently fall through to
+    # `os.environ` + host shell.  Administrators keep the existing direct
+    # path (and any governance-level sandbox they configured).
+    try:
+        account_username = resolve_account_username()
+    except AccountScopeError as exc:
         return ToolChunk(
             is_last=True,
             state=ToolResultState.SUCCESS,
-            content=[TextBlock(type="text", text=f"Error: {command_error}")],
+            content=[TextBlock(type="text", text=f"Error: {exc}")],
         )
+
+    from ...app.user_space import is_admin_user
+
+    try:
+        account_is_admin = is_admin_user(account_username)
+    except Exception:  # noqa: BLE001 - auth failure must not grant host access
+        account_is_admin = False
+
+    if not account_is_admin:
+        if _INLINE_CODE_RE.search(cmd):
+            return ToolChunk(
+                is_last=True,
+                state=ToolResultState.SUCCESS,
+                content=[
+                    TextBlock(
+                        type="text",
+                        text=_INLINE_CODE_HINT,
+                    ),
+                ],
+            )
+
+        from ...sandbox.user_isolation import (
+            UserSandboxError,
+            execute_user_command,
+        )
+
+        try:
+            sandbox_result = await execute_user_command(
+                cmd,
+                working_dir,
+                timeout,
+                account_username,
+            )
+        except UserSandboxError as exc:
+            return ToolChunk(
+                is_last=True,
+                state=ToolResultState.DENIED,
+                content=[
+                    TextBlock(
+                        type="text",
+                        text=f"普通用户沙箱不可用，已拒绝执行：{exc}",
+                    ),
+                ],
+            )
+        except Exception:  # noqa: BLE001 - fail closed, never run on host
+            import logging as _logging
+
+            _logging.getLogger(__name__).exception(
+                "user sandbox failed; refusing host execution",
+            )
+            return ToolChunk(
+                is_last=True,
+                state=ToolResultState.DENIED,
+                content=[
+                    TextBlock(
+                        type="text",
+                        text="用户沙箱执行失败，出于安全考虑已拒绝执行。",
+                    ),
+                ],
+            )
+        return _sandbox_result_chunk(sandbox_result)
 
     # Ensure the venv Python is on PATH for subprocesses
     env = os.environ.copy()

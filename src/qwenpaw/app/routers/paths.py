@@ -209,12 +209,21 @@ async def _account_document_ids(username: str) -> list[str]:
     if not url:
         return []
     ids: list[str] = []
-    page = 1
+    headers = _service_headers(username)
     async with httpx.AsyncClient(timeout=60) as client:
+        # Dedicated id endpoint: one query instead of one full document page per
+        # 100 documents. Fall back to pagination for an older knowledge service.
+        response = await client.get(f"{url}/v1/documents/ids", headers=headers)
+        if response.status_code != 404:
+            response.raise_for_status()
+            payload = response.json() or {}
+            return [str(item) for item in (payload.get("ids") or [])]
+
+        page = 1
         while True:
             response = await client.get(
                 f"{url}/v1/documents",
-                headers=_service_headers(username),
+                headers=headers,
                 params={"page": page, "page_size": 100},
             )
             response.raise_for_status()
@@ -302,42 +311,56 @@ async def path_tree_with_contents(request: Request) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.warning("paths: knowledge enrichment unavailable", exc_info=True)
 
-    def _load_tables() -> tuple[list[str], dict[str, dict[str, Any]], set[str]]:
+    # One pair of queries for the whole tree. The previous implementation did
+    # path_by_id/bound_resource_ids/any_bound_resource_ids/agents_for_path per
+    # node inside `decorate`, which is what made a 30-case tree issue 150+
+    # serial queries before rendering.
+    bindings: dict[tuple[str, str], set[str]] = {}
+    any_bound: dict[str, set[str]] = {}
+    agents_by_path: dict[str, list[str]] = {}
+    try:
+        bindings, any_bound, agents_by_path = await run_sync_io(
+            path_store.path_enrichment_index, username,
+        )
+    except Exception:  # noqa: BLE001 - counts are decoration
+        logger.warning("paths: binding enrichment unavailable", exc_info=True)
+
+    def _load_tables() -> tuple[list[str], set[str]]:
         from ...data_tables.store import (
             SYSTEM_TABLE_IMPORT_JOB, SYSTEM_TABLE_REGISTRY, _get_conn, _put_conn,
         )
         import psycopg2.extras
 
         ids: list[str] = []
-        by_id: dict[str, dict[str, Any]] = {}
         pending: set[str] = set()
         conn = _get_conn()
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
-                    f"SELECT id, table_name, path_id FROM {SYSTEM_TABLE_REGISTRY} "
+                    f"SELECT id FROM {SYSTEM_TABLE_REGISTRY} "
                     "WHERE owner_username = %s",
                     (username,),
                 )
-                for row in cur.fetchall():
-                    ids.append(str(row["id"]))
-                    by_id[str(row["id"])] = dict(row)
+                ids = [str(row["id"]) for row in cur.fetchall()]
                 # Which tables have an import still running, so the badge can sit
-                # on the table's own path rather than on the whole page.
+                # on the table's own path rather than on the whole page. Join the
+                # registry so this cannot scan every account's import jobs.
                 cur.execute(
-                    f"SELECT DISTINCT table_id FROM {SYSTEM_TABLE_IMPORT_JOB} "
-                    "WHERE status IN ('pending', 'parsing', 'loading')",
+                    f"SELECT DISTINCT j.table_id FROM {SYSTEM_TABLE_IMPORT_JOB} j "
+                    f"JOIN {SYSTEM_TABLE_REGISTRY} r ON r.id = j.table_id "
+                    "WHERE r.owner_username = %s "
+                    "AND j.status IN ('pending', 'parsing', 'loading')",
+                    (username,),
                 )
                 pending = {str(r["table_id"]) for r in cur.fetchall()}
         finally:
             _put_conn(conn)
-        return ids, by_id, pending
+        return ids, pending
 
     table_ids: list[str] = []
-    tables_by_id: dict[str, dict[str, Any]] = {}
     pending_tables: set[str] = set()
     try:
-        table_ids, tables_by_id, pending_tables = await run_sync_io(_load_tables)
+        table_ids, pending_tables = await run_sync_io(_load_tables)
     except Exception:  # noqa: BLE001
         logger.warning("paths: data table enrichment unavailable", exc_info=True)
 
@@ -345,29 +368,33 @@ async def path_tree_with_contents(request: Request) -> dict[str, Any]:
     # the path that actually holds them. Best-effort like the counts above.
     pending_docs = await _pending_document_ids(username)
 
+    document_set = {str(item) for item in document_ids}
+    table_set = {str(item) for item in table_ids}
+
+    def _visible(node, kind: str, live_ids: set[str]) -> set[str]:
+        visible = bindings.get((kind, node.id), set()) & live_ids
+        if node.is_root:
+            # The root is the public area: it owns everything not filed into a
+            # child path. `any_bound` was loaded once for the account above.
+            visible |= live_ids - any_bound.get(kind, set())
+        return visible
+
     def decorate(node) -> dict[str, Any]:
-        data = node.as_dict()
-        # Knowledge is counted per document because that is the unit of access;
-        # counting spaces would show a whole account's material on every node that
-        # happens to hold the account's single space.
-        visible_docs = path_store.effective_document_ids_for_path(
-            node.id, username, document_ids,
-        ) or []
-        visible_tables = path_store.effective_table_ids_for_path(
-            node.id, username, table_ids,
-        ) or []
+        # Do not call node.as_dict() here: it recursively serializes the whole
+        # subtree, and decorate then does it again for every child (O(n^2)).
+        data = {
+            "id": node.id,
+            "name": node.name,
+            "parent_id": node.parent_id,
+            "is_root": node.is_root,
+        }
+        visible_docs = _visible(node, path_store.KIND_KNOWLEDGE_DOCUMENT, document_set)
+        visible_tables = _visible(node, path_store.KIND_DATA_TABLE, table_set)
         data["document_count"] = len(visible_docs)
         data["table_count"] = len(visible_tables)
-        # Intersect with *this node's* visible documents: a pending document filed
-        # under another path must not make this node look busy. Only the path that
-        # holds it shows the badge, which is the point of moving it off the
-        # status column.
-        data["pending_count"] = sum(1 for doc_id in visible_docs if doc_id in pending_docs)
-        # Same attribution for imports: only the path holding a busy table shows it.
-        data["pending_table_count"] = sum(
-            1 for table_id in visible_tables if table_id in pending_tables
-        )
-        data["agents"] = sorted(path_store.agents_for_path(node.id))
+        data["pending_count"] = len(visible_docs & pending_docs)
+        data["pending_table_count"] = len(visible_tables & pending_tables)
+        data["agents"] = sorted(agents_by_path.get(node.id, ()))
         data["is_public"] = bool(node.is_root)
         data["children"] = [decorate(child) for child in node.children]
         return data

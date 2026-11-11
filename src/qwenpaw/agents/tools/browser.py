@@ -31,4 +31,9 @@ from ...browser.tool_entrypoint import (
 )
 async def browser(code: str) -> ToolChunk:
     """Run Browser SDK code in the caller's session-scoped kernel."""
+    from .admin_guard import admin_denial, denial_chunk
+
+    denial = admin_denial("浏览器自动化")
+    if denial:
+        return denial_chunk(denial)
     return await run_browser_tool(code)

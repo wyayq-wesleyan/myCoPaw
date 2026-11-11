@@ -53,6 +53,26 @@ export QWENPAW_CODE_DIR="${QWENPAW_CODE_DIR:-/workspace/app}"
 export PYTHONPATH="${QWENPAW_CODE_DIR}/src${PYTHONPATH:+:$PYTHONPATH}"
 export QWENPAW_CONSOLE_STATIC_DIR="${QWENPAW_CONSOLE_STATIC_DIR:-${QWENPAW_CODE_DIR}/console/dist}"
 
+# The image also contains an installed copy of qwenpaw.  In a code-mount
+# deployment the mounted tree is authoritative, and leaving the installed copy
+# would expose the application source to ordinary-user sandboxes (which grant
+# read access to /usr for the Python runtime).  Remove it only when the mount
+# is present, so image-only rollback deployments keep working.
+if [ -d "${QWENPAW_CODE_DIR}/src/qwenpaw" ]; then
+  python - <<'PY'
+import shutil
+import site
+from pathlib import Path
+
+for base in site.getsitepackages():
+    root = Path(base)
+    for candidate in root.glob("qwenpaw"):
+        shutil.rmtree(candidate, ignore_errors=True)
+    for candidate in root.glob("qwenpaw-*.dist-info"):
+        shutil.rmtree(candidate, ignore_errors=True)
+PY
+fi
+
 # The curated workflow plugin has no network or package-install dependency.
 # Seed it once into the persistent plugin directory so source mounts and full
 # images expose the same offline capability without overwriting user changes.

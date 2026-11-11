@@ -184,6 +184,10 @@ export function normalizeContentUrls(part: any): any {
 export function toDisplayUrl(url: string | undefined): string {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  // History images are persisted as inline data URLs (and live uploads may use
+  // blob URLs). Treating them as filesystem paths mangles the payload and the
+  // browser renders an empty image after a reload.
+  if (url.startsWith("data:") || url.startsWith("blob:")) return url;
   if (url.startsWith("file://")) url = url.replace("file://", "");
   return chatApi.filePreviewUrl(url.startsWith("/") ? url : `/${url}`);
 }

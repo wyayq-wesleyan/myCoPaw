@@ -139,6 +139,12 @@ src/.hypothesis/
 .worktrees/
 .qwenpaw/worktrees/
 
+# Local production configuration snapshots (may contain real secrets)
+261108_zhengshi_peizhi/
+
+# ZCode local agent ignore file
+.zcodeignore
+
 # Local File
 /localfile/
 local-docs/

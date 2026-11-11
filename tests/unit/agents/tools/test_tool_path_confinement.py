@@ -150,6 +150,39 @@ async def test_edit_and_append_refuse_another_account(two_accounts):
     assert (bob_root / "secret.txt").read_text(encoding="utf-8") == before
 
 
+@pytest.mark.asyncio
+async def test_generated_files_must_use_outputs_or_scripts(two_accounts):
+    """A normal user's writes are pinned to the two tidy subdirectories."""
+    alice_root, _ = two_accounts
+    outputs = alice_root / "outputs"
+    scripts = alice_root / "scripts"
+    outputs.mkdir()
+    scripts.mkdir()
+
+    refused = await file_io.write_file(str(alice_root / "gen_dfd.js"), "x")
+    assert "outputs/" in _text(refused)
+    assert not (alice_root / "gen_dfd.js").exists()
+
+    result = await file_io.write_file(str(outputs / "report.csv"), "a,b")
+    assert "Wrote" in _text(result)
+    assert (outputs / "report.csv").is_file()
+
+    script = await file_io.write_file(str(scripts / "analyze.py"), "print(1)")
+    assert "Wrote" in _text(script)
+    assert (scripts / "analyze.py").is_file()
+
+
+@pytest.mark.asyncio
+async def test_edit_file_cannot_rewrite_uploaded_or_root_files(two_accounts):
+    alice_root, _ = two_accounts
+    target = alice_root / "mine.txt"
+
+    result = await file_io.edit_file(str(target), "alice own", "changed")
+
+    assert "outputs/" in _text(result)
+    assert target.read_text(encoding="utf-8") == "alice own"
+
+
 # --------------------------------------------------------------- search tools
 
 
@@ -222,14 +255,44 @@ async def test_view_image_refuses_another_account(two_accounts):
 
 
 @pytest.mark.asyncio
-async def test_shell_refuses_a_command_naming_another_account(two_accounts):
+async def test_shell_routes_cross_account_command_into_sandbox(
+    two_accounts,
+    monkeypatch,
+):
+    """The shell must never run a cross-account command on the host.
+
+    The regex pre-check was removed deliberately: it was bypassable and would
+    reject legitimate paths.  The command now goes to the kernel sandbox; this
+    unit test pins the routing, while the container integration test exercises
+    the actual Landlock denial.
+    """
     _, bob_root = two_accounts
-    text = _text(
-        await shell.execute_shell_command(f"cat {bob_root / 'secret.txt'}"),
+    from qwenpaw.sandbox import ExecutionResult
+
+    calls = []
+
+    async def _fake_sandbox(cmd, cwd, timeout, username):
+        calls.append((cmd, cwd, username))
+        return ExecutionResult(
+            exit_code=1,
+            stdout="",
+            stderr="cat: Permission denied",
+            sandbox_violation="Permission denied",
+        )
+
+    monkeypatch.setattr(
+        "qwenpaw.sandbox.user_isolation.execute_user_command",
+        _fake_sandbox,
     )
+    result = await shell.execute_shell_command(
+        f"cat {bob_root / 'secret.txt'}",
+    )
+    text = _text(result)
 
     assert "bob private" not in text
-    assert "其他账号的路径" in text
+    assert "Sandbox violation" in text
+    assert calls and str(bob_root) in calls[0][0]
+    assert calls[0][2] == "alice"
 
 
 @pytest.mark.asyncio
@@ -241,8 +304,17 @@ async def test_shell_refuses_a_cwd_outside_the_account(two_accounts):
 
 
 @pytest.mark.asyncio
-async def test_shell_still_runs_normal_commands(two_accounts):
-    """The guard must not break ordinary use."""
+async def test_shell_still_runs_normal_commands(two_accounts, monkeypatch):
+    """Ordinary use goes through the sandbox and returns its output."""
+    from qwenpaw.sandbox import ExecutionResult
+
+    async def _fake_sandbox(cmd, cwd, timeout, username):
+        return ExecutionResult(exit_code=0, stdout="hi\nmine.txt\n", stderr="")
+
+    monkeypatch.setattr(
+        "qwenpaw.sandbox.user_isolation.execute_user_command",
+        _fake_sandbox,
+    )
     text = _text(await shell.execute_shell_command("echo hi && ls"))
 
     assert "hi" in text
@@ -250,8 +322,17 @@ async def test_shell_still_runs_normal_commands(two_accounts):
 
 
 @pytest.mark.asyncio
-async def test_shell_allows_referencing_your_own_path(two_accounts):
+async def test_shell_allows_referencing_your_own_path(two_accounts, monkeypatch):
     alice_root, _ = two_accounts
+    from qwenpaw.sandbox import ExecutionResult
+
+    async def _fake_sandbox(cmd, cwd, timeout, username):
+        return ExecutionResult(exit_code=0, stdout="alice own", stderr="")
+
+    monkeypatch.setattr(
+        "qwenpaw.sandbox.user_isolation.execute_user_command",
+        _fake_sandbox,
+    )
     text = _text(await shell.execute_shell_command(
         f"cat {alice_root / 'mine.txt'}",
     ))
@@ -298,11 +379,8 @@ def test_screenshot_refuses_another_account(two_accounts, monkeypatch):
     result = asyncio.run(
         desktop_screenshot.desktop_screenshot(path=str(target)),
     )
+    text = _text(result)
 
-    # The tool answers with JSON, so decode it instead of matching the raw
-    # (escaped) text.
-    import json as _json
-
-    payload = _json.loads(result)
-    assert payload["ok"] is False
-    assert "只能访问自己账号工作区内的文件" in payload["error"]
+    # Desktop capture is host-level and therefore administrator-only.  An
+    # ordinary account is refused before any path/capture work happens.
+    assert "仅管理员可用" in text

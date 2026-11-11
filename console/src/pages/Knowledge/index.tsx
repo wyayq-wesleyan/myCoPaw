@@ -490,7 +490,7 @@ export default function KnowledgePage() {
      * reload. Passing the replacement explicitly makes the reset exact.
      */
     filters?: DocumentListFilters;
-  }) => {
+  }, options?: { silent?: boolean }) => {
     try {
       // Resolve the path filter from the argument first, falling back to the
       // current selection: paging and refresh must keep showing the same path the
@@ -513,8 +513,12 @@ export default function KnowledgePage() {
       setDocuments(result.items);
       setDocumentTotal(result.total);
       setPendingCount(result.pending_count || 0);
+      return true;
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "无法加载文档列表");
+      if (!options?.silent) {
+        message.error(error instanceof Error ? error.message : "无法加载文档列表");
+      }
+      return false;
     }
   };
 
@@ -547,8 +551,21 @@ export default function KnowledgePage() {
 
   const refresh = async () => {
     setLoading(true);
+    setPage(1);
+    // Health and the first document page do not depend on each other. Running
+    // them together removes one full round-trip from every page open (the health
+    // probe used to finish before the list request even started). The list is
+    // silent here: if the service is unconfigured or unavailable, the health
+    // result owns the error message instead of producing two toasts.
+    const [healthResult, docsResult] = await Promise.allSettled([
+      knowledgeApi.health(),
+      loadDocuments({ page: 1 }, { silent: true }),
+    ]);
     try {
-      const health = await knowledgeApi.health();
+      if (healthResult.status === "rejected") {
+        throw healthResult.reason;
+      }
+      const health = healthResult.value;
       setConfigured(health.configured);
       setUploadBlockReason(
         health.service?.upload_ready === false
@@ -556,9 +573,14 @@ export default function KnowledgePage() {
           : null,
       );
       setUploadNotice(health.service?.upload_notice || null);
-      if (health.configured) {
-        setPage(1);
-        await loadDocuments({ page: 1 });
+      if (health.configured && docsResult.status === "rejected") {
+        message.error("无法加载文档列表");
+      } else if (
+        health.configured &&
+        docsResult.status === "fulfilled" &&
+        docsResult.value === false
+      ) {
+        message.error("无法加载文档列表");
       }
     } catch (error) {
       message.error(error instanceof Error ? error.message : "知识服务连接失败");

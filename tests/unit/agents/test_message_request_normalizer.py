@@ -6,6 +6,7 @@ import json
 
 import pytest
 from agentscope.message import (
+    Base64Source,
     DataBlock,
     Msg,
     TextBlock,
@@ -451,3 +452,128 @@ def test_raw_input_used_for_repair_before_stripping():
         "raw_input",
         None,
     )
+
+
+# -----------------------------------------------------------------------------
+# 空媒体块（上游 #8066）
+# -----------------------------------------------------------------------------
+
+
+def _base64_block(data: str) -> DataBlock:
+    return DataBlock(
+        type="data",
+        source=Base64Source(
+            type="base64",
+            media_type="image/png",
+            data=data,
+        ),
+    )
+
+
+def test_empty_media_block_is_dropped():
+    """空 base64 会被序列化成空 data URI，所有 provider 都会 400。"""
+    msg = Msg(
+        name="user",
+        role="user",
+        content=[TextBlock(text="look"), _base64_block("")],
+    )
+
+    [normalized] = normalize_messages_for_model_request(
+        [msg],
+        supports_multimodal=True,
+    )
+
+    assert [b.type for b in normalized.content] == ["text"]
+
+
+def test_non_empty_media_survives_multimodal_normalization():
+    msg = Msg(
+        name="user",
+        role="user",
+        content=[TextBlock(text="look"), _base64_block("AAAA")],
+    )
+
+    [normalized] = normalize_messages_for_model_request(
+        [msg],
+        supports_multimodal=True,
+    )
+
+    assert [b.type for b in normalized.content] == ["text", "data"]
+
+
+def _tool_call_msg(call_id: str = "call-1") -> Msg:
+    return Msg(
+        name="assistant",
+        role="assistant",
+        content=[
+            ToolCallBlock(
+                id=call_id,
+                name="view_image",
+                input="{}",
+                state="finished",
+            ),
+        ],
+    )
+
+
+def test_empty_media_inside_tool_result_is_dropped():
+    msg = Msg(
+        name="tool",
+        role="assistant",
+        content=[
+            ToolResultBlock(
+                id="call-1",
+                name="view_image",
+                output=[_base64_block(""), TextBlock(text="ok")],
+                state="success",
+            ),
+        ],
+    )
+
+    normalized = normalize_messages_for_model_request(
+        [_tool_call_msg(), msg],
+        supports_multimodal=True,
+    )
+
+    output = normalized[-1].content[0].output
+    assert [block.type for block in output] == ["text"]
+    assert output[0].text == "ok"
+
+
+def test_already_empty_tool_result_stays_empty():
+    """没有可剥的东西时不能改成"媒体被移除"的占位符。"""
+    msg = Msg(
+        name="tool",
+        role="assistant",
+        content=[
+            ToolResultBlock(
+                id="call-1",
+                name="demo",
+                output=[],
+                state="success",
+            ),
+        ],
+    )
+
+    normalized = normalize_messages_for_model_request(
+        [_tool_call_msg(), msg],
+        supports_multimodal=True,
+    )
+
+    assert normalized[-1].content[0].output == []
+
+
+def test_url_media_is_not_mistaken_for_empty():
+    """URL 源的"空"无法离线判断，不能误删。"""
+    msg = Msg(
+        name="user",
+        role="user",
+        content=[_data_block("image/png")],
+    )
+
+    [normalized] = normalize_messages_for_model_request(
+        [msg],
+        supports_multimodal=True,
+    )
+
+    assert [b.type for b in normalized.content] == ["data"]

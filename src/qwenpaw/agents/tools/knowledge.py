@@ -594,31 +594,40 @@ async def upload_knowledge_document(
     Args:
         file: 要上传的文件名或路径，例如"采购合同.pdf"。聊天附件直接传文件名即可。
         space_name: 目标知识空间名称；留空则上传到当前用户的默认知识空间。
-        path: 可选，把这份文档归入哪个案件；留空表示默认区。可以是案件名称
-            （先用 list_paths 查看可用案件），也可以是路径 id。用户没说放哪里
-            时留空即可，不要自己猜一个案件。
+        path: 可选，知识空间中的目标路径/文件夹名称，例如"反诈宣传知识库"。
+            不存在的路径会自动创建并挂载给当前智能体；留空表示默认区/公共区。
+            用户明确说了要放到哪个文件夹时，必须传这个参数。
     """
     url = _service_url()
     username = _resolve_account_username()
     if not url:
         return _space_chunk("知识服务尚未配置，无法上传到知识空间。")
 
-    # Resolve the case before uploading: a bad or ambiguous name must not leave an
-    # uploaded file behind that then has to be filed by hand.
+    # Resolve the target folder before uploading: a bad or ambiguous name must
+    # not leave an uploaded file behind that then has to be filed by hand.
     from .path_scope import (
         PathAmbiguous,
         PathNotWritable,
-        resolve_writable_path_id,
+        resolve_or_create_writable_path,
     )
 
+    # The console presents knowledge as a folder tree. If the caller names a
+    # folder but only fills space_name (legacy tool shape), use it as the path
+    # so "存到知识空间「XX」" creates/uses a visible XX folder instead of
+    # silently landing in the public area.
+    target_path = (path or "").strip() or (space_name or "").strip()
     try:
-        path_id = await run_sync_io(resolve_writable_path_id, username, path)
+        path_id = await run_sync_io(
+            resolve_or_create_writable_path,
+            username,
+            target_path,
+        )
     except PathAmbiguous as exc:
         options = "、".join(
             f"{c['name']}（{c['id']}）" for c in exc.candidates
         )
         return _space_chunk(
-            f"有多个路径匹配「{path}」：{options}。请指明要用哪一个。",
+            f"有多个路径匹配「{target_path}」：{options}。请指明要用哪一个。",
         )
     except PathNotWritable as exc:
         return _space_chunk(str(exc))
@@ -633,12 +642,12 @@ async def upload_knowledge_document(
             space = _find_space(await _known_spaces(url, username), space_name)
         except httpx.HTTPError as exc:
             return _space_chunk(f"知识服务暂时不可用：{exc}")
-        if space is None:
-            return _space_chunk(
-                f"没有找到名为「{space_name}」的知识空间。"
-                f"可以先用 create_knowledge_space 新建，或留空 space_name 上传到默认空间。"
-            )
-        space_id = str(space.get("id") or "")
+        # A named service space is an internal grouping; the user-visible
+        # organization is the path handled above. If the service space does not
+        # exist yet, use the account's default space rather than failing the
+        # upload after the path was already prepared.
+        if space is not None:
+            space_id = str(space.get("id") or "")
 
     # The graph workspace this document belongs to. Sent so the graph index files
     # the document under the right path: the console already sends it, and without

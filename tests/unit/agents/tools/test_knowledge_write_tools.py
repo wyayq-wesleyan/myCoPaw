@@ -200,14 +200,56 @@ async def test_upload_reports_a_duplicate_without_reprocessing(workspace, http):
     assert "未重复上传" in text
 
 
-async def test_upload_suggests_creating_an_unknown_space(workspace, http):
-    http({("GET", "/v1/spaces"): _FakeResponse(200, [{"id": "s-1", "name": "其他"}])})
+async def test_unknown_space_name_is_used_as_folder_and_default_space(
+    workspace,
+    http,
+    monkeypatch,
+):
+    """A named space that does not exist yet must not block the upload.
+
+    The user-visible folder is the path; the service-level space is optional.
+    The tool therefore creates/uses the path and falls back to the default
+    service space instead of failing after the file was selected.
+    """
+    calls = http(
+        {
+            ("GET", "/v1/spaces"): _FakeResponse(
+                200,
+                [{"id": "s-1", "name": "其他"}],
+            ),
+            ("POST", "/v1/documents/upload"): _FakeResponse(
+                200,
+                {"id": "doc-4", "status": "queued", "filename": "合同.pdf"},
+            ),
+            ("GET", "/v1/documents/doc-4"): _FakeResponse(
+                200,
+                {"id": "doc-4", "status": "completed", "filename": "合同.pdf"},
+            ),
+        },
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "qwenpaw.agents.tools.path_scope.resolve_or_create_writable_path",
+        lambda _username, reference: seen.append(reference) or "path-1",
+    )
+    monkeypatch.setattr(
+        "qwenpaw.platform_store.paths.bind_resource",
+        lambda *args, **kwargs: None,
+    )
     _write(workspace / f"{'d' * 32}_合同.pdf")
 
-    text = _text(await knowledge.upload_knowledge_document("合同.pdf", space_name="不存在"))
+    text = _text(
+        await knowledge.upload_knowledge_document(
+            "合同.pdf",
+            space_name="不存在",
+        ),
+    )
 
-    assert "没有找到名为" in text
-    assert "create_knowledge_space" in text
+    assert seen == ["不存在"]
+    assert "已上传并入库" in text
+    assert "已归入：path-1" in text
+    upload_call = next(call for call in calls if call[0] == "POST")
+    assert "space_id" not in upload_call[2]["data"]
 
 
 async def test_upload_reports_a_failed_parse(workspace, http):
@@ -355,7 +397,7 @@ async def test_upload_refuses_an_ungranted_case_without_uploading(
     import qwenpaw.agents.tools.path_scope as path_scope
 
     monkeypatch.setattr(
-        path_scope, "resolve_writable_path_id",
+        path_scope, "resolve_or_create_writable_path",
         lambda u, ref: (_ for _ in ()).throw(
             path_scope.PathNotWritable("没有找到名为「别人的案件」的可写入路径。"),
         ),

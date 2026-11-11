@@ -59,8 +59,6 @@ services:
       QWENPAW_IO_POOL_WAIT_SECONDS: "${QWENPAW_IO_POOL_WAIT_SECONDS:-120}"
       QWENPAW_LOG_LEVEL: "${QWENPAW_LOG_LEVEL:-info}"
       QWENPAW_LOG_DIR: /app/working/logs
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./app:/workspace/app:ro
       - ./code-mount-entrypoint.sh:/code-mount-entrypoint.sh:ro

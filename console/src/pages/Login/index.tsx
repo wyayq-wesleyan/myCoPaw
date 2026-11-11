@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button, Form, Input } from "antd";
 import { useAppMessage } from "../../hooks/useAppMessage";
-import { LockOutlined, UserOutlined } from "@ant-design/icons";
+import { FilePdfOutlined, LockOutlined, UserOutlined } from "@ant-design/icons";
 import { authApi } from "../../api/modules/auth";
 import { setAuthToken, setAuthUser } from "../../api/config";
 import { useAgentStore } from "../../stores/agentStore";
@@ -205,6 +205,32 @@ export default function LoginPage() {
             </Button>
           </Form.Item>
         </Form>
+
+        <div
+          style={{
+            marginTop: 18,
+            paddingTop: 14,
+            borderTop: `1px solid ${
+              isDark ? "rgba(246, 232, 196, 0.12)" : "rgba(20, 60, 105, 0.1)"
+            }`,
+            textAlign: "center",
+          }}
+        >
+          <a
+            href={`${import.meta.env.BASE_URL}docs/huizhi-user-manual.pdf`}
+            download="汇智小助手使用手册.pdf"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              color: isDark ? "#9cc3ef" : "#2a63ad",
+              fontSize: 13,
+            }}
+          >
+            <FilePdfOutlined />
+            {t("login.userManual")}
+          </a>
+        </div>
       </div>
     </div>
   );

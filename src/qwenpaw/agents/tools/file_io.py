@@ -31,6 +31,13 @@ from .user_files import AccountScopeError
 
 _USER_FILE_MODE = 0o644
 
+# Generated artifacts belong in ``outputs/``; helper code in ``scripts/``.
+# The shell sandbox enforces the same layout with Landlock, but the file tools
+# also need it: otherwise a model can keep dropping gen_*.js / CSV files into
+# the workspace root, which is what made the file page unreadable.
+_WRITABLE_LAYOUT_DIRS = frozenset({"outputs", "scripts"})
+_ROOT_CONFIG_FILES = frozenset({"AGENTS.md", "SOUL.md", "PROFILE.md"})
+
 
 def _path_to_file_url(path: str) -> str:
     """Convert a local file path to a ``file://`` URL.
@@ -94,6 +101,49 @@ def _resolve_file_path(file_path: str) -> str:
         )
         path = project_dir / file_path
     return str(ensure_inside_account(path))
+
+
+def _enforce_write_layout(file_path: str) -> None:
+    """Keep ordinary users' writes in ``outputs/`` or ``scripts/``.
+
+    Reads remain unrestricted inside the account. Writes do not: the workspace
+    root is the agent's scratch area, and letting every run drop scripts and
+    exports there turns the file page into a junk drawer. Administrators are
+    exempt because they own the deployment and may need to edit configuration
+    or prompt files directly.
+
+    A small set of prompt/config files is still writable at any level so an
+    agent can maintain its own ``AGENTS.md``/``SOUL.md``/``PROFILE.md``.
+    """
+    from .user_files import account_root, resolve_account_username
+    from ...app.user_space import is_admin_user
+
+    username = resolve_account_username()
+    if is_admin_user(username):
+        return
+    root = account_root(username)
+    if root is None:
+        raise AccountScopeError(
+            "无法确定账号工作区，出于安全考虑已拒绝写入。",
+        )
+    resolved = Path(file_path).resolve()
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise AccountScopeError(
+            f"只能访问自己账号工作区内的文件，已拒绝：{resolved}",
+        ) from exc
+
+    # ``outputs/`` and ``scripts/`` may sit at the account root (default
+    # agent) or inside ``agents/<id>/`` (additional agents).
+    if any(part in _WRITABLE_LAYOUT_DIRS for part in relative.parts[:-1]):
+        return
+    if relative.name in _ROOT_CONFIG_FILES:
+        return
+    raise AccountScopeError(
+        "生成结果必须写入 `outputs/`，中间处理代码必须写入 `scripts/`；"
+        "不能在工作区根目录、`upload/` 或 `media/` 下新建或修改文件。"
+    )
 
 
 def _get_encoding_for_file(file_path: str) -> str:
@@ -334,8 +384,10 @@ async def write_file(
 
     try:
         file_path = _resolve_file_path(file_path)
+        _enforce_write_layout(file_path)
     except AccountScopeError as exc:
         return _scope_error_response(exc)
+    Path(file_path).parent.mkdir(parents=True, exist_ok=True)
     encoding = _get_encoding_for_file(file_path)
 
     try:
@@ -410,6 +462,7 @@ async def edit_file(
 
     try:
         resolved_path = _resolve_file_path(file_path)
+        _enforce_write_layout(resolved_path)
     except AccountScopeError as exc:
         return _scope_error_response(exc)
 
@@ -539,6 +592,7 @@ async def append_file(
 
     try:
         file_path = _resolve_file_path(file_path)
+        _enforce_write_layout(file_path)
     except AccountScopeError as exc:
         return _scope_error_response(exc)
     encoding = _get_encoding_for_file(file_path)

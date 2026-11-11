@@ -200,6 +200,55 @@ async def test_hook_prefers_an_explicitly_injected_account(
     assert get_current_account_username() == "alice"
 
 
+@pytest.mark.asyncio
+async def test_hook_uses_admin_for_scheduled_runs_when_auth_is_disabled(
+    tmp_path,
+    monkeypatch,
+    account_channel,
+):
+    """A single-user deployment has one account, so cron runs belong to admin.
+
+    The dispatch target in ``request.user_id`` is not an account. Letting the
+    resolver fall back to it made a cron run under a no-auth deployment look
+    like an unknown ordinary user, which denied admin-only tools and forced
+    the shell into a sandbox that no account owns.
+    """
+    from qwenpaw.app.agent_context import get_current_account_username
+    from qwenpaw.hooks.request_setup.contextvars_hook import ContextVarsSetupHook
+    from qwenpaw.runtime.hooks import HookContext
+    import qwenpaw.app.user_space as user_space
+    import qwenpaw.config.config as config_impl
+
+    monkeypatch.setenv("QWENPAW_AUTH_ENABLED", "false")
+    monkeypatch.setattr(user_space, "owner_for_agent", lambda _id: None)
+
+    def _no_agent_config(*_args, **_kwargs):
+        raise RuntimeError("not needed for this test")
+
+    monkeypatch.setattr(config_impl, "load_agent_config", _no_agent_config)
+
+    request = SimpleNamespace(
+        user_id="cron",
+        channel="console",
+        request_context={"source": "cron"},
+    )
+    ctx = HookContext(
+        request=request,
+        session_id="cron:job",
+        agent_id="default",
+        root_session_id="cron:job",
+        root_agent_id="default",
+        workspace_dir=tmp_path / "ws",
+        workspace=None,
+        app_services=None,
+        input_msgs=None,
+    )
+
+    await ContextVarsSetupHook().run(ctx)
+
+    assert get_current_account_username() == "admin"
+
+
 # --------------------------------------------------------------------------
 # ReMe recipient resolution must not parse the (hashed) agent id
 # --------------------------------------------------------------------------

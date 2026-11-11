@@ -18,8 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-# The store prefers host.docker.internal first (for the container deployment);
-# on the host that just stalls, so point it at the published PG port.
+# The store defaults to 127.0.0.1 (every container runs with host networking);
+# set it explicitly so the script also works from a shell with a different .env.
 os.environ["QWENPAW_DATA_TABLES_DB_HOST"] = "127.0.0.1"
 os.environ.setdefault("QWENPAW_DATA_TABLES_DB_PORT", "15432")
 os.environ["QWENPAW_DATA_TABLES_DB_NAME"] = "huizhi_knowledge"

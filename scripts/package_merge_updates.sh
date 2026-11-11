@@ -35,6 +35,38 @@ rm -f "${DIST_DIR}/${KNOWLEDGE_PART}.sha256"
 tar -xzf "${PART_DIR}/assistant.tar.gz" -C "${STAGE_DIR}"
 tar -xzf "${PART_DIR}/knowledge.tar.gz" -C "${STAGE_DIR}"
 
+# One build stamp for the whole merged package. The per-service packagers
+# generate their own during staging; this overwrites them so app and knowledge
+# service report exactly the same deployment version.
+VERSION_ID="${DEPLOYMENT_VERSION:-$(date +%Y%m%d.%H%M%S)}"
+BUILD_TIME="$(date +%Y-%m-%dT%H:%M:%S%z)"
+COMMIT="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BRANCH="$(git -C "${ROOT_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+  DIRTY=1
+else
+  DIRTY=0
+fi
+SEMANTIC_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "${ROOT_DIR}/src/qwenpaw/__version__.py" | head -1)"
+KNOWLEDGE_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "${ROOT_DIR}/knowledge-service/pyproject.toml" | head -1)"
+write_version() {
+  local target=$1
+  cat > "${target}" <<EOF
+version=${VERSION_ID}
+semantic_version=${SEMANTIC_VERSION}
+knowledge_version=${KNOWLEDGE_VERSION}
+build=${BUILD_TIME}
+commit=${COMMIT}
+branch=${BRANCH}
+dirty=${DIRTY}
+package=${PACKAGE_NAME}
+arch=$(uname -m)
+EOF
+}
+write_version "${STAGE_DIR}/VERSION"
+write_version "${STAGE_DIR}/app/VERSION"
+write_version "${STAGE_DIR}/knowledge-service/VERSION"
+
 # The deployment layer carries the code-mount entrypoint and the host-mounted
 # log template. Compose files contain only resource wiring (no secrets), so a
 # single upload also keeps logs landing on the host. Do not extract deploy/
@@ -63,7 +95,7 @@ find "${STAGE_DIR}" \
   -prune -exec rm -rf {} +
 
 tar -C "${STAGE_DIR}" -czf "${DIST_DIR}/${PACKAGE_NAME}" \
-  app knowledge-service deploy UPGRADE_AND_MIGRATION.md
+  VERSION app knowledge-service deploy UPGRADE_AND_MIGRATION.md
 (cd "${DIST_DIR}" && shasum -a 256 "${PACKAGE_NAME}") > "${DIST_DIR}/${PACKAGE_NAME}.sha256"
 
 echo

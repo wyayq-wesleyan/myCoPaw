@@ -10,6 +10,9 @@ from qwenpaw.runtime.prompt_contributors import (
     DataAnalysisContributor,
     FileDeliveryContributor,
     KnowledgeRetrievalContributor,
+    UploadInboxContributor,
+    ToolHardConstraintsContributor,
+    WorkspaceLayoutContributor,
     WorkspacePromptFilesContributor,
     build_default_prompt_manager,
 )
@@ -134,6 +137,40 @@ def test_file_delivery_requires_chat_attachment_for_user_files():
     assert "服务器路径" in fragment
 
 
+def test_upload_inbox_explains_the_fixed_destination_and_extraction():
+    zh = UploadInboxContributor().contribute_sync(
+        SimpleNamespace(
+            workspace_dir="/srv/accounts/alice/agents/main",
+            extras={"language": "zh"},
+        ),
+    )
+    en = UploadInboxContributor().contribute_sync(
+        SimpleNamespace(
+            workspace_dir="/srv/accounts/alice/agents/main",
+            extras={"language": "en"},
+        ),
+    )
+
+    assert zh is not None and en is not None
+    assert "upload/" in zh and "upload/" in en
+    # Relative paths resolve against the project dir, which can differ from the
+    # workspace; the absolute inbox path must be spelled out.
+    assert "/srv/accounts/alice/agents/main/upload" in zh
+    assert "/srv/accounts/alice/agents/main/upload" in en
+    # Archives are extracted server-side and large inputs are sampled, not read
+    # whole.
+    assert "自动解压" in zh and "extracted by the server" in en
+    assert "原压缩包会自动删除" in zh
+    assert "successfully extracted archive is deleted" in en
+    assert "delete_upload_files" in zh and "delete_upload_files" in en
+    assert "dry_run=true" in zh and "dry_run=true" in en
+    assert "不要试图一次读完整棵树" in zh
+    assert "never try to read the whole tree" in en
+    # Tenant boundary: the model must not look for other accounts' uploads.
+    assert "其他账号" in zh
+    assert "another account" in en
+
+
 def test_data_analysis_keeps_the_exact_phrase_gate_for_queries():
     """Query tools stay behind「通过数据分析」; the write tools must not loosen it."""
     fragment = DataAnalysisContributor().contribute_sync(SimpleNamespace(extras={}))
@@ -163,6 +200,8 @@ def test_knowledge_contributor_covers_saving_an_uploaded_file(monkeypatch):
     assert fragment is not None
     assert "create_knowledge_space" in fragment
     assert "upload_knowledge_document" in fragment
+    assert "pass it as `path`" in fragment
+    assert "missing folder is created" in fragment
     assert "Only upload when the user asks you to keep the file" in fragment
 
 
@@ -248,3 +287,36 @@ def test_account_boundary_is_high_priority():
     from qwenpaw.runtime.prompt_contributors import AccountBoundaryContributor
 
     assert AccountBoundaryContributor.priority < 80
+
+
+def test_workspace_layout_forces_outputs_and_scripts():
+    zh = WorkspaceLayoutContributor().contribute_sync(
+        SimpleNamespace(workspace_dir="/srv/accounts/alice", extras={"language": "zh"}),
+    )
+    en = WorkspaceLayoutContributor().contribute_sync(
+        SimpleNamespace(workspace_dir="/srv/accounts/alice", extras={"language": "en"}),
+    )
+
+    assert zh is not None and en is not None
+    assert "outputs/" in zh and "scripts/" in zh
+    assert "outputs/" in en and "scripts/" in en
+    assert "禁止在工作区根目录" in zh
+    assert "Never create files in the workspace root" in en
+    assert "python3 - <<'PY'" in zh and "python3 - <<'PY'" in en
+    assert "send_file_to_user" in zh and "send_file_to_user" in en
+
+
+def test_tool_hard_constraints_explain_approval_cannot_bypass():
+    fragment = ToolHardConstraintsContributor().contribute_sync(
+        SimpleNamespace(extras={"language": "zh"}),
+    )
+    english = ToolHardConstraintsContributor().contribute_sync(
+        SimpleNamespace(extras={"language": "en"}),
+    )
+
+    assert fragment is not None and english is not None
+    assert "审批不能绕过" in fragment
+    assert "python3 scripts/<name>.py" in fragment
+    assert "不要重试同一命令" in fragment
+    assert "Approving a prompt" in english
+    assert "huizhi_gateway" in english

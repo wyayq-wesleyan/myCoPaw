@@ -85,6 +85,38 @@ export class UploadConflictError extends Error {
   }
 }
 
+export interface InboxUploadFile {
+  name: string;
+  path: string;
+  size: number;
+  sha256: string;
+  archive: string | null;
+  job_id: string | null;
+  extract_status: "queued" | "extracting" | "ready" | "failed" | null;
+}
+
+export interface InboxUploadResult {
+  files: InboxUploadFile[];
+  errors?: Array<{ name: string; error: string }>;
+}
+
+export interface InboxJob {
+  id: string;
+  status: "queued" | "extracting" | "ready" | "failed";
+  archive?: string;
+  target?: string | null;
+  files?: number;
+  bytes?: number;
+  archive_deleted?: boolean;
+  error?: string | null;
+}
+
+export interface InboxDeleteResult {
+  deleted: string[];
+  failed: Array<{ path: string; error: string }>;
+  freed_bytes: number;
+}
+
 interface WorkspaceFileChunk {
   path: string;
   content: string;
@@ -267,6 +299,105 @@ export const workspaceApi = {
     }
     return response.json();
   },
+
+  /**
+   * Upload into the fixed `upload/` inbox. Uses XHR instead of fetch because
+   * only XHR exposes upload progress for large files.
+   */
+  uploadInbox: (
+    files: File[],
+    options: {
+      chatId?: string;
+      projectDirOverride?: string;
+      onProgress?: (loaded: number, total: number) => void;
+    } = {},
+  ): Promise<InboxUploadResult> =>
+    new Promise((resolve, reject) => {
+      const { chatId, projectDirOverride, onProgress } = options;
+      const formData = new FormData();
+      files.forEach((file) => formData.append("files", file));
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", getApiUrl("/workspace/inbox-upload"));
+      Object.entries(projectHeaders(chatId, projectDirOverride)).forEach(
+        ([key, value]) => xhr.setRequestHeader(key, value),
+      );
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.(event.loaded, event.total);
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as InboxUploadResult);
+          } catch {
+            reject(new Error("Invalid upload response"));
+          }
+          return;
+        }
+        let detail = "";
+        try {
+          const payload = JSON.parse(xhr.responseText) as {
+            detail?: unknown;
+          };
+          if (typeof payload.detail === "string") detail = payload.detail;
+        } catch {
+          // Non-JSON error body (proxy / gateway) — fall back to the status.
+        }
+        reject(new Error(detail || `File upload failed: ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error("Network error during upload"));
+      xhr.onabort = () => reject(new Error("Upload aborted"));
+      xhr.send(formData);
+    }),
+
+  getInboxJob: (
+    jobId: string,
+    chatId?: string,
+    projectDirOverride?: string,
+  ): Promise<InboxJob> =>
+    request<InboxJob>(`/workspace/inbox-jobs/${encodeURIComponent(jobId)}`, {
+      headers: projectHeaders(chatId, projectDirOverride),
+    }),
+
+  renameInboxEntry: (
+    path: string,
+    newName: string,
+    chatId?: string,
+    projectDirOverride?: string,
+  ): Promise<{ path: string }> =>
+    request<{ path: string }>("/workspace/inbox-rename", {
+      method: "POST",
+      headers: projectHeaders(chatId, projectDirOverride),
+      body: JSON.stringify({ path, new_name: newName }),
+      timeout: 60000,
+    }),
+
+  deleteInboxEntry: (
+    path: string,
+    recursive = false,
+    chatId?: string,
+    projectDirOverride?: string,
+  ): Promise<{ deleted: string }> =>
+    request<{ deleted: string }>("/workspace/inbox-delete", {
+      method: "POST",
+      headers: projectHeaders(chatId, projectDirOverride),
+      body: JSON.stringify({ path, recursive }),
+      // A directory may contain hundreds of thousands of extracted files.
+      timeout: 300000,
+    }),
+
+  deleteInboxEntries: (
+    paths: string[],
+    recursive = false,
+    chatId?: string,
+    projectDirOverride?: string,
+  ): Promise<InboxDeleteResult> =>
+    request<InboxDeleteResult>("/workspace/inbox-delete-batch", {
+      method: "POST",
+      headers: projectHeaders(chatId, projectDirOverride),
+      body: JSON.stringify({ paths, recursive }),
+      timeout: 300000,
+    }),
 
   listFiles: () =>
     request<MdFileInfo[]>("/workspace/files").then((files) =>

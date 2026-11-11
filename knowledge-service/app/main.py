@@ -301,6 +301,16 @@ async def upload_document(
     return {**created, "size": size, "workspace": workspace or None}
 
 
+@app.get("/v1/documents/ids", dependencies=[Depends(require_api_key)])
+async def list_all_document_ids(
+    scope: tuple[str, bool] = Depends(request_scope),
+) -> dict[str, Any]:
+    """Every document id for the calling account, for the path-tree counts."""
+    owner_id, is_admin = scope
+    ids = await asyncio.to_thread(store.list_user_document_ids, owner_id, is_admin)
+    return {"ids": ids, "total": len(ids)}
+
+
 @app.get("/v1/documents/{document_id}", dependencies=[Depends(require_api_key)])
 async def get_document(document_id: str, scope: tuple[str, bool] = Depends(request_scope)) -> dict[str, Any]:
     owner_id, is_admin = scope

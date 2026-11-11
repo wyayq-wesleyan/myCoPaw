@@ -2,7 +2,7 @@
 """
 pytest_data_tables.py - 数据分析模块自动化测试脚本
 
-测试环境: 本地 PostgreSQL (huizhi_knowledge @ host.docker.internal:15432)
+测试环境: 本地 PostgreSQL (huizhi_knowledge @ 127.0.0.1:15432)
 运行方式: python3 -m pytest pytest_data_tables.py -v
 
 前置条件:

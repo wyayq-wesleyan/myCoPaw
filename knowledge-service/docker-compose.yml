@@ -5,6 +5,12 @@ services:
     # （bind mount），换镜像不丢；glibc/musl 不同，升级前先 pg_dumpall 备份。
     image: "${KNOWLEDGE_POSTGRES_IMAGE:-pgvector/pgvector:pg17}"
     container_name: huizhi-knowledge-postgres
+    # 与宿主机共享网络命名空间（不使用 docker 内部网络）：容器直接用宿主机的
+    # 127.0.0.1 访问同机的 PostgreSQL / LightRAG，监听端口也直接开在宿主机网段上，
+    # 与宿主机同网段的其他机器可以直连。
+    # 代价有两条：端口不能再做映射（下面的 ports 因此删掉，容器端口就是宿主机端口），
+    # 且端口不能与其他容器重复。
+    network_mode: host
     restart: unless-stopped
     mem_limit: "${KNOWLEDGE_POSTGRES_MEMORY_LIMIT:-32g}"
     cpus: "${KNOWLEDGE_POSTGRES_CPU_LIMIT:-4.0}"
@@ -14,8 +20,8 @@ services:
       POSTGRES_USER: "${KNOWLEDGE_POSTGRES_USER:-huizhi_knowledge}"
       POSTGRES_PASSWORD: "${KNOWLEDGE_POSTGRES_PASSWORD:-huizhi_knowledge}"
       TZ: "${TZ:-Asia/Shanghai}"
-    ports:
-      - "127.0.0.1:${KNOWLEDGE_POSTGRES_PORT:-15432}:5432"
+      # 容器内的 pg_isready / psql 用它，服务端端口由上面的 -c port 决定。
+      PGPORT: "${KNOWLEDGE_POSTGRES_PORT:-15432}"
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
     # The platform store (conversation history, audit) shares this instance with
@@ -23,7 +29,20 @@ services:
     # default 100-connection ceiling is too low: the analysis pools alone can
     # reach ~40 and history adds a pool on top. Raised explicitly rather than
     # left to the image default so the ceiling is visible and intentional.
-    command: ["postgres", "-c", "max_connections=${KNOWLEDGE_POSTGRES_MAX_CONNECTIONS:-200}"]
+    # host 网络下容器端口即宿主机端口。这里保留 15432 而不是回到 5432：既有 DSN、
+    # 迁移脚本、运维文档与主应用的 QWENPAW_DATA_TABLES_DB_PORT 都指向 15432，
+    # 换端口会连带改一片配置。
+    # listen_addresses 默认只开回环——同机所有容器都用 127.0.0.1:15432 访问它。
+    # 若要让同网段的其他机器直连数据库，把 KNOWLEDGE_POSTGRES_BIND 设为 0.0.0.0，
+    # 并在 pg_hba.conf 放行对应网段；默认不放开（默认口令 + 库内是业务数据）。
+    command:
+      - postgres
+      - -c
+      - "port=${KNOWLEDGE_POSTGRES_PORT:-15432}"
+      - -c
+      - "listen_addresses=${KNOWLEDGE_POSTGRES_BIND:-127.0.0.1}"
+      - -c
+      - "max_connections=${KNOWLEDGE_POSTGRES_MAX_CONNECTIONS:-200}"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -39,6 +58,12 @@ services:
         PRELOAD_MINERU_MODELS: "${PRELOAD_MINERU_MODELS:-1}"
     image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-knowledge-api
+    # 与宿主机共享网络命名空间（不使用 docker 内部网络）：容器直接用宿主机的
+    # 127.0.0.1 访问同机的 PostgreSQL / LightRAG，监听端口也直接开在宿主机网段上，
+    # 与宿主机同网段的其他机器可以直连。
+    # 代价有两条：端口不能再做映射（下面的 ports 因此删掉，容器端口就是宿主机端口），
+    # 且端口不能与其他容器重复。
+    network_mode: host
     restart: unless-stopped
     mem_limit: "${KNOWLEDGE_API_MEMORY_LIMIT:-16g}"
     cpus: "${KNOWLEDGE_API_CPU_LIMIT:-4.0}"
@@ -47,10 +72,10 @@ services:
       - .env
     environment:
       KNOWLEDGE_ROLE: api
-      KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
+      KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge}"
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
-      LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      LIGHTRAG_URL: "${LIGHTRAG_URL:-http://127.0.0.1:9621}"
       # Tenant-isolated graph storage (docs/知识服务多租户存储设计方案.md).
       # Set to a PostgreSQL DSN to run the graph **in-process** with one LightRAG
       # workspace per path, which replaces LIGHTRAG_URL. Leave empty to keep the
@@ -61,10 +86,6 @@ services:
     depends_on:
       knowledge-postgres:
         condition: service_healthy
-    ports:
-      - "127.0.0.1:${KNOWLEDGE_PORT:-18100}:18100"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
     healthcheck:
@@ -76,6 +97,12 @@ services:
   knowledge-worker:
     image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-knowledge-worker
+    # 与宿主机共享网络命名空间（不使用 docker 内部网络）：容器直接用宿主机的
+    # 127.0.0.1 访问同机的 PostgreSQL / LightRAG，监听端口也直接开在宿主机网段上，
+    # 与宿主机同网段的其他机器可以直连。
+    # 代价有两条：端口不能再做映射（下面的 ports 因此删掉，容器端口就是宿主机端口），
+    # 且端口不能与其他容器重复。
+    network_mode: host
     restart: unless-stopped
     mem_limit: "${KNOWLEDGE_WORKER_MEMORY_LIMIT:-80g}"
     cpus: "${KNOWLEDGE_WORKER_CPU_LIMIT:-14.0}"
@@ -89,18 +116,16 @@ services:
       # reclaims its own previous-life jobs immediately. Multiple replicas must
       # each get a different value.
       KNOWLEDGE_WORKER_ID: "${KNOWLEDGE_WORKER_ID:-worker-1}"
-      KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge}"
+      KNOWLEDGE_DATABASE_URL: "${KNOWLEDGE_DATABASE_URL:-postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge}"
       KNOWLEDGE_OFFLINE: "${KNOWLEDGE_OFFLINE:-false}"
       MINERU_MODEL_SOURCE: "${MINERU_MODEL_SOURCE:-local}"
-      LIGHTRAG_URL: "${LIGHTRAG_URL:-http://lightrag:9621}"
+      LIGHTRAG_URL: "${LIGHTRAG_URL:-http://127.0.0.1:9621}"
       KNOWLEDGE_GRAPH_DATABASE_URL: "${KNOWLEDGE_GRAPH_DATABASE_URL:-}"
       KNOWLEDGE_GRAPH_MAX_WORKSPACES: "${KNOWLEDGE_GRAPH_MAX_WORKSPACES:-32}"
       KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS: "${KNOWLEDGE_GRAPH_POOL_MAX_CONNECTIONS:-8}"
     depends_on:
       knowledge-postgres:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
     command: ["python", "-m", "app.worker"]
@@ -108,6 +133,12 @@ services:
   lightrag:
     image: "${KNOWLEDGE_IMAGE:-huizhi-knowledge:0.1.4-arm64}"
     container_name: huizhi-lightrag
+    # 与宿主机共享网络命名空间（不使用 docker 内部网络）：容器直接用宿主机的
+    # 127.0.0.1 访问同机的 PostgreSQL / LightRAG，监听端口也直接开在宿主机网段上，
+    # 与宿主机同网段的其他机器可以直连。
+    # 代价有两条：端口不能再做映射（下面的 ports 因此删掉，容器端口就是宿主机端口），
+    # 且端口不能与其他容器重复。
+    network_mode: host
     restart: unless-stopped
     mem_limit: "${LIGHTRAG_MEMORY_LIMIT:-32g}"
     cpus: "${LIGHTRAG_CPU_LIMIT:-4.0}"
@@ -116,12 +147,12 @@ services:
       - .env
     environment:
       LLM_BINDING: openai
-      LLM_BINDING_HOST: "${PROVIDER_BASE_URL:-http://host.docker.internal:9988/v1}"
+      LLM_BINDING_HOST: "${PROVIDER_BASE_URL:-http://127.0.0.1:9988/v1}"
       LLM_BINDING_API_KEY: "${PROVIDER_API_KEY:-}"
       OPENAI_API_KEY: "${PROVIDER_API_KEY:-}"
       LLM_MODEL: "${CHAT_MODEL:-llm}"
       EMBEDDING_BINDING: openai
-      EMBEDDING_BINDING_HOST: "${EMBEDDING_BASE_URL:-http://host.docker.internal:9988/v1}"
+      EMBEDDING_BINDING_HOST: "${EMBEDDING_BASE_URL:-http://127.0.0.1:9988/v1}"
       EMBEDDING_BINDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       OPENAI_EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
       EMBEDDING_MODEL: "${EMBEDDING_MODEL:-qwen3-4b-embedding}"
@@ -131,10 +162,6 @@ services:
       TIKTOKEN_CACHE_DIR: /data/lightrag/tiktoken_cache
       LIGHTRAG_API_KEY: "${LIGHTRAG_API_KEY:-}"
     command: ["python", "-m", "lightrag.api.lightrag_server", "--host", "0.0.0.0", "--port", "9621"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "127.0.0.1:${LIGHTRAG_PORT:-19621}:9621"
     volumes:
       - ./data/lightrag:/data/lightrag
       - ./data/lightrag-input:/data/lightrag-input

@@ -4,6 +4,11 @@
 
 当前代码基线：`v2.1.0`
 
+当前发布版本：`huizhi-20261111`（2026-11-11）
+
+代码包版本戳：`YYYYMMDD.HHMMSS`，由打包脚本写入 `app/VERSION`，部署后可通过
+`GET /api/version` 查看；多台服务器可直接对比版本、提交和构建时间。
+
 当前开发目录：`/Users/wesley/Desktop/projects/huizhi-assistant-v2.2.1`
 
 当前本机验证容器：`huizhi-v210-check`
@@ -1989,7 +1994,10 @@ Neo4j 等集群时可直接使用；但产品当前**没有**这两类功能的�
 | 用量可见性 | 已完成，普通用户仅见自己（Web 接口与聊天工具三处出口均已收口） |
 | 工具权限快照 | 已修复，新上线工具不再被旧权限名单隐藏；启动时自动自愈存量配置 |
 | 生成文件预览 | 已修复，DOCX/图表落点改为按请求的工作区，不再因越界被拒 403 |
-| 多用户隔离审计 | 三阶段完成（越权收口 + 工具路径限制 + 共享位置/admin 语义统一），并已复核无新增回归（见 9.22）；沙箱与 browser 代码执行为已知残余 |
+| 多用户隔离审计 | 四阶段完成：越权收口、工具路径限制、共享位置/admin 语义统一（见 9.22），以及普通用户 OS 级沙箱（见 9.56）；浏览器自动化与桌面截图仅管理员可用 |
+| 普通用户沙箱 | 已完成，UID/组权限 + seccomp + rlimit 默认可用；可选 Landlock（`HUIZHI_SANDBOX_LANDLOCK=1` 时失败关闭）；见 9.56 |
+| 部署版本戳 | 已完成，`VERSION`/`app/VERSION`/`knowledge-service/VERSION` + 公开 `GET /api/version`；见 9.56 |
+| ARM64 迁移 | 已完成，打包/部署脚本固定目标路径，只迁程序与 `.env`，空库启动；见 9.56 |
 | 代码挂载部署体系 | 已完成，合并更新包脚本 + 宿主机日志落盘 |
 | 图表生成工具 | 已完成，generate_chart 六种图型，配合 send_file 投递 |
 | 流式回答断线恢复 | 已完成心跳、看门狗、短期磁盘重放；重启恢复受保留时间限制 |
@@ -2008,6 +2016,12 @@ Neo4j 等集群时可直接使用；但产品当前**没有**这两类功能的�
 | 并发能力（50 人） | **第一批已实施**（见 9.44）：线程池分池（fast/file/subprocess + 有界等待）、审计搬离事件循环（B8）、知识服务启动恢复加 owner 判定、`/api/debug/io-pools` 观测。**仍未实施**：checkpoint 外置、21 个端点迁移、前端轮询改造、worker 多副本、模型服务扩容（方案 `docs/50并发改造方案.md` 其余阶段） |
 | 全新服务器离线部署包 | 已完成，x86_64 专用、无需外网、6.6GB 按 900MiB 分卷并校验合并结果；见 9.43 |
 | 合并包脚本 | 已修正，主应用与知识服务同时携带 amd64/arm64 compose（原仅 arm64，生产是 x86） |
+| 容器 pids 耗尽 | 已修复：解析线程按 cgroup 配额开（不再按宿主机 256 核）、超时整棵收进程树、解析移出事件循环；见 9.50 |
+| 资源上限 | 已改为按宿主机容量推导（`scripts/derive_resource_limits.sh` 写入 `.env` 受管区块），写死的线程数与 pids 默认值全部撤掉；见 9.51 |
+| 知识服务安全 | 已修复 **P0**：解析端点未清洗上传文件名，同时可路径穿越与命令注入；另修 `KNOWLEDGE_MAX_FILE_MB` 只能调大不能调小、毒文档让队列永久停摆；见 9.52 |
+| 主应用阻塞 | 已修复：技能扫描超时实际不限时（建技能会阻塞全站）、路径树 N+1 查询在事件循环上；见 9.53 |
+| git 子进程生命周期 | 已修复：`git clone` 补超时/进程组/断开清理/免凭据提示，中断时只删本次创建的半成品；fork 的 worktree 取消后不再持有 `index.lock`；插件依赖安装超时改杀整棵进程树；见 9.54 |
+| 已知遗留 | 技能扫描放弃的线程会跑完才释放（需移到子进程，见 9.53）；`asyncio.to_thread` 直调点约 250 处未纳入分池观测（见 9.44） |
 
 ## 11. 维护原则
 
@@ -3080,14 +3094,381 @@ state 文件只装当前上下文窗口。只导出 state 会把长对话静默�
 头部行不在首位不匹配；折叠的四种情形），并做变异验证——把 `sessionApi` 里那次折叠调用
 删掉，接线用例精确失败（只测 helper 是测不出来的，helper 测试照样通过而用户照样看到正文）。
 
+### 9.49 第四轮集中改造总览（10.14 – 10.19）
+
+第四轮的起点是一次**线上故障**（9.50），终点是一次**按同类根因做的全仓审查**
+（9.52–9.54）。这一轮的方法与前几轮不同：不再逐个修用户报上来的问题，而是先把故障
+归纳成「一类根因」，再拿这个根因去扫全仓——所以后面几节里有不少缺陷是用户还没碰到的。
+
+| 主题 | 内容 | 详见 |
+| --- | --- | --- |
+| 线上故障 | 上传文档偶发 `soffice: Cannot fork`，3 分钟内 17 次 500，容器 pids 从 4 爬到 1685（上限 2048） | 9.50 |
+| 解析资源 | 解析线程按 cgroup 配额开（不再按宿主机 256 核）、超时整棵收进程树、解析移出事件循环 | 9.50 |
+| 资源上限 | 线程数与 pids 默认值改为按宿主机容量推导（`scripts/derive_resource_limits.sh`），写死值全部撤掉 | 9.51 |
+| 安全 | **P0**：知识服务解析端点未清洗上传文件名，同时构成路径穿越与命令注入 | 9.52 |
+| 配置生效 | `KNOWLEDGE_MAX_FILE_MB` 只能调大不能调小（写 100 实际 10240）；启动日志补打印生效值 | 9.52 |
+| 队列健壮性 | 毒文档让处理队列永久停摆（恢复路径没有 attempts 上限） | 9.52 |
+| 事件循环 | 技能扫描的「超时」实际不限时；路径树与资源分配在事件循环上做 N+1 查询 | 9.53 |
+| 子进程 | `git clone` 无超时 / 不清理 / 不杀进程树；fork 的 worktree 取消后持有 `index.lock`；插件依赖安装超时只杀直接子进程 | 9.54 |
+
+### 9.50 线上故障：上传文档偶发打满容器 pids（`soffice: Cannot fork`）
+
+**现象**：上传知识文档时偶发 `soffice: 43: Cannot fork`；随后 3 分钟内
+`GET /v1/documents` 连续 17 次 500，报 `RuntimeError: can't start new thread`。
+`pids.current` 从 4 一路爬到 **1685**（上限 2048）。宿主机 256 核 / 1.5TB，
+容器 `cpus: 4`。
+
+四个成因里最要命的一条是 cgroup 的语义：
+
+1. **线程池按宿主机核数开（主因）**。`cpus: 4` 是 **CFS 配额，不是 CPU 亲和性**——
+   容器内 `os.cpu_count()` 依然报 256。MinerU 依赖 PyTorch，未设 OMP/MKL 时按 256 开
+   intra-op 线程，而 **cgroup 的 pids 计的是任务数（进程 + 线程）**。1685 ≈ 6.6 × 256，
+   与「几次解析各开 256 线程」完全吻合。换句话说：不是有人泄漏进程，而是**一次正常
+   解析就顶得上几百个任务**。
+2. **超时只杀直接子进程**。`subprocess.run(timeout=)` 杀不到 `soffice.bin` 与 MinerU
+   的 python 进程（`shell=True` 下它们只是 `/bin/sh` 的子进程），残留进程树越积越多。
+3. **解析跑在事件循环上**。`parse_uploaded_file` 是 `async def` 却同步调
+   `extract_text_from_file`，DOCX 转换最长 300 秒期间同进程所有请求全阻塞（健康检查、
+   文档列表、SSE 一起停）。
+4. **辅助统计失败拖垮整页**。`pending_count` 只是「处理中」角标，它失败会让
+   `GET /v1/documents` 整页 500，放大成「知识空间打不开」。
+
+**修复**：解析子进程读 cgroup 配额给 OMP/MKL/OpenBLAS/NUMEXPR/VECLIB 设线程上限
+（`_child_env()`）；`start_new_session=True` + 超时对整组 `SIGKILL`；解析改
+`asyncio.to_thread` 并加并发闸门（默认 2，`KNOWLEDGE_PARSE_CONCURRENCY`）；三个 pending
+端点改为失败降级 + warning。
+
+**验证**：新增 7 项测试，过程中修掉两类**测试自身的假阳性**——`sh -c 'sleep & wait'`
+的孙进程会被 SIGHUP 级联回收，测不出「只杀直接子进程」，改用 fork + 忽略 SIGHUP 的孙
+进程；macOS 没有 `/proc`，`_pid_alive` 把读取失败当「已死」，坏修复也能通过。
+变异验证：退回只杀直接子进程 → 报「孙进程 N 在超时后仍然存活」；移除 `env=` → 报
+「子进程拿到的 OMP_NUM_THREADS 是空串」。
+
+### 9.51 资源上限改为按宿主机容量推导
+
+9.50 的第一版把 `OMP_NUM_THREADS=4` 写死在 compose 里：泄漏止住了，但**把 worker
+（配额 14 核）也压到 4 核，解析白白慢了 3.5 倍**，而且换一台机器要同时改两处。这类
+「为了止血而写死」的值最终都会变成下一个坑，所以第二步是把它们全部改成推导。
+
+新增 `scripts/derive_resource_limits.sh`：探测宿主机核数与内存（可用 `--cores` /
+`--mem-gb` 覆盖），按 **55% CPU / 35% 内存**的预算在五个服务间分配，写入 `deploy/.env`
+与 `knowledge-service/.env` 的**受管区块**（幂等：重复运行原地替换，不碰区块外的自定义
+变量）。pids 由解析链路的实际形态反推，不再写死。
+
+| 服务 | 核 | 内存 | pids | 说明 |
+| --- | --- | --- | --- | --- |
+| assistant | 56 | 238g | 4096 | LLM 并发 14 |
+| knowledge-api | 16 | 47g | 640 | 解析闸门 2 |
+| knowledge-worker | 42 | 158g | 768 | 解析主力 |
+| lightrag | 12 | 42g | 640 | |
+| postgres | 12 | 42g | 640 | max_connections 300 |
+
+（上表是这台 256 核 / 1512 GB 机器上的输出，预算 140 核 / 529 GB。）
+
+线程上限改由 `parsers.py::_cpu_budget()` 读 cgroup 配额推导，从 compose 移除——改
+`*_CPU_LIMIT` 即自动生效，不需要同步改第二处。`.env.example` 不再给「生产推荐值」
+（原文案写着「defaults total about 208GB/32 CPU」，照抄到 256 核机器上等于只用 1/8
+的算力），改为指向脚本。
+
+**验证**：`--dry-run` 在 256 核与 64 核两种规格下输出合理；连续运行两次区块不叠加、
+自定义变量保留；五个 compose 文件均可解析。
+
+### 9.52 全仓同类根因审查（知识服务）：一个 P0 安全缺陷与三项静默失效
+
+9.50 结束后，把那次故障的根因归纳为六类——**阻塞在事件循环上、没有上限、只增不减、
+否定结论被缓存、启动做重活、异常被吞掉**——再拿这六类去扫全仓。知识侧查出四处，逐条
+核实后修复。
+
+**P0：上传文件名未清洗，同时是路径穿越与命令注入**。
+`POST /v1/documents/parse` 直接拿 `file.filename` 拼临时路径：绝对路径会让
+`Path(tmp) / name` **丢弃临时目录**（写到任意位置）；`../` 可逃出临时目录；而该路径
+随后被插进 `shell=True` 的 MinerU 命令，文件名里的 `$(...)` 与反引号**在双引号内仍会
+执行**。最终文件名的后缀仍是 `.docx`，所以后缀校验拦不住。主上传端点一直用
+`_safe_filename`，只有这个端点漏了——两处都补上，MinerU 的路径另加 `shlex.quote` 作为
+第二道防线（命令模板可被改成不带引号的形式）。
+
+**P1：`KNOWLEDGE_MAX_FILE_MB` 只能调大不能调小**。`max(10240, int(env))` 让 .env 里写
+的 100 实际生效为 10240——运维以为限到 100 MB，系统照收 10 GB，而轻量解析器会把整份
+文件读进内存，足以打 OOM。改为以 .env 为准（1 GiB 下限只防 0）。
+
+**P1：毒文档让队列永久停摆**。`recover_interrupted_jobs` 没有 attempts 上限，会让 worker
+崩溃的文档每次重启都被重新排队，而 `claim_job` 按 `created_at` 取最旧——它永远排最前，
+**其它上传全部卡在「等待 Worker」**。`requeue_stale_jobs` 早有这个判断，恢复路径漏了。
+修复时踩到一个 PostgreSQL 参数类型坑：`%s::int IS NULL OR attempts < %s` 在参数被推断
+成 unknown 时比较结果与直觉不符，**把正常任务也一起挡掉了**（实测恢复 0 个），改为在
+Python 侧拼 SQL 片段。
+
+**P2：启动日志缺生效值**。新增一行打印 max_file_mb / parse_concurrency / parser_backend
+/ mineru_timeout——这几个值刚刚发生过「写了不生效」。
+
+**验证**：在真实 PostgreSQL 上验证恢复行为（旧行为把 `attempts=4` 与 `attempts=1` 一起
+重排，返回 2；新行为毒文档 failed、正常 queued，返回 1）。守卫的测试**首版只检查「代码
+里有 attempts_guard」**，被常量空串骗过，已改为求值断言
+（`guard_for(4) == "AND attempts < 4"`）。
+
+### 9.53 全仓同类根因审查（主应用）：两处同步阻塞在事件循环上
+
+**P0：技能扫描的「超时」根本不限时**。原写法是
+`with futures.ThreadPoolExecutor(max_workers=1) as executor:` +
+`future.result(timeout=N)`——而 `__exit__` 等价于 `shutdown(wait=True)`，会**等那个卡住
+的扫描线程**；`future.cancel()` 对运行中的任务返回 False，什么也没取消。实测 0.5 秒的
+超时实际阻塞 3.0 秒，扫描若永久挂起就永久阻塞调用方。而调用方是 `async def
+create_skill` / `save_workspace_skill` 里的**同步**调用：**建一个技能能让全站（含
+`/healthz`）停住**。改为手动创建 executor + `shutdown(wait=False)`。代价是被放弃的线程
+会继续跑完才释放（Python 不能强杀线程），彻底解决需要把扫描放进子进程——已知遗留。
+
+**P1：路径树与资源分配在事件循环上做 N+1 查询**。`GET /paths/tree` 每个节点至少 5 次
+查询（节点、绑定资源、可见文档、可见表、授权智能体），30 个案件 = 150–200 次串行查询，
+全部在事件循环上，平台池满时每次取连接还会 sleep 自旋；`GET /paths/assignable` 对每个
+文档/数据表各查一次归属，1000 个文档 = 1000 次查询。改为三处同步段下放到 `run_sync_io`，
+并新增 `paths_of_resources(kind, ids)` 批量查询（`= ANY(%s)`）。
+
+**验证**：新增 6 项测试，变异验证两处均精确失败。这里也遇到一次「测试读注释而非行为」：
+技能扫描的超时用例**被源码里的注释骗过**（注释本身写着 `shutdown(wait=False)`，直接
+全文搜索时把 `wait=True` 改回去也能通过），改为剥离注释后再断言才有效。
+
+### 9.54 git 与插件安装：子进程的生命周期
+
+同一类根因（**没有上限 + 没有清理**）在子进程调用上重现了三处。三处都不影响正常路径，
+只在「卡住」与「用户中途离开」时暴露，因此属于用户不会主动上报、但会慢慢积累的那类。
+（范围说明：shell 工具与沙箱层早就有自己的整组清理路径——`shell.py::_cleanup_proc` 与
+`start_new_session` + `killpg`/`stop()`——本节只处理剩下这三处。）
+
+**`POST /workspace/project-directory/clone`（P1）**：这个端点把 `git clone` 的输出以 SSE
+流给浏览器，原实现有四个洞：
+
+- **没有超时**：网络断掉、仓库要凭据、树特别大——进程（连同 `git-remote-https`、
+  `index-pack`）会一直活到容器重启；
+- **没有进程组**：没开 `start_new_session`，清理时只能信号直接子进程；
+- **客户端断开后不清理**：最关键的一点——**Starlette 是在 `yield` 处直接关闭生成器的**，
+  `yield` 之后的代码根本不会执行，而原实现把清理放在正常路径上
+  （`except (CancelledError, GeneratorExit): pass` 之后就结束了）；
+- **凭据提示会无限等**：`stdin` 没指定，私有仓库的 username/password 提示没人应答。
+
+修复：用 `asyncio.timeout` 给整个克隆一个预算（默认 1800 秒，
+`QWENPAW_GIT_CLONE_TIMEOUT_SECONDS` 可调）、`start_new_session=True`、
+`GIT_TERMINAL_PROMPT=0` + `stdin=DEVNULL`，清理**全部移进 `finally`**（且不能有
+`await`——异步生成器在 `GeneratorExit` 之后再 await 会抛 RuntimeError）。另外中断时删掉
+半成品目录：`git clone` 对已存在的目录会直接失败，留着半棵树等于让用户重试也失败；但
+**只删本次创建的那些**——目录本来就存在时（用户已有同名目录）绝不能删。
+
+**`_create_worktree`（P2，fork 分支会话）**：原先 `proc.kill()` 只杀直接子进程，且请求
+被取消时没有任何清理——git 会继续检出并**持有仓库的 `index.lock`**，之后这个仓库上的
+每一次 git 操作都被挡住。改为 `start_command_async(..., start_new_session=True)`，取消时
+先杀再抛（等待有上限，不能让一个卡在不可中断睡眠的进程把 500 拖成挂起）。顺带把它的
+stdout 从管道改成 `DEVNULL`：旧写法 `communicate()` 会把两个管道都读掉，改成只读 stderr
+之后，仍挂着管道却不读的 stdout 会在 git 写满 64 KB 时把它卡住。
+
+**插件依赖安装（P3，`plugins/loader.py`）**：`_run_subprocess_with_streaming_log` 装的是
+pip/uv 依赖，超时时只 `proc.kill()`。pip 会再派生编译器与构建后端，这些子进程在超时后
+继续跑着吃 CPU、占 pids。改为 `start_new_session=True` + 超时对整组 `SIGKILL`。
+
+**验证**：新增 17 项测试，全部针对**真实进程树**（假的 `git` / 假的安装命令记录自己和子
+进程的 PID），8 处变异验证全部精确失败：
+
+| 回退的修复 | 测试报出的现象 |
+| --- | --- |
+| clone 去掉 `start_new_session` | `owns_process_group` 为 `[False]` |
+| clone 去掉 `finally` 清理 | 「clone outlived the client that started it: [17500, 17501]」 |
+| clone 去掉「不是我们建的就不删」保护 | 用户的 `keep.txt` 被删掉（FileNotFoundError） |
+| clone 去掉超时 | 流永不结束，只能等到测试自己的超时 |
+| 进度行只按 `\n` 切 | `\r` 原地刷新的进度行整段粘在一起 |
+| fork 去掉 `start_new_session` | 超时与取消两例都报「checkout 活过了请求」 |
+| fork 去掉取消时的清理 | 「worktree checkout survived the cancelled request」 |
+| 插件安装退回 `proc.kill()` | 「install tree outlived the timeout」 |
+
+其中插件安装那条第一次**没被抓住**，值得记下来：假子进程当时写的是 `sleep 300`，而它
+继承着 helper 正在读的那条管道——于是「只杀直接子进程」这个坏修复让调用方一直等到
+300 秒后子进程自然退出，断言执行时子进程已经死了，测试报了通过。改成 `sleep 3600` 并把
+子进程的输出重定向到 `/dev/null`（不再持有管道）之后才真正失败。这与前面几节的
+「测试读注释而非行为」是同一类问题：**测试要通过，得先保证它测的是修复，而不是时间**。
+
+`ManagedProcess` 顺带补了 `stderr` 属性（原先只有 `stdout`，调用方拿不到错误输出）。
+
+### 9.55 线上故障：知识服务连不上库 —— 一份「本地测通、上线挂掉」的配置
+
+**现象**：2026-10-19 更新代码包后知识服务起不来。`huizhi-knowledge-api` 一直
+`Up (unhealthy)`，日志里刷：
+
+```
+knowledge-api error connecting in 'knowledge-store-pool': connection failed:
+connection to server at "172.17.0.1", port 15432 failed: Connection refused
+knowledge-api schema init attempt 11/20 failed, retrying in 3s: couldn't get a connection after 20.00 sec
+```
+
+同时 `huizhi-lightrag` 反复重启（Restarting (1)）。PostgreSQL 容器本身是健康的
+（`Up 3 weeks (healthy)`），只在 `127.0.0.1:15432` 上提供服务。
+
+**根因：同一个主机名在两个平台上语义不同。**
+
+知识服务的容器跑在 docker bridge 网络里，而 `KNOWLEDGE_DATABASE_URL` 的默认值是
+`...@host.docker.internal:15432/...`：
+
+| 平台 | `host.docker.internal` 解析成 | PostgreSQL 发布在 | 结果 |
+| --- | --- | --- | --- |
+| macOS（Docker Desktop） | 由 Docker Desktop 的 VM 转发到宿主机，**回环发布的端口也照样能连** | `127.0.0.1:15432` | 连通 —— 所以本地开发一直没问题 |
+| Linux（生产） | `host-gateway` = docker0 网关 `172.17.0.1` | `127.0.0.1:15432`（只回环） | **Connection refused** |
+
+也就是说：这份默认值是在 macOS 上写完并验证的，在 Linux 上**必然**失败，而不是
+偶发。这一点在本次排查里做了实测复现：在 host 网络下用同一个地址去连，报出的
+`connection to server at "172.17.0.1" ... Connection refused` 与服务器日志逐字一致。
+
+**改动：容器统一改用 host 网络（`network_mode: host`）**
+
+用户的部署原则很明确——**不要 docker 内部网络**，容器与宿主机在同一网段、同网段的
+其他 IP 都能访问。按这个原则统一改造：
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| 知识服务 api / worker / lightrag | bridge + `ports: 127.0.0.1:xxx` | `network_mode: host`，删掉 `ports:` |
+| LightRAG 端口 | 映射后的 `19621` | 它自己的 `9621`（host 网络下就是宿主机端口） |
+| PostgreSQL | bridge + `127.0.0.1:15432:5432` | host 网络 + `-c port=15432 -c listen_addresses=127.0.0.1` |
+| 容器间/容器到宿主机 | `host.docker.internal` | `127.0.0.1`（同一个网络命名空间） |
+| 平台库与分析库的 host 候选 | `["host.docker.internal", "127.0.0.1"]` | `["127.0.0.1"]` |
+
+两个刻意的取舍：
+
+- **PostgreSQL 端口保留 15432**（host 网络下本可以回到 5432），因为既有 DSN、迁移
+  脚本、`QWENPAW_DATA_TABLES_DB_PORT`、文档全都指向 15432，换端口会连带改一片配置。
+  容器内的 `pg_isready`/`psql` 通过新增的 `PGPORT` 跟随同一个值时端口变化才不会有
+  半截生效——健康检查正是靠它。
+- **PostgreSQL 默认只监听回环**：数据库不需要对局域网开放（同机所有容器用
+  `127.0.0.1:15432` 即可）。要让同网段其他机器直连，把 `KNOWLEDGE_POSTGRES_BIND`
+  设为 `0.0.0.0` 并在 `pg_hba.conf` 放行，默认不放开——默认口令加业务数据，不该
+  因为一次「统一网络」就顺手暴露出去。
+
+**验证**：用仓里那份 postgres compose 真实起容器（隔离在 `/tmp`，端口与容器名避开本机
+已有开发栈），确认：健康检查通过（说明 `PGPORT` 生效，`pg_isready` 找得到非默认端口）、
+`SHOW port` = 配置端口、`SHOW listen_addresses` = `127.0.0.1`；再用 host 网络的客户端
+容器按 api 的连接方式连上，并看到 `initdb` 建出的 `huizhi_knowledge_graph`。反向用旧地址
+（`172.17.0.1`）连接，复现出与服务器日志一致的拒绝。
+
+**顺带修掉的同类问题**：`src/qwenpaw/data_tables/store.py`、`knowledge-service/app/config.py`
+的 DSN 默认值、`knowledge-service/scripts/merge_spaces.py`、`scripts/docker_build.sh` 的
+提示语里都写着 `host.docker.internal` 或容器名——它们是同一个平台假设的其它副本，一并
+改成回环地址。
+
+### 9.56 2026-11-11 发布：普通用户 OS 级沙箱、版本戳与 ARM64 迁移
+
+本轮把「普通用户只能访问自己的东西」从工具层检查推进到操作系统层，并补齐版本管理
+和新服务器迁移工具。发布标记 `huizhi-20261111`，代码版本 `2.1.0.post4`。
+
+#### 1. 普通用户沙箱：不再只靠工具层检查
+
+此前治理策略引擎与 sandbox 配置在生产上都没有实际执行，普通用户通过
+`execute_shell_command` 仍可能读到其他账号或应用源码。本轮为每个普通账号分配
+独立 UID/GID，命令不再以 root 运行：
+
+| 路径 | 权限 | 说明 |
+| --- | --- | --- |
+| 账号根 `users/<id>` | `root:<gid> 2750` | 组可进入/读取，不可写 |
+| `outputs/`、`scripts/` | `root:<gid> 2770` | 普通用户唯一可写位置 |
+| `media/`、`upload/` | `root:<gid> 2750` | 只读挂载，供智能体读取上传文件 |
+| 私有工作区 | `0700` | 仅账号自己 |
+| 应用源码、`.env`、密钥目录 | `0700/0600` | 沙箱不可读、不可改 |
+
+两种运行模式：
+
+- `HUIZHI_SANDBOX_LANDLOCK=0`（默认）：UID/组权限 + seccomp + rlimit +
+  `umask 077`。openEuler 22.03 / 24.03 的官方 5.10 内核没有编译
+  `CONFIG_SECURITY_LANDLOCK`，这条路径不依赖 Landlock，可直接使用；
+- `HUIZHI_SANDBOX_LANDLOCK=1`：强制 Landlock（内核 ≥ 5.13 且
+  `CONFIG_SECURITY_LANDLOCK=y`）；内核不支持时**失败关闭**，不会静默退回宿主机
+  执行。
+
+seccomp 统一禁止非 UNIX socket、`io_uring`、`bpf`、`ptrace`、`mount`、
+`unshare`、`chroot`、`mknod` 等；网络默认不可用。资源限制覆盖内存、单文件大小、
+`nofile`、`nproc`、CPU 时间，均可用 `HUIZHI_SANDBOX_*` 调整；审计写入 JSONL
+（0600，可轮转）。
+
+应用启动且 Landlock 关闭时，会调用 `prepare_all_accounts()` 统一收紧所有存量
+账号根、`working/`、`media/`、`memory/`、`plugins/`、`chats/`、`sessions/`、
+`logs/` 等目录，避免历史文件继续被跨账号读取。
+
+#### 2. 自己的 PostgreSQL 与外部数据源
+
+- 每个账号有独立 PG 角色和数据库，角色只拥有自己库内的 DML/DDL 权限；通过
+  `outputs/` 下的 UNIX socket 代理连接，`psql`/psycopg2/pandas 无需改代码，
+  但无法跨库、无法使用应用超级用户，`SET ROLE`、`pg_read_file`、`COPY PROGRAM`
+  等路径均被拒绝；
+- 第三方 API/数据库统一走 `scripts/huizhi_gateway.py`。数据源与 HTTP 白名单放在
+  `SECRET_DIR/sandbox-external-sources.json`（必须是 0600，否则拒绝加载），
+  支持按账号授权（`allow_all` / `allowed_users`）、HTTP 主机白名单和只读 SQL
+  （显式配置后才放开写）；
+- 普通用户 shell 禁止 heredoc、`python -c`、`psql -c` 等内联代码，要求把代码写到
+  `scripts/<name>.py` 再执行；文件工具只允许写 `outputs/`、`scripts/`
+  （`AGENTS.md`、`SOUL.md`、`PROFILE.md` 除外），根目录、`upload/`、`media/`
+  一律拒绝；
+- 系统提示词同步增加工作区布局、沙箱和审批边界说明：**审批同意也不能绕过沙箱**。
+
+管理员专属的主机级工具保持收口：`browser`（浏览器自动化）与
+`desktop_screenshot` 对普通用户直接返回「仅管理员可用」。
+
+#### 3. 版本戳与多服务器对比
+
+打包脚本会生成 `VERSION`、`app/VERSION`、`knowledge-service/VERSION`，字段包括：
+
+```text
+version=20261111.123000        # YYYYMMDD.HHMMSS，每次打包唯一
+semantic_version=2.1.0.post4
+knowledge_version=0.1.4
+build=...
+commit=...
+branch=...
+package=huizhi-code-update-20261111.tar.gz
+arch=arm64
+```
+
+`GET /api/version` 为公开接口，返回 `version`、`deployment_version`、
+`semantic_version`、`commit`、`branch`、`package` 等字段；更新脚本在升级前后打印
+版本。多台服务器直接访问该接口即可判断版本差。
+
+#### 4. ARM64 新服务器迁移（只迁程序，不迁数据）
+
+- `scripts/package_arm_migration.sh`：在当前 ARM 服务器打包主应用代码、知识服务
+  代码、`docker-compose*.yml`、`.env`、入口脚本；**不包含** `data/` 与
+  PostgreSQL 数据。基础镜像用 `docker save` 导出为未压缩 tar，目标服务器不需要
+  zstd；
+- `scripts/deploy_arm_migration.sh`：固定部署到
+  `/data/huizhi-assistant`、`/data/knowledge-service`、`/postgres-data`；
+  PostgreSQL 数据目录独立挂载，首次启动为空库并由 initdb 自动初始化；
+- 打包时会校验主应用 `QWENPAW_KNOWLEDGE_API_KEY` 与知识服务
+  `KNOWLEDGE_API_KEY` 一致，不一致直接中止，避免部署后知识空间报 401 并跳登录页；
+- 迁移包额外携带 LightRAG 的离线 tokenizer 缓存
+  （`knowledge-assets/lightrag/tiktoken_cache/`）。该文件位于 `data/` 下，按
+  「不迁数据」原则原本会被排除，但无外网服务器缺少它时 LightRAG 会反复重启。
+
+#### 5. 本轮其它修复
+
+- `/api/healthz` 改为公开探针，开启认证后健康检查不再返回 401；
+- `GET /api/config/user-timezone` 不再要求管理员，普通用户打开定时任务页不再
+  403；写操作仍仅管理员；
+- 知识空间首屏把健康检查与第一页文档改为并行请求；路径树接口去掉逐节点 N+1
+  查询和递归重复序列化；
+- 词元消耗、账号用量页面增加 `K/M/B` 单位说明；
+- 前端登录页「用户手册」链接指向随前端发布的
+  `docs/huizhi-user-manual.pdf`。
+
+#### 6. 验证
+
+- 定向单测（沙箱、版本戳、提示词、路径索引、时区接口）：
+  **395 passed, 1 skipped**；
+- 隔离验证器：**PASS=42 / FAIL=0**——A 不能读 B、media/upload 只读、
+  outputs/scripts 可写、网络/挂载/ptrace 被拒绝、跨库与应用超级用户被拒绝；
+- 前端 `npx tsc -b` 通过；全量前端失败集合与基线一致，无新增；
+- 全量单元、契约、P0 集成与基线对比无新增失败，详见
+  `docs/testing/系统级测试报告-20261109.md`。
+
 ## 12. 知识服务部署
 
 ### 12.1 容器信息
 
 - 容器名称：`huizhi-knowledge-api`
-- 端口映射：`18100:18100`
+- 网络：`network_mode: host`（与宿主机同一网络命名空间，端口直接开在宿主机上，见 9.55）
+- 端口：`18100`（宿主机端口就是它，不再有 `-p` 映射）
 - 数据目录：`/data`
 - 代码目录：`/opt/huizhi-knowledge/app/`
+- 数据库连接：`postgresql://huizhi_knowledge:...@127.0.0.1:15432/huizhi_knowledge`
 
 ### 12.2 模型配置
 
@@ -3097,7 +3478,7 @@ state 文件只装当前上下文窗口。只导出 state 会把长对话静默�
 对话模型：gemma-4-26B-A4B-it-MLX-4bit
 Embedding：Qwen3-Embedding-0.6B-8bit
 Reranker：Qwen3-Reranker-0.6B-4bit
-接口地址：http://host.docker.internal:9988/v1
+接口地址：http://127.0.0.1:9988/v1（容器与模型服务同机；在别的机器就写其局域网地址）
 API Key：thinker
 ```
 

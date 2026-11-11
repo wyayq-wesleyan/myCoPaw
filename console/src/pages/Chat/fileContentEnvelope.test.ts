@@ -108,4 +108,32 @@ describe("collapseInjectedFileContentParts", () => {
     const parts = [{ type: "text", text: "hello" }];
     expect(collapseInjectedFileContentParts(parts)).toEqual(parts);
   });
+
+  it("有图片项时隐藏后端注入的落盘路径提示", () => {
+    const parts = [
+      { type: "text", text: "描述一下" },
+      {
+        type: "image",
+        image_url: "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+      },
+      {
+        type: "text",
+        text: "用户上传文件，已经下载到 /Users/a/.qwenpaw/workspaces/default/media/x.jpg",
+      },
+    ];
+
+    const out = collapseInjectedFileContentParts(parts);
+
+    expect(out.map((part) => part.type)).toEqual(["text", "image"]);
+    expect(out[0].text).toBe("描述一下");
+  });
+
+  it("没有媒体项时保留路径提示作为兜底", () => {
+    const hint = "用户上传文件，已经下载到 /tmp/x.jpg";
+    const out = collapseInjectedFileContentParts([
+      { type: "text", text: hint },
+    ]);
+
+    expect(out).toEqual([{ type: "text", text: hint }]);
+  });
 });

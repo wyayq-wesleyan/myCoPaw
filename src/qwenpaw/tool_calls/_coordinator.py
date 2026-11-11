@@ -46,6 +46,9 @@ class _NextEvent:
     chunk: Any = None
 
 
+_MAX_POST_TERMINAL_CHUNKS = 64
+
+
 class ToolCoordinator:
     """Single owner of runtime state for every in-flight tool call.
 
@@ -644,12 +647,33 @@ class ToolCoordinator:
         tool_call: Any,
         entry: ToolCallEntry,
     ) -> None:
+        # Once a terminal item is seen we keep consuming until EOF instead of
+        # returning immediately. AgentScope's ``call_tool`` yields its final
+        # ToolResponse from a ``finally`` block, so abandoning the generator at
+        # the terminal yield makes its cleanup raise
+        # "async generator ignored GeneratorExit". The cap only guards a tool
+        # that keeps producing after being cancelled.
+        terminal = False
+        extra_after_terminal = 0
         try:
             async for item in next_handler(tool_call=tool_call):
+                if terminal:
+                    if extra_after_terminal >= _MAX_POST_TERMINAL_CHUNKS:
+                        logger.warning(
+                            "tool stream for %s/%s kept producing after a "
+                            "terminal chunk; stopped draining at %d items",
+                            entry.ctx.tool_name,
+                            entry.ctx.tool_call_id,
+                            extra_after_terminal,
+                        )
+                        break
+                    extra_after_terminal += 1
+                    continue
+
                 if isinstance(item, ToolResponse):
                     entry.final_response = item
-                    await entry.stream.close()
-                    return
+                    terminal = True
+                    continue
 
                 if isinstance(item, ToolChunk):
                     entry.final_response.append_chunk(item)
@@ -664,8 +688,7 @@ class ToolCoordinator:
                             if item.state == ToolResultState.ERROR
                             else "interrupted"
                         )
-                        await entry.stream.close()
-                        return
+                        terminal = True
 
         except asyncio.CancelledError:
             entry.final_response = ToolResponse(

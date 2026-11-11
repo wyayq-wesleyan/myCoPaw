@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import psycopg
 
 
-DATABASE_URL = "postgresql://huizhi_knowledge:huizhi_knowledge@host.docker.internal:15432/huizhi_knowledge"
+DATABASE_URL = "postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge"
 
 
 def now_utc() -> datetime:

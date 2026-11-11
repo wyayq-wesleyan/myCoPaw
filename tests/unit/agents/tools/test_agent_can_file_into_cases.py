@@ -165,3 +165,133 @@ class TestGrantedPathListing:
         """``None`` 表示拒绝；空列表会被误读成「不过滤」。"""
         store._grants = []
         assert ps.granted_path_nodes("admin") is None
+
+
+class _TreeNode:
+    def __init__(self, node_id: str, name: str, *, is_root=False):
+        self.id = node_id
+        self.name = name
+        self.is_root = is_root
+        self.children: list[_TreeNode] = []
+
+
+class TestCreatingAMissingKnowledgeFolder:
+    """Users expect a named knowledge folder to exist after the upload."""
+
+    def _install_tree(self, monkeypatch):
+        root = _TreeNode("root-1", "默认", is_root=True)
+        created: list[tuple[str, str | None]] = []
+        bound: list[tuple[str, str]] = []
+
+        def list_tree(_owner):
+            return [root]
+
+        def create_path(_owner, name, *, parent_id=None):
+            node = _TreeNode(f"id-{name}", name)
+            if parent_id is None:
+                root.children.append(node)
+            else:
+                stack = [root]
+                while stack:
+                    current = stack.pop()
+                    if current.id == parent_id:
+                        current.children.append(node)
+                        break
+                    stack.extend(current.children)
+            created.append((name, parent_id))
+            return node.id
+
+        import qwenpaw.platform_store.paths as real
+
+        monkeypatch.setattr(real, "ensure_root_path", lambda _owner: "root-1")
+        monkeypatch.setattr(real, "list_path_tree", list_tree)
+        monkeypatch.setattr(real, "create_path", create_path)
+        monkeypatch.setattr(
+            real,
+            "bind_agent",
+            lambda agent_id, path_id: bound.append((agent_id, path_id)),
+        )
+        return created, bound
+
+    def test_missing_folder_is_created_and_granted_to_the_agent(
+        self,
+        store,
+        monkeypatch,
+    ):
+        created, bound = self._install_tree(monkeypatch)
+
+        path_id = ps.resolve_or_create_writable_path(
+            "admin",
+            "反诈宣传知识库",
+        )
+
+        assert path_id == "id-反诈宣传知识库"
+        assert created == [("反诈宣传知识库", None)]
+        assert bound == [("agent-1", "id-反诈宣传知识库")]
+
+    def test_nested_folder_creates_each_missing_level(
+        self,
+        store,
+        monkeypatch,
+    ):
+        created, bound = self._install_tree(monkeypatch)
+
+        path_id = ps.resolve_or_create_writable_path(
+            "admin",
+            "反诈宣传/口径",
+        )
+
+        assert path_id == "id-口径"
+        assert created == [
+            ("反诈宣传", None),
+            ("口径", "id-反诈宣传"),
+        ]
+        assert bound == [("agent-1", "id-口径")]
+
+    def test_existing_folder_is_reused_without_creating(
+        self,
+        store,
+        monkeypatch,
+    ):
+        _created, bound = self._install_tree(monkeypatch)
+
+        path_id = ps.resolve_or_create_writable_path("admin", "案件A")
+
+        assert path_id == "case-A"
+        assert bound == []
+
+    def test_a_missing_explicit_uuid_is_not_created_as_a_folder(
+        self,
+        store,
+        monkeypatch,
+    ):
+        self._install_tree(monkeypatch)
+
+        with pytest.raises(ps.PathNotWritable):
+            ps.resolve_or_create_writable_path(
+                "admin",
+                "01234567-89ab-cdef-0123-456789abcdef",
+            )
+
+    def test_no_grants_still_allows_creating_an_owned_folder(
+        self,
+        store,
+        monkeypatch,
+    ):
+        store._grants = []
+        self._install_tree(monkeypatch)
+
+        path_id = ps.resolve_or_create_writable_path("admin", "新知识库")
+
+        assert path_id == "id-新知识库"
+
+    def test_unknown_agent_identity_cannot_create(
+        self,
+        store,
+        monkeypatch,
+    ):
+        self._install_tree(monkeypatch)
+        monkeypatch.setattr(ps, "current_agent_id", lambda: "")
+
+        with pytest.raises(ps.PathNotWritable):
+            ps.resolve_or_create_writable_path("admin", "新知识库")

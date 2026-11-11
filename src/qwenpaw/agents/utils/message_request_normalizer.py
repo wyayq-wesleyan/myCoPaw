@@ -180,11 +180,44 @@ def _is_document_block(block: Any) -> bool:
     return False
 
 
+def _is_empty_media_block(block: Any) -> bool:
+    """Return True for a media block whose base64 payload is empty.
+
+    A zero-length payload is serialized as ``data:<mime>;base64,`` — an empty
+    data URI every provider rejects (OpenAI: "Image data cannot be empty").
+    Such a block carries no information and must be dropped before formatting.
+    URL sources are left alone: emptiness cannot be known without fetching.
+    """
+    if not _is_media_block(block):
+        return False
+    source = (
+        block.get("source")
+        if isinstance(block, dict)
+        else getattr(block, "source", None)
+    )
+    if source is None:
+        return False
+    stype = (
+        source.get("type")
+        if isinstance(source, dict)
+        else getattr(source, "type", None)
+    )
+    if stype != "base64":
+        return False
+    data = (
+        source.get("data")
+        if isinstance(source, dict)
+        else getattr(source, "data", None)
+    )
+    return not data
+
+
 def _strip_media_blocks_in_place(
     msgs: list[Msg],
     *,
     document_only: bool = False,
     tool_result_only: bool = False,
+    empty_only: bool = False,
 ) -> int:
     """Strip media blocks from copied messages only.
 
@@ -195,9 +228,14 @@ def _strip_media_blocks_in_place(
     OpenAI-compatible endpoints, so stripping them would remove usable
     context. ``tool_result_only`` restricts stripping to blocks nested inside
     tool results, so a user-supplied document keeps its upstream formatting
-    path.
+    path. ``empty_only`` strips only media blocks with a zero-length payload.
     """
-    should_strip = _is_document_block if document_only else _is_media_block
+    if empty_only:
+        should_strip = _is_empty_media_block
+    elif document_only:
+        should_strip = _is_document_block
+    else:
+        should_strip = _is_media_block
     total_stripped = 0
 
     for msg in msgs:
@@ -231,14 +269,18 @@ def _strip_media_blocks_in_place(
                 stripped_count = original_len - len(filtered)
                 total_stripped += stripped_count
                 stripped_this_message += stripped_count
-                if isinstance(block, dict):
-                    block["output"] = (
+                if stripped_count:
+                    replacement: Any = (
                         filtered if filtered else MEDIA_UNSUPPORTED_PLACEHOLDER
                     )
                 else:
-                    block.output = (
-                        filtered if filtered else MEDIA_UNSUPPORTED_PLACEHOLDER
-                    )
+                    # Nothing was stripped: leave an already-empty tool result
+                    # empty instead of claiming media was removed from it.
+                    replacement = output
+                if isinstance(block, dict):
+                    block["output"] = replacement
+                else:
+                    block.output = replacement
 
             new_content.append(block)
 
@@ -319,6 +361,9 @@ def normalize_messages_for_model_request(
     _clean_provider_specific_fields(normalized, target_family)
     if target_family == "anthropic":
         _strip_unsigned_thinking_for_anthropic(normalized)
+    # Empty base64 media serializes to ``data:<mime>;base64,`` and is rejected
+    # by every provider. No endpoint accepts it, so drop it before branching.
+    _strip_media_blocks_in_place(normalized, empty_only=True)
     if target_family == "openai":
         # OpenAI-compatible Chat Completions servers (vLLM, DeepSeek,
         # DashScope, …) reject ``file`` content parts — that shape belongs to

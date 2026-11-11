@@ -4,7 +4,7 @@ import logging
 import platform
 import re
 from datetime import datetime, timezone
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -526,14 +526,102 @@ def clean_display_text(text: str, role: str) -> str:
 
 
 # pylint: disable=too-many-branches,too-many-statements, too-many-nested-blocks
+
+# 服务历史时单个 tool_result 的上限。截图、send_file 的产物会以 base64
+# 持久化在 tool_result 里，原样返回会让一次历史响应到 10MB+，在慢链路上
+# 必然撞上控制台 30 秒超时（GH-8228）。只在“读历史”路径开启，流式路径
+# 必须保持原样（默认 False）。
+_MAX_TOOL_OUTPUT_CHARS = 64 * 1024
+# 超过这个长度的内联 base64 直接换成一个文本占位符：控制台本来就不会渲染
+# 历史里的大 base64（shared/utils.ts 的 LARGE_BASE64_CHARS），所以丢掉它
+# 既能让响应变小，又不影响界面。
+_BASE64_KEEP_CHARS = 4 * 1024
+# 递归上限：MCP 工具可能返回深嵌套结构，不能让截断本身变成递归炸弹。
+_MAX_CAP_DEPTH = 8
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    """Slice *text* at *limit* and append a marker that keeps the size honest."""
+    if len(text) <= limit:
+        return text
+    return text[: max(limit, 0)] + f" [output truncated: {len(text)} chars]"
+
+
+def _base64_payload(block: dict) -> str:
+    """Return the inline base64 payload of a content block (empty if none)."""
+    source = block.get("source")
+    if isinstance(source, dict) and source.get("type") == "base64":
+        return str(source.get("data") or "")
+    if block.get("type") == "base64":
+        return str(block.get("data") or "")
+    return ""
+
+
+def _cap_value(value: Any, budget: list[int], depth: int = 0) -> Any:
+    """Bound a JSON-shaped value, spending at most ``budget[0]`` characters.
+
+    Strings are sliced (never the serialised JSON, which would cut a string
+    literal and yield invalid JSON). Oversized inline base64 blocks are
+    replaced structurally. The budget is shared across the whole value so a
+    dict with many large fields cannot still produce a huge response.
+    """
+    if isinstance(value, str):
+        room = budget[0]
+        budget[0] -= len(value)
+        return _truncate_text(value, room)
+    if depth >= _MAX_CAP_DEPTH:
+        return "[output truncated: nesting too deep]"
+    if isinstance(value, list):
+        return [_cap_value(item, budget, depth + 1) for item in value]
+    if isinstance(value, dict):
+        payload = _base64_payload(value)
+        if len(payload) > _BASE64_KEEP_CHARS:
+            name = value.get("name") or "media"
+            placeholder = {
+                "type": "text",
+                "text": f"[{name}: base64 omitted from history, {len(payload)} chars]",
+            }
+            budget[0] -= len(placeholder["text"])
+            return placeholder
+        return {
+            key: _cap_value(item, budget, depth + 1)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _cap_tool_output(
+    output: Optional[Union[str, list, dict]],
+    max_chars: int,
+) -> Optional[Union[str, list, dict]]:
+    """Bound one served ``tool_result`` output without breaking JSON.
+
+    ``ToolResultBlock.output`` is ``str | list[TextBlock | DataBlock]`` in
+    AgentScope, but local tools also emit dicts, so all three shapes are
+    handled (upstream only capped str/list).
+    """
+    if output is None or isinstance(output, str) and len(output) <= max_chars:
+        return output
+    if isinstance(output, str):
+        return _truncate_text(output, max_chars)
+    if isinstance(output, (list, dict)):
+        return _cap_value(output, [max_chars])
+    return output
+
+
 def agentscope_msg_to_message(
     messages: Union[Msg, List[Msg]],
+    truncate_oversized_outputs: bool = False,
 ) -> List[Message]:
     """
     Convert AgentScope Msg(s) into one or more runtime Message objects.
 
     Args:
         messages: AgentScope message(s) from streaming.
+        truncate_oversized_outputs: When True, cap oversized ``tool_result``
+            outputs (files/screenshots persisted as base64) so a served
+            chat-history response stays transferable. Defaults to False so
+            the streaming path and other callers are byte-for-byte unchanged.
 
     Returns:
         List[Message]: One or more constructed runtime Message objects.
@@ -711,13 +799,11 @@ def agentscope_msg_to_message(
                 current_message.metadata = metadata
                 current_type = MessageType.PLUGIN_CALL_OUTPUT
 
-                if isinstance(block.get("output"), (dict, list)):
-                    output = json.dumps(
-                        block.get("output"),
-                        ensure_ascii=False,
-                    )
-                else:
-                    output = block.get("output")
+                output = block.get("output")
+                if truncate_oversized_outputs:
+                    output = _cap_tool_output(output, _MAX_TOOL_OUTPUT_CHARS)
+                if isinstance(output, (dict, list)):
+                    output = json.dumps(output, ensure_ascii=False)
 
                 output_data = FunctionCallOutput(
                     call_id=block.get("id"),

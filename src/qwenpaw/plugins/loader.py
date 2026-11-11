@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -177,6 +178,25 @@ def _ensure_plugin_site_on_path() -> None:
     if site_dir not in sys.path:
         sys.path.insert(0, site_dir)
     importlib.invalidate_caches()
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """SIGKILL *proc* and, on POSIX, everything it started.
+
+    ``Popen.kill()`` signals only the direct child. Package managers spawn
+    their own children (compilers, build backends, unzippers), so without the
+    process group those would survive a timeout and keep consuming CPU.
+    """
+    if os.name != "nt" and hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except OSError:  # pragma: no cover - already gone
+        logger.debug("Process %s was already gone", proc.pid)
 
 
 class PluginLoader:
@@ -827,6 +847,10 @@ class PluginLoader:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            # Own session on POSIX so a timeout can signal the whole tree:
+            # pip/uv spawn compilers and build backends that would otherwise
+            # keep running (and keep eating CPU) after the parent is gone.
+            start_new_session=os.name != "nt",
         ) as proc:
 
             def _read_output() -> None:
@@ -842,7 +866,7 @@ class PluginLoader:
             try:
                 returncode = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                _kill_process_tree(proc)
                 proc.wait()
                 reader.join(timeout=2)
                 raise

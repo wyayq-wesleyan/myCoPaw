@@ -804,7 +804,10 @@ async def put_agents_llm_routing(
     description="Return the configured user IANA timezone",
 )
 async def get_user_timezone(request: Request) -> dict:
-    _require_admin(request)
+    # Reading the timezone is safe for any authenticated account: the cron page
+    # needs it to render schedules, and it reveals no credentials or other
+    # accounts' data. Only writes stay administrator-only.
+    del request
     config = load_config()
     return {"timezone": config.user_timezone}
 

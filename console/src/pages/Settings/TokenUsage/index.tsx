@@ -141,6 +141,7 @@ function TokenUsagePage() {
             }
           />
         </div>
+        <div className={styles.unitHint}>{t("tokenUsage.compactUnits")}</div>
 
         {aggregatedData && (
           <SummaryCards

@@ -345,6 +345,80 @@ class ConversationScopeContributor(SyncPromptContributor):
         )
 
 
+class WorkspaceLayoutContributor(SyncPromptContributor):
+    """Force generated artifacts and helper code into fixed subdirectories."""
+
+    name = "workspace_layout"
+    priority = 83
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        workspace = str(getattr(ctx, "workspace_dir", "") or "").rstrip("/\\")
+        if not workspace:
+            return None
+        language = (getattr(ctx, "extras", {}) or {}).get("language", "en")
+        if language == "zh":
+            return (
+                "# 工作区文件规范（强制）\n\n"
+                f"当前工作区：`{workspace}`。所有新文件必须按下面两个目录存放，"
+                "没有例外：\n\n"
+                "1. `outputs/`：所有交付给用户的生成结果，包括报告、Word、Excel、"
+                "PDF、PPT、CSV、图片、图表、压缩包和其他导出文件。\n"
+                "2. `scripts/`：为完成任务生成的中间代码和脚本，包括 Python、"
+                "SQL、Shell、JavaScript 等；需要复用时也放在这里。\n"
+                "3. `outputs/tmp/`：临时中间文件，任务结束前清理。\n\n"
+                "强制规则：\n"
+                "- 禁止在工作区根目录新建任何文件，包括 `gen_*.js`、"
+                "`generate_*.js`、临时 `.py`/`.sql`/`.sh`、CSV、文档和图片。\n"
+                "- 禁止写入 `upload/`、`media/`、`chats.json`、`credentials.yaml` "
+                "或工作区里的配置/日志文件。\n"
+                "- 生成结果统一命名为 `outputs/<有意义的文件名>`；中间代码统一为 "
+                "`scripts/<有意义的文件名>`。\n"
+                "- 不要为每个小步骤新建脚本；优先复用一个脚本并在 `scripts/` "
+                "下迭代。\n"
+                "- 不要在 `execute_shell_command` 里用 heredoc（如 "
+                "`python3 - <<'PY'`）、`python -c` 或 `psql -c` 执行多行代码；"
+                "先用 `write_file` 写到 `scripts/<name>.py`，再执行 "
+                "`python3 scripts/<name>.py`。\n"
+                "- 调用 `send_file_to_user` 时只发送 `outputs/` 下的最终文件；"
+                "除非用户明确要求，不要发送 `scripts/` 里的代码。\n"
+                "- 如果发现自己已经在根目录生成了文件，立即移动到 `outputs/`"
+                "（结果）或 `scripts/`（代码），并在回复中报告最终路径。\n"
+                "- 这条规则优先于任何“临时放一下”“先写这里”的考虑；即使工具"
+                "允许写根目录，也不允许这样做。"
+            )
+        return (
+            "# Workspace Layout (mandatory)\n\n"
+            f"Workspace: `{workspace}`. Every new file must go into one of these "
+            "two directories — no exceptions:\n\n"
+            "1. `outputs/`: all user-facing results, including reports, Word, "
+            "Excel, PDF, PowerPoint, CSV, images, charts, archives and exports.\n"
+            "2. `scripts/`: intermediate code and scripts used to produce the "
+            "result, including Python, SQL, Shell and JavaScript.\n"
+            "3. `outputs/tmp/`: temporary intermediate files; clean them up "
+            "before finishing.\n\n"
+            "Mandatory rules:\n"
+            "- Never create files in the workspace root, including `gen_*.js`, "
+            "`generate_*.js`, temporary `.py`/`.sql`/`.sh`, CSV, documents or "
+            "images.\n"
+            "- Never write into `upload/`, `media/`, `chats.json`, "
+            "`credentials.yaml`, or workspace configuration/log files.\n"
+            "- Name results `outputs/<meaningful-name>` and helper code "
+            "`scripts/<meaningful-name>`.\n"
+            "- Do not create a new script for every small step; reuse one script "
+            "under `scripts/` and iterate on it.\n"
+            "- Do not run multi-line code through a shell heredoc "
+            "(`python3 - <<'PY'`), `python -c`, or `psql -c`; write it to "
+            "`scripts/<name>.py` with `write_file`, then run "
+            "`python3 scripts/<name>.py`.\n"
+            "- Call `send_file_to_user` only with final files under `outputs/`; "
+            "do not send `scripts/` code unless the user explicitly asks for it.\n"
+            "- If you already created a root-level file, move it immediately to "
+            "`outputs/` (result) or `scripts/` (code) and report the final path.\n"
+            "- This rule overrides convenience or “temporary” placement; even if "
+            "a tool allows writing to the root, you must not do so."
+        )
+
+
 class FileDeliveryContributor(SyncPromptContributor):
     """Require user-facing delivery for files created during a chat."""
 
@@ -506,13 +580,20 @@ class KnowledgeRetrievalContributor(SyncPromptContributor):
             "ambiguous or unfamiliar to you."
             "\n\n## Saving an Uploaded File\n\n"
             "When the user asks to keep an uploaded document for later (存到知识空间 / "
-            "上传到知识库 / 以后能检索), use:\n\n"
-            "### create_knowledge_space\n\n"
-            "Create a named space. If one with the same name already exists the "
-            "tool reuses it, so calling it is safe.\n\n"
-            "### upload_knowledge_document\n\n"
-            "Upload one file into a space, or into the user's default space when "
-            "`space_name` is empty. The attachment file name is enough.\n\n"
+            "上传到知识库 / 以后能检索), use `upload_knowledge_document`.\n\n"
+            "- If the user names a knowledge-space folder/path (例如"
+            "「反诈宣传知识库」), pass it as `path`. A missing folder is created "
+            "automatically and granted to the current agent, so the document "
+            "appears under that folder in the console rather than in the public "
+            "area.\n"
+            "- If the user does not name a folder, leave `path` empty; the "
+            "document goes to the default/public area.\n"
+            "- Do not guess a folder when the request is ambiguous. Ask the user "
+            "to confirm the target folder instead.\n"
+            "- An existing folder is reused; do not create a duplicate name.\n"
+            "- `create_knowledge_space` is only for a named service-level space. "
+            "It does not replace the console folder; use `path` for what the user "
+            "sees in the knowledge-space tree.\n\n"
             "**IMPORTANT:**\n"
             "- Only upload when the user asks you to keep the file. Reading a file "
             "to answer a question requires no upload.\n"
@@ -617,6 +698,267 @@ class DataAnalysisContributor(SyncPromptContributor):
         )
 
 
+class UploadInboxContributor(SyncPromptContributor):
+    """Explain the shared `upload/` inbox and how to inspect large inputs."""
+
+    name = "upload_inbox"
+    priority = 87
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        language = (getattr(ctx, "extras", {}) or {}).get("language", "en")
+        workspace_dir = str(getattr(ctx, "workspace_dir", "") or "").rstrip(
+            "/\\",
+        )
+        # Relative paths resolve against the turn's project directory, which
+        # may differ from the agent workspace. Give the absolute inbox path so
+        # the model does not have to guess.
+        inbox_path = f"{workspace_dir}/upload" if workspace_dir else "upload/"
+        if language == "zh":
+            return (
+                "# 上传目录 upload/\n\n"
+                "用户通过文件页面上传的文件统一保存在当前工作区的 `upload/` "
+                f"目录（绝对路径：`{inbox_path}`，文件 → 工作区 → upload）。"
+                "zip、tar、tar.gz、tgz、gz "
+                "压缩包上传后由服务器自动解压到 `upload/` 下的同名目录；解压成功后"
+                "原压缩包会自动删除，解压失败则保留；7z、rar 等格式不会自动解压。"
+                "\n\n"
+                "分析上传内容时：\n"
+                "- 先列出目录结构、统计文件数量与类型，再抽样读取；不要试图一次"
+                "读完整棵树或整个大文件。\n"
+                "- 单文件读取有大小上限。大文件用脚本按块或按行处理，或先读取"
+                "表头、样例行和统计信息。\n"
+                "- 需要查找内容时优先在服务端搜索（grep 或脚本），只把命中的"
+                "少量结果带回上下文。\n"
+                "- 解压失败、目录或文件不存在时，如实告知用户，不要猜测内容。\n"
+                "- `upload/` 只属于当前账号；不要尝试访问其他账号的路径。\n\n"
+                "如果用户明确要求清理或删除上传的文件，使用 "
+                "`delete_upload_files`：\n"
+                "- 先用 `dry_run=true`（默认）列出将删除的项与释放空间；\n"
+                "- 范围确认后再用 `dry_run=false` 执行；\n"
+                "- 删除非空目录需同时传 `recursive=true`；\n"
+                "- 该工具只能删除当前账号 `upload/` 下的内容，不要声称删除了"
+                "其他路径；\n"
+                "- 执行后如实报告删除数量、释放空间和失败项。"
+            )
+        return (
+            "# Upload inbox `upload/`\n\n"
+            "Files uploaded through the Files page all live under the current "
+            "workspace's `upload/` directory (absolute path: "
+            f"`{inbox_path}`; Files → Workspace → upload). "
+            "zip, tar, tar.gz, tgz, and gz archives are extracted by the server "
+            "into a sibling directory with the same name; a successfully "
+            "extracted archive is deleted, while a failed one is kept. 7z, "
+            "rar, and other formats are not extracted.\n\n"
+            "When analyzing uploaded content:\n"
+            "- List the tree and summarize file counts and types first, then "
+            "sample; never try to read the whole tree or an entire large file "
+            "in one go.\n"
+            "- Single-file reads have a size limit. Process large files with "
+            "scripts in chunks or line ranges, or read headers, sample rows, "
+            "and statistics first.\n"
+            "- For lookups, search on the server (grep or a script) and bring "
+            "back only the few matching results.\n"
+            "- If extraction failed or a directory/file is missing, tell the "
+            "user plainly; do not guess its contents.\n"
+            "- `upload/` belongs to the current account; never attempt to "
+            "access another account's paths.\n\n"
+            "When the user explicitly asks to clean up or delete uploaded "
+            "files, use `delete_upload_files`:\n"
+            "- Start with `dry_run=true` (the default) to list what would be "
+            "deleted and how much space would be freed;\n"
+            "- Run again with `dry_run=false` after the scope is confirmed;\n"
+            "- Deleting a non-empty directory also needs `recursive=true`;\n"
+            "- The tool only reaches this account's `upload/`; never claim to "
+            "have deleted anything else;\n"
+            "- Report the real deleted count, freed space and failures."
+        )
+
+
+class ToolHardConstraintsContributor(SyncPromptContributor):
+    """State the hard tool limits that approval cannot override."""
+
+    name = "tool_hard_constraints"
+    priority = 87
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        language = (getattr(ctx, "extras", {}) or {}).get("language", "en")
+        if language == "zh":
+            return (
+                "# 工具硬约束（审批不能绕过）\n\n"
+                "下面这些限制是执行层强制的，**用户点同意也不会放行**。不要为了这些操作去触发审批，"
+                "也不要重复尝试同一条被拒绝的命令：\n"
+                "- 不读其他账号、`working.secret`、应用源码、`/proc`、系统密钥；\n"
+                "- 不写工作区根目录、`upload/`、`media/`；结果只写 `outputs/`，代码只写 `scripts/`；\n"
+                "- 不直连网络、数据库 TCP 端口、知识服务端口或其他宿主端口；"
+                "但这不是禁止外部数据，允许的方式见下。\n"
+                "- 不起常驻服务、不监听端口、不后台 `nohup`。\n\n"
+                "允许且推荐的数据访问方式：\n"
+                "- 自己的 PostgreSQL：直接用标准 `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE` "
+                "环境变量 `psycopg2.connect()` 或 `psql`，不要自己写 host/port；\n"
+                "- 第三方 PostgreSQL/MySQL/Oracle/Hive/HTTP：不要直连端口，"
+                "用 `scripts/huizhi_gateway.py`：\n"
+                "  `import sys, os; sys.path.insert(0, os.environ['HUIZHI_SCRIPTS_DIR']); "
+                "import huizhi_gateway`\n"
+                "  `huizhi_gateway.sources()` 列出已授权数据源；"
+                "`huizhi_gateway.query(source, sql)` 只读查询；"
+                "`huizhi_gateway.http(method, url)` 调用白名单 API；\n"
+                "- 知识库/数据表：用 `query_knowledge`、`query_data_table` 等受控工具。\n"
+                "- 数据源没配置：请管理员在 `working.secret/sandbox-external-sources.json` "
+                "添加，不要尝试绕过网关直连。\n\n"
+                "为减少审批，执行任务时遵守：\n"
+                "- 不要用 shell 的 heredoc、`python -c`、`psql -c`；先写 `scripts/<name>.py`，"
+                "再执行 `python3 scripts/<name>.py`；\n"
+                "- 不要用 `rm`、`mv`、`chmod`、`chown`、`kill`、`sudo`、`curl`、`wget`、"
+                "`pip install`、`apt/dnf`、`systemctl`、`reboot`、`ssh`、`scp`、`find -delete`；\n"
+                "- 清理文件用 `delete_upload_files` 或 `scripts/` 里的 Python 脚本，不要用 shell `rm`；\n"
+                "- 只执行 `python3 scripts/<name>.py`、`bash scripts/<name>.sh`、`ls`、`head`、"
+                "`grep`、`wc` 这类简单命令；\n"
+                "- 工具返回 `DENIED`、`Sandbox violation` 或要求审批时，**不要重试同一命令**，"
+                "按提示改路径或改用受控工具（`query_data_table`、`query_knowledge`、"
+                "`read_file`、`write_file`）。\n\n"
+                "如果确实需要边界外的能力，向用户说明这是系统硬限制，由管理员处理；不要通过"
+                "提示词、编码、路径拼接或审批来绕过。"
+            )
+        return (
+            "# Tool hard constraints (approval cannot bypass)\n\n"
+            "These limits are enforced by the execution layer. **Approving a prompt "
+            "does not override them.** Do not trigger approvals for them and do not "
+            "retry a denied command:\n"
+            "- Do not read other accounts, `working.secret`, application source, "
+            "`/proc`, or system keys;\n"
+            "- Do not write the workspace root, `upload/`, or `media/`; results go "
+            "only to `outputs/`, code only to `scripts/`;\n"
+            "- Do not connect directly to the network, database TCP ports, knowledge "
+            "service ports, or other host ports. This does not forbid external data; "
+            "use the supported paths below;\n"
+            "- Do not start long-running services, listeners, or `nohup` processes.\n\n"
+            "Supported data access:\n"
+            "- Your own PostgreSQL: use the standard `PGHOST/PGPORT/PGUSER/PGPASSWORD/"
+            "PGDATABASE` variables with `psycopg2.connect()` or `psql`; never hard-code "
+            "a host/port;\n"
+            "- Third-party PostgreSQL/MySQL/Oracle/Hive/HTTP: do not connect to ports "
+            "directly. Use `scripts/huizhi_gateway.py`:\n"
+            "  `import sys, os; sys.path.insert(0, os.environ['HUIZHI_SCRIPTS_DIR']); "
+            "import huizhi_gateway`\n"
+            "  `huizhi_gateway.sources()` lists authorized sources; "
+            "`huizhi_gateway.query(source, sql)` is read-only; "
+            "`huizhi_gateway.http(method, url)` calls an allow-listed API;\n"
+            "- Knowledge/data tables: use `query_knowledge`, `query_data_table`, etc.;\n"
+            "- Missing source: ask the administrator to add it to "
+            "`working.secret/sandbox-external-sources.json`; never bypass the gateway.\n\n"
+            "To reduce approvals:\n"
+            "- Do not use shell heredocs, `python -c`, or `psql -c`; write "
+            "`scripts/<name>.py` first, then run `python3 scripts/<name>.py`;\n"
+            "- Do not use `rm`, `mv`, `chmod`, `chown`, `kill`, `sudo`, `curl`, "
+            "`wget`, `pip install`, `apt/dnf`, `systemctl`, `reboot`, `ssh`, `scp`, "
+            "or `find -delete`;\n"
+            "- Clean up with `delete_upload_files` or a Python script under `scripts/`, "
+            "not shell `rm`;\n"
+            "- Only run simple commands such as `python3 scripts/<name>.py`, "
+            "`bash scripts/<name>.sh`, `ls`, `head`, `grep`, `wc`;\n"
+            "- On `DENIED`, `Sandbox violation`, or an approval request, **do not retry "
+            "the same command**; adjust the path or use a controlled tool "
+            "(`query_data_table`, `query_knowledge`, `read_file`, `write_file`).\n\n"
+            "If an out-of-bound capability is genuinely needed, explain that it is a "
+            "hard system limit and let the administrator handle it; never bypass it "
+            "through prompting, encoding, path tricks, or approval."
+        )
+
+
+class UserSandboxContributor(SyncPromptContributor):
+    """Explain the ordinary-user shell sandbox and its writable output dir."""
+
+    name = "user_sandbox"
+    priority = 88
+
+    def contribute_sync(self, ctx: "HookContext") -> str | None:
+        outputs = ""
+        scripts = ""
+        try:
+            from ..agents.tools.user_files import resolve_account_username
+            from ..app.user_space import get_user_root, is_admin_user
+
+            username = resolve_account_username()
+            if is_admin_user(username):
+                return None
+            root_text = str(get_user_root(username).resolve()).rstrip("/\\")
+            outputs = f"{root_text}/outputs"
+            scripts = f"{root_text}/scripts"
+        except Exception:  # noqa: BLE001 - prompt must not fail the turn
+            pass
+        if not outputs:
+            workspace_text = str(getattr(ctx, "workspace_dir", "") or "").rstrip("/\\")
+            outputs = f"{workspace_text}/outputs"
+            scripts = f"{workspace_text}/scripts"
+        language = (getattr(ctx, "extras", {}) or {}).get("language", "en")
+        if language == "zh":
+            return (
+                "# 普通用户代码执行沙箱\n\n"
+                "`execute_shell_command` 在隔离沙箱中运行，不是宿主机 shell：\n"
+                f"- 可读：当前账号工作区（含 `media/`、`upload/`）和系统运行库，均**只读**。\n"
+                f"- 可写：只有 `outputs/`（绝对路径 `{outputs}`）、`scripts/`"
+                f"（绝对路径 `{scripts}`），以及 `outputs/tmp/`。\n"
+                "- 无直接网络：不能访问互联网、局域网、数据库 TCP 端口、知识服务端口；"
+                "自己的 PG 和外部数据用下面的受控方式。\n"
+                "- 看不到：`/app`、`/workspace`、`working.secret`、其他账号目录、`/proc`。\n\n"
+                "生成结果必须写到 `outputs/`，例如 "
+                f"`{outputs}/result.csv`；中间代码写到 `scripts/`；不要尝试修改 "
+                "`upload/`、`media/` 或工作区根目录。\n\n"
+                "数据库：\n"
+                "- 自己的 PostgreSQL 库已经通过标准 `PGHOST/PGUSER/PGPASSWORD/PGDATABASE` "
+                "环境变量接好，可以直接 `psycopg2.connect()` / `psql`，在自己的库内可读写；"
+                "但不能访问平台库或其他账号的库。\n"
+                "- 第三方数据库/API：不要直连网络。使用 `scripts/huizhi_gateway.py`：\n"
+                "  `import sys, os; sys.path.insert(0, os.environ['HUIZHI_SCRIPTS_DIR']); "
+                "import huizhi_gateway`\n"
+                "  `huizhi_gateway.sources()` 列出管理员配置的数据源；"
+                "`query(source, sql)` 只读查询；`http(method, url)` 调用白名单 API。\n"
+                "- 需要知识库时使用 `query_knowledge` 等受控工具。"
+            )
+        return (
+            "# Ordinary-user shell sandbox\n\n"
+            "`execute_shell_command` runs inside an isolated sandbox, not on the host:\n"
+            "- Readable: this account's workspace (including `media/` and `upload/`) "
+            "and the system runtime, all **read-only**.\n"
+            f"- Writable: `outputs/` (absolute path `{outputs}`), `scripts/` "
+            f"(absolute path `{scripts}`), and `outputs/tmp/`.\n"
+            "- No direct network: no internet, LAN, database TCP ports, knowledge "
+            "service ports, or host ports. This does not forbid external data; "
+            "use the supported paths below.\n"
+            "- Invisible: `/app`, `/workspace`, `working.secret`, other accounts, `/proc`.\n\n"
+            "Supported data access:\n"
+            "- Your own PostgreSQL: use the standard `PGHOST/PGPORT/PGUSER/PGPASSWORD/"
+            "PGDATABASE` variables with `psycopg2.connect()` or `psql`; do not hard-code "
+            "a host/port.\n"
+            "- Third-party PostgreSQL/MySQL/Oracle/Hive/HTTP: do not connect to ports "
+            "directly. Use `scripts/huizhi_gateway.py`:\n"
+            "  `import sys, os; sys.path.insert(0, os.environ['HUIZHI_SCRIPTS_DIR']); "
+            "import huizhi_gateway`\n"
+            "  `huizhi_gateway.sources()` lists authorized sources; "
+            "`huizhi_gateway.query(source, sql)` is read-only; "
+            "`huizhi_gateway.http(method, url)` calls an allow-listed API.\n"
+            "- Knowledge/data tables: use `query_knowledge`, `query_data_table`, etc.\n"
+            "- If a source is missing, ask the administrator to add it to "
+            "`working.secret/sandbox-external-sources.json`; never bypass the gateway.\n\n"
+            f"Write results under `outputs/`, for example `{outputs}/result.csv`; "
+            "write intermediate code under `scripts/`; do not modify `upload/`, "
+            "`media/`, or the workspace root.\n\n"
+            "Database:\n"
+            "- Your own PostgreSQL database is wired through the standard "
+            "`PGHOST/PGUSER/PGPASSWORD/PGDATABASE` variables: `psycopg2.connect()` "
+            "or `psql` works, with read/write inside your own database only. "
+            "Platform and other accounts' databases are not reachable.\n"
+            "- Third-party databases/APIs: do not connect to the network directly. "
+            "Use `scripts/huizhi_gateway.py`:\n"
+            "  `import sys, os; sys.path.insert(0, os.environ['HUIZHI_SCRIPTS_DIR']); "
+            "import huizhi_gateway`\n"
+            "  `huizhi_gateway.sources()` lists administrator-configured sources; "
+            "`query(source, sql)` is read-only; `http(method, url)` calls an "
+            "allow-listed API.\n"
+            "- Use `query_knowledge` for knowledge retrieval."
+        )
+
+
 class EnvContextContributor(SyncPromptContributor):
     """Append the environment context block (time / session / OS)."""
 
@@ -651,11 +993,15 @@ _ALL_CONTRIBUTORS = (
     WorkspacePromptFilesContributor,
     MultimodalHintContributor,
     ConversationScopeContributor,
+    WorkspaceLayoutContributor,
+    ToolHardConstraintsContributor,
     FileDeliveryContributor,
     CodingModeContributor,
     ScrollContextContributor,
     KnowledgeRetrievalContributor,
     DataAnalysisContributor,
+    UploadInboxContributor,
+    UserSandboxContributor,
     DriverPolicyHintContributor,
     EnvContextContributor,
 )
@@ -678,11 +1024,15 @@ __all__ = [
     "WorkspacePromptFilesContributor",
     "MultimodalHintContributor",
     "ConversationScopeContributor",
+    "WorkspaceLayoutContributor",
+    "ToolHardConstraintsContributor",
     "FileDeliveryContributor",
     "CodingModeContributor",
     "ScrollContextContributor",
     "KnowledgeRetrievalContributor",
     "DataAnalysisContributor",
+    "UploadInboxContributor",
+    "UserSandboxContributor",
     "DriverPolicyHintContributor",
     "EnvContextContributor",
     "build_default_prompt_manager",

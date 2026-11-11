@@ -174,6 +174,12 @@ async def desktop_screenshot(
             JSON with "ok", "path" (saved file path), and optional "message"
             or "error".
     """
+    from .admin_guard import admin_denial, denial_chunk
+
+    denial = admin_denial("桌面截图")
+    if denial:
+        return denial_chunk(denial)
+
     path = (path or "").strip()
     if not path:
         base_dir = get_current_workspace_dir() or WORKING_DIR

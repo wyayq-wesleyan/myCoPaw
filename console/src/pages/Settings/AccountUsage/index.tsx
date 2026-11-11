@@ -229,6 +229,7 @@ function AccountUsagePage() {
             ]}
           />
         </div>
+        <div className={styles.unitHint}>{t("tokenUsage.compactUnits")}</div>
 
         <div className={styles.summaryCards}>
           <div className={styles.card}>

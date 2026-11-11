@@ -505,6 +505,53 @@ models 在 extra_models 前），所以用户看到的预选模型就是实际�
 
 ---
 
+### 2.16 容器统一改为 host 网络（**需要升级动作**）
+
+**背景（2026-10-19 线上故障）**：更新后知识服务起不来，`huizhi-knowledge-api` 一直
+不健康，日志刷 `connection to server at "172.17.0.1", port 15432 failed: Connection refused`。
+
+**原因**：知识服务容器在 docker bridge 网络里，而 `KNOWLEDGE_DATABASE_URL` 的默认值写的是
+`host.docker.internal:15432`。这个主机名在 **macOS 的 Docker Desktop 上是通的**（由 VM 转发，
+回环发布的端口也照样能连），所以本地开发从没暴露问题；到 Linux 上它解析成 docker0 网关
+`172.17.0.1`，而 PostgreSQL 只发布在 `127.0.0.1:15432`，从 bridge 容器经网关访问必然被拒。
+**同一份配置在两个平台语义不同**——这就是「本地测通、上线挂掉」的来源，不是偶发。
+
+**改动**：所有容器统一 `network_mode: host`（与宿主机同一网络命名空间，不使用 docker
+内部网络）：
+
+- 容器之间、容器与宿主机之间一律用 `127.0.0.1`，不再有 `host.docker.internal`；
+- `ports:` 映射全部删除：host 网络下**容器端口就是宿主机端口**，同网段其他机器直接可达；
+- LightRAG 从映射后的 `19621` 回到 `9621`；
+- PostgreSQL 保留 `15432`（不回到 5432），因为既有 DSN / 迁移脚本 / 文档 / 主应用的
+  `QWENPAW_DATA_TABLES_DB_PORT` 都指向它；容器内 `pg_isready`、`psql` 通过新增的
+  `PGPORT` 跟随同一取值（健康检查依赖它）；
+- PostgreSQL 的 `listen_addresses` 默认**只开回环**（同机容器用 `127.0.0.1:15432` 即可）。
+  要让同网段其他机器直连数据库，在 `knowledge-service/.env` 里设
+  `KNOWLEDGE_POSTGRES_BIND=0.0.0.0` 并在 `pg_hba.conf` 放行对应网段；默认不放开。
+- 平台库 / 分析库的 host 候选从 `["host.docker.internal", "127.0.0.1"]` 改为 `["127.0.0.1"]`。
+
+**升级动作**（网络模式在容器创建时决定，`docker restart` 不会生效，必须 `--force-recreate`）：
+
+```bash
+cd knowledge-service
+docker compose --env-file .env -f docker-compose.postgres.yml up -d --force-recreate
+docker compose --env-file .env -f docker-compose.code-mount.amd64.yml up -d --no-build --force-recreate
+
+# 主应用侧（本项目 deploy/ 目录）
+docker compose --env-file .env -f docker-compose.code-mount.amd64.yml up -d --force-recreate
+```
+
+**同时要改的 `.env`**（旧值在 host 网络下都不再成立）：
+
+| 文件 | 项 | 应有的值 |
+| --- | --- | --- |
+| `knowledge-service/.env` | `KNOWLEDGE_DATABASE_URL` | `postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge`（或删掉该行用默认值） |
+| `knowledge-service/.env` | `LIGHTRAG_URL` | 留空（推荐的多租户图谱）；用旧共享图谱时 `http://127.0.0.1:9621` |
+| `knowledge-service/.env` | `KNOWLEDGE_GRAPH_DATABASE_URL` | 多租户图谱启用时也要改成 `...@127.0.0.1:15432/huizhi_knowledge_graph` |
+| `knowledge-service/.env` | `CHAT_BASE_URL` / `EMBEDDING_BASE_URL` / `PROVIDER_BASE_URL` | 模型服务同机写 `http://127.0.0.1:9988/v1`；在别的机器写它的局域网地址 |
+| `deploy/.env` | `QWENPAW_DATA_TABLES_DB_HOST` | `127.0.0.1` |
+| `deploy/.env` | `QWENPAW_KNOWLEDGE_URL` | `http://127.0.0.1:18100`（未配置则聊天里没有知识检索，且不报错） |
+
 ## 3. 升级步骤
 
 ### 3.0 前提
@@ -598,6 +645,9 @@ tar -xzf huizhi-code-update-YYYYMMDD.tar.gz -C <部署根目录>
 | 25 | 数据表跨路径不可越权 | 只挂载案件 A 的智能体，用 ``query_data_table`` 查 ``SELECT * FROM <案件B的schema>."表名"`` 必须被拒绝（见 §2.9） |
 | 26 | 多路径同时挂载 | 挂载 A+B 时两张表都能查；只挂 A 时 B 的表「不存在」；知识侧同理（用 `visible_document_ids` 核对） |
 | 27 | 知识服务启动耗时 | 重启 `huizhi-knowledge-api` 后 `/health` 应**秒级**返回 200（历史故障：启动时同步建 HNSW 索引阻塞 22s+，控制台报 503，见 §2.14） |
+| 28 | 知识服务连库 | `docker logs huizhi-knowledge-api \| grep -i "error connecting"` 无输出；日志出现 `connected to 127.0.0.1:15432`（或 schema init 直接通过） |
+| 29 | 容器网络模式 | `docker inspect -f '{{.HostConfig.NetworkMode}}' huizhi-knowledge-api huizhi-knowledge-worker huizhi-lightrag` 四个都是 `host`；`docker ps` 里不应再出现 `->` 端口映射 |
+| 30 | 端口直开在宿主机 | 从同网段另一台机器：`curl http://<服务器IP>:18100/health` 返回 200（知识服务）；`curl http://<服务器IP>:8088` 能打开控制台 |
 | 28 | 语义检索改造生效 | 知识服务日志出现 `pgvector backfill: converted N`，随后 `complete and indexed`；检索 P50 应在**十毫秒级**（大语料尤其明显） |
 | 29 | pgvector 列已回填 | `SELECT count(embedding) FROM chunk_embeddings` 与总行数一致（回填期间可暂不一致，属正常） |
 | 30 | 路径计数与列表一致 | 逐个点开路径树节点，各节点的数据表计数应与该路径列表的「共 N 条」**完全相同**（历史故障：树上 10、列表 3，见 §2.14） |

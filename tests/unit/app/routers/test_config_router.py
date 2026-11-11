@@ -781,3 +781,18 @@ def test_put_sandbox_admin_enabling_saves(client):
     assert body["enabled"] is True
     assert body["effective"] is True
     mock_save.assert_called_once()
+
+
+def test_user_timezone_is_readable_by_a_regular_account(client, monkeypatch):
+    """Cron pages need the deployment timezone; reading it is not admin-only.
+
+    Writes remain administrator-only (enforced separately), but a 403 here made
+    every ordinary user's cron page log a console error and load no schedules.
+    """
+    monkeypatch.setattr(
+        "qwenpaw.app.user_space.get_request_username",
+        lambda _request: "alice",
+    )
+    resp = client.get("/api/config/user-timezone")
+    assert resp.status_code == 200
+    assert "timezone" in resp.json()

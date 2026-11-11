@@ -118,7 +118,17 @@ function CronJobsPage() {
           setCalendarMonth(dayjs().tz(res.timezone));
         }
       })
-      .catch((err) => console.error("Failed to fetch user timezone:", err));
+      .catch((err) => {
+        // Older servers made this endpoint admin-only. Keep the page usable for
+        // an ordinary account instead of logging a scary 403; the browser zone
+        // is the best local fallback.
+        const fallback =
+          Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        userTimezoneRef.current = fallback;
+        setUserTimezone(fallback);
+        setCalendarMonth(dayjs().tz(fallback));
+        console.warn("Failed to fetch server timezone; using", fallback, err);
+      });
   }, []);
 
   const loadDispatchTargets = useCallback(async () => {

@@ -1,12 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Dropdown } from "antd";
+import { DownOutlined } from "@ant-design/icons";
 import { useChatAnywhereSessionsState } from "@agentscope-ai/chat";
+import { useTranslation } from "react-i18next";
 import { useCodingMode } from "../../../../stores/codingModeStore";
 import styles from "./index.module.less";
 
 const MOBILE_BREAKPOINT_PX = 480;
 
 const ChatHeaderTitle: React.FC = () => {
+  const { t } = useTranslation();
   const { sessions, currentSessionId, setCurrentSessionId } =
     useChatAnywhereSessionsState();
   const { codingMode } = useCodingMode();
@@ -47,20 +50,13 @@ const ChatHeaderTitle: React.FC = () => {
     setOpen(false);
   };
 
-  const menuItems = sessions.map((session) => ({
-    key: session.id,
-    label: (
-      <div className={styles.menuItem}>
-        <span className={styles.menuItemName}>
-          {session.name || "新对话"}
-        </span>
-        {session.id === currentSessionId && (
-          <span className={styles.menuItemActive}>✓</span>
-        )}
-      </div>
-    ),
-    onClick: () => handleSessionClick(session.id),
-  }));
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    // With many sessions the active row can be below the fold; bring it into
+    // view without scrolling the whole page.
+    activeRowRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [open]);
 
   const className = codingMode
     ? `${styles.chatName} ${styles.chatNameCoding}`
@@ -94,27 +90,72 @@ const ChatHeaderTitle: React.FC = () => {
     </span>
   );
 
-  if (sessions.length <= 1) {
-    return (
-      <>
-        {titleContent}
-        {measureSpan}
-      </>
-    );
+  const sessionCount = (
+    <span className={styles.sessionCount} data-testid="chat-session-count">
+      {sessions.length}
+    </span>
+  );
+  const trigger = (
+    <span
+      className={styles.trigger}
+      title={`${t("nav.sessions")} · ${sessions.length}`}
+    >
+      {titleContent}
+      {sessionCount}
+      <DownOutlined className={styles.sessionChevron} />
+      {measureSpan}
+    </span>
+  );
+
+  if (sessions.length === 0) {
+    return trigger;
   }
 
   return (
     <Dropdown
-      menu={{ items: menuItems }}
       open={open}
       onOpenChange={setOpen}
       trigger={["click"]}
       placement="bottomLeft"
+      popupRender={() =>
+        open ? (
+          <div className={styles.sessionPanel} data-testid="chat-session-panel">
+            <div className={styles.sessionPanelHeader}>
+              <span>{t("nav.sessions")}</span>
+              <span className={styles.sessionPanelCount}>
+                {sessions.length}
+              </span>
+            </div>
+            <div className={styles.sessionPanelList} role="listbox">
+              {sessions.map((session) => {
+                const active = session.id === currentSessionId;
+                return (
+                  <button
+                    key={session.id}
+                    ref={active ? activeRowRef : undefined}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    className={`${styles.sessionRow} ${
+                      active ? styles.sessionRowActive : ""
+                    }`}
+                    onClick={() => handleSessionClick(session.id)}
+                  >
+                    <span className={styles.sessionRowName}>
+                      {session.name || "新对话"}
+                    </span>
+                    {active && (
+                      <span className={styles.sessionRowCheck}>✓</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null
+      }
     >
-      <span className={styles.trigger}>
-        {titleContent}
-        {measureSpan}
-      </span>
+      {trigger}
     </Dropdown>
   );
 };

@@ -173,6 +173,16 @@ class Runtime:
             async for ev in envelope.finalize():
                 yield ev
 
+        except GeneratorExit:
+            # The consumer closed the stream (browser disconnect, a cancelled
+            # SSE reader). Persist the partial turn, then propagate. Yielding
+            # an error envelope here would raise
+            # "async generator ignored GeneratorExit"; this branch must stay
+            # yield-free. _try_save_on_cancel is a plain coroutine (it shields
+            # the write), so awaiting it is safe.
+            ctx.error = asyncio.CancelledError()
+            await self._try_save_on_cancel(ctx)
+            raise
         except (asyncio.CancelledError, KeyboardInterrupt) as e:
             ctx.error = e
             await self._stop_checkpoint_task(checkpoint_task)

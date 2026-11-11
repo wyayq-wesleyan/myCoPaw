@@ -78,11 +78,18 @@ def test_explicit_host_is_not_silently_replaced(monkeypatch):
     assert cfg.host_candidates == ["only.this.host"]
 
 
-def test_default_hosts_try_the_container_gateway_first(monkeypatch):
+def test_default_host_is_the_host_loopback(monkeypatch):
+    """没有显式配置时只试 127.0.0.1。
+
+    所有容器都用 network_mode: host，PostgreSQL 就在宿主机回环的 15432。
+    曾经把容器网关（host.docker.internal）排在第一候选：那要求 PG 监听在
+    0.0.0.0，而它默认只开回环，于是每次都要先失败一次才回退——线上知识服务
+    连不上库的那次故障就是同一个地址假设造成的。
+    """
     for name in ("QWENPAW_PLATFORM_DB_HOST", "QWENPAW_DATA_TABLES_DB_HOST"):
         monkeypatch.delenv(name, raising=False)
     cfg = store_config.load_platform_db_config()
-    assert cfg.host_candidates == ["host.docker.internal", "127.0.0.1"]
+    assert cfg.host_candidates == ["127.0.0.1"]
 
 
 def test_statements_are_time_bounded(monkeypatch):

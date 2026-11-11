@@ -70,8 +70,9 @@ INSTALL_KNOWLEDGE_EXTRAS=1 PRELOAD_MINERU_MODELS=1 \
 `PARSER_BACKEND=auto`、`KNOWLEDGE_OFFLINE=false`、`MINERU_MODEL_SOURCE=local`，由
 `auto` 优先调用镜像内 MinerU，只有模型损坏或单个任务异常时才回退到轻量解析器。
 
-该 Compose 不启动 PostgreSQL 容器，`KNOWLEDGE_DATABASE_URL` 默认指向独立 PG Compose
-映射的 `host.docker.internal:15432`。API 和 Worker 挂载 `./app`、`./scripts`，以后更新知识服务
+该 Compose 不启动 PostgreSQL 容器，`KNOWLEDGE_DATABASE_URL` 默认指向独立 PG Compose 起的
+实例：`127.0.0.1:15432`。所有容器都用 `network_mode: host`（与宿主机同一个网络命名空间），
+所以容器之间、容器与宿主机之间一律用回环地址互访。API 和 Worker 挂载 `./app`、`./scripts`，以后更新知识服务
 代码只需解压代码更新包覆盖这两个目录，然后执行：
 
 ```bash
@@ -101,13 +102,15 @@ docker compose --env-file .env -f docker-compose.code-mount.arm64.yml up -d --no
 知识服务和代码挂载。不要启动第二份 PostgreSQL，也不要删除 `postgres-data/`。
 
 ```text
-KNOWLEDGE_DATABASE_URL=postgresql://huizhi_knowledge:密码@host.docker.internal:15432/huizhi_knowledge
+KNOWLEDGE_DATABASE_URL=postgresql://huizhi_knowledge:密码@127.0.0.1:15432/huizhi_knowledge
 ```
 
-API/Worker Compose 已配置 `host.docker.internal` 到宿主机的映射。数据库数据持久化在
-`postgres-data/`，不要删除该目录。
+这份 Compose 用 host 网络，因此**不需要**任何 `host.docker.internal` 映射。数据库数据
+持久化在 `postgres-data/`，不要删除该目录。
 
-默认端口为 `18100`，只建议由汇智小助手通过 Docker 内部网络调用，不应直接暴露给普通用户。
+默认端口 `18100` 直接开在宿主机上（host 网络），与宿主机同网段的其他机器都能访问；
+控制台侧用 `QWENPAW_KNOWLEDGE_URL=http://127.0.0.1:18100` 调用。若两端都配了
+`KNOWLEDGE_API_KEY`，请求需带同一个 Key（见 `.env.example`）。
 
 ## 模型接口
 

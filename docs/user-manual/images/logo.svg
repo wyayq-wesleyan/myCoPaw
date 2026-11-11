@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="10%" y1="8%" x2="88%" y2="92%">
+      <stop offset="0%" stop-color="#143c69" />
+      <stop offset="68%" stop-color="#2a63ad" />
+      <stop offset="100%" stop-color="#d2a55d" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bg)" />
+  <text x="32" y="39" text-anchor="middle" font-size="28" font-weight="800" fill="#f6e8c4" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif">汇</text>
+</svg>

@@ -9,6 +9,7 @@ import uuid
 import hashlib
 
 import psycopg2
+from psycopg2 import sql
 from psycopg2.pool import ThreadedConnectionPool
 
 try:  # psycopg2 renamed nothing here, but keep the import defensive for stubs
@@ -416,6 +417,28 @@ def ensure_user_database(username: str) -> str:
             if not cur.fetchone():
                 cur.execute(f'CREATE DATABASE "{db_name}"')
                 logger.info("Created data-analysis database for user '%s': %s", username, db_name)
+                # A newly created database starts with CONNECT granted to
+                # PUBLIC.  The sandbox role must never inherit that, so close
+                # the default at creation time rather than waiting for the
+                # next shell call's provisioning pass.
+                try:
+                    cur.execute(
+                        sql.SQL(
+                            "REVOKE CONNECT ON DATABASE {} FROM PUBLIC",
+                        ).format(sql.Identifier(db_name)),
+                    )
+                    cur.execute(
+                        sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                            sql.Identifier(db_name),
+                            sql.Identifier(cfg["username"]),
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - creation itself succeeded
+                    logger.warning(
+                        "Could not revoke PUBLIC CONNECT on new database %s",
+                        db_name,
+                        exc_info=True,
+                    )
     finally:
         admin_conn.close()
 

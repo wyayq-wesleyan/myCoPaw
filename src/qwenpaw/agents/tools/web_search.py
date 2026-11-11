@@ -4,7 +4,7 @@
 """Web search and fetch tools.
 
 web_search uses Tavily keyless API.
-web_fetch uses direct HTTP GET + html2text.
+web_fetch uses direct HTTP GET + a stdlib HTML->Markdown converter.
 """
 
 import logging
@@ -13,7 +13,6 @@ import ssl
 
 from urllib.parse import urlparse
 
-import html2text
 import httpx
 
 from agentscope.message import TextBlock
@@ -21,6 +20,7 @@ from agentscope.tool import ToolChunk
 from agentscope.message import ToolResultState
 
 from ...runtime.tool_registry import tool_descriptor
+from ._html_to_markdown import html_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +43,6 @@ _FETCH_HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     ),
 }
-
-
-def _new_html2text() -> html2text.HTML2Text:
-    """Create a configured HTML2Text converter."""
-    h = html2text.HTML2Text()
-    h.ignore_links = False
-    h.ignore_images = True
-    h.body_width = 0
-    return h
 
 
 def _is_ssl_error(exc: BaseException) -> bool:
@@ -170,13 +161,16 @@ def _extract_title(html_content: str) -> str:
 
 
 def _html_to_text(html_content: str) -> str:
-    """Convert HTML to readable markdown via html2text.
+    """Convert HTML to readable markdown with the stdlib converter.
 
     Always prepends the <title> as a heading when present.
+
+    Deliberately not ``html2text``: that package is GPL-3.0-or-later, which
+    conflicts with shipping this product (see the licensing review).
     """
+
     title = _extract_title(html_content)
-    h = _new_html2text()
-    body = h.handle(html_content).strip()
+    body = html_to_markdown(html_content).strip()
     if title and body:
         return f"# {title}\n\n{body}"
     if title:

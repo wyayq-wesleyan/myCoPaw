@@ -1,6 +1,8 @@
 """Bounded background data importer for the multi-user application."""
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import os
@@ -223,37 +225,134 @@ def _snake_case(name: str) -> str:
     return s.lower() if s.isascii() else s
 
 
-def _parse_value(value: Any, col_type: str) -> Any:
-    if pd.isna(value) or value == "" or value is None:
-        return None
+_NUMERIC_RE = re.compile(r"[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?")
+_BOOL_TRUE = frozenset({"true", "1", "是", "yes", "y"})
+_BOOL_FALSE = frozenset({"false", "0", "否", "no", "n"})
+_BOOL_ALL = _BOOL_TRUE | _BOOL_FALSE
+
+
+def _string_column(series: pd.Series) -> pd.Series:
+    """Every cell as a stripped string, with missing values as ``""``."""
+    return series.fillna("").astype(str).str.strip()
+
+
+def _serialize_column(series: pd.Series, col_type: str) -> list:
+    """Serialise one column to COPY-CSV text, strictly per declared type.
+
+    The conversion is a whole-column pandas operation, not the old per-cell
+    ``_parse_value`` walk — that walk is what made large imports CPU-bound.
+    ``None`` means SQL NULL (an unquoted empty CSV field). A non-empty value that
+    cannot be converted raises, which the caller turns into a whole-import
+    failure rather than the old "silently write NULL" behaviour.
+    """
+    text = _string_column(series)
+    blank = text == ""
+    if col_type == "TEXT":
+        return [None if b else v for v, b in zip(text, blank)]
+    if col_type in ("INTEGER", "BIGINT"):
+        num = pd.to_numeric(text.where(~blank), errors="coerce")
+        bad = num.isna() & ~blank
+        if bad.any():
+            raise ValueError(
+                f"列 {series.name!r} 含无法转为 {col_type} 的值: {text[bad].iloc[0]!r}"
+            )
+        if (num.dropna() % 1 != 0).any():
+            raise ValueError(f"列 {series.name!r} 含非整数值，不能写入 {col_type}")
+        return [None if b else str(int(v)) for v, b in zip(num, blank)]
+    if col_type.startswith("NUMERIC"):
+        # Pass the literal through instead of float()ing it: NUMERIC(20,4) can
+        # hold 20 digits, which a float silently rounds.
+        bad = ~text.str.fullmatch(_NUMERIC_RE) & ~blank
+        if bad.any():
+            raise ValueError(
+                f"列 {series.name!r} 含无法转为 {col_type} 的值: {text[bad].iloc[0]!r}"
+            )
+        return [None if b else v for v, b in zip(text, blank)]
+    if col_type == "BOOLEAN":
+        low = text.str.lower()
+        bad = ~low.isin(_BOOL_ALL) & ~blank
+        if bad.any():
+            raise ValueError(
+                f"列 {series.name!r} 含无法转为 BOOLEAN 的值: {text[bad].iloc[0]!r}"
+            )
+        return [
+            None if b else ("true" if lv in _BOOL_TRUE else "false")
+            for lv, b in zip(low, blank)
+        ]
+    if col_type in ("DATE", "TIMESTAMP"):
+        return _serialize_temporal(text, blank, col_type, series.name)
+    return [None if b else v for v, b in zip(text, blank)]
+
+
+def _serialize_temporal(text: pd.Series, blank: pd.Series, col_type: str, name) -> list:
+    """Whole-column multi-format date/timestamp parse, same formats as before."""
+    formats = DATE_FORMATS if col_type == "DATE" else TIMESTAMP_FORMATS
+    text = text.reset_index(drop=True)
+    blank = blank.reset_index(drop=True)
+    parsed = pd.Series([pd.NaT] * len(text), dtype="datetime64[ns]")
+    remaining = ~blank
+    for fmt in formats:
+        if not remaining.any():
+            break
+        attempt = pd.to_datetime(text.where(remaining), format=fmt, errors="coerce")
+        ok = attempt.notna() & remaining
+        if ok.any():
+            parsed = parsed.mask(ok, attempt)
+            remaining = remaining & ~ok
+    if remaining.any():
+        raise ValueError(
+            f"列 {name!r} 含无法转为 {col_type} 的值: {text[remaining].iloc[0]!r}"
+        )
+    out_fmt = "%Y-%m-%d" if col_type == "DATE" else "%Y-%m-%d %H:%M:%S"
+    return [None if b else ts.strftime(out_fmt) for ts, b in zip(parsed, blank)]
+
+
+def _frame_to_csv_text(df: pd.DataFrame, col_names: list, types: list) -> str:
+    """Render one chunk as ``COPY ... WITH (FORMAT csv)`` input text."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    columns = [
+        _serialize_column(df[cname], ctype)
+        for cname, ctype in zip(col_names, types)
+    ]
+    for row in zip(*columns):
+        writer.writerow(row)
+    return buf.getvalue()
+
+
+def _copy_insert_frames(
+    hg_conn,
+    table_name: str,
+    col_names: list,
+    frames,
+    types: list,
+    on_progress=None,
+) -> int:
+    """COPY every chunk into the table under a single transaction.
+
+    One ``COPY`` per chunk and one ``commit`` at the end: on any error the whole
+    load is rolled back, so the table never holds a partial batch. ``on_progress``
+    is handed the cumulative row count after each chunk; it must write over a
+    *separate* connection, otherwise it would have to commit mid-COPY and break
+    the atomicity this function exists to provide.
+    """
+    quoted_cols = ", ".join('"' + c + '"' for c in col_names)
+    copy_sql = f'COPY "{table_name}" ({quoted_cols}) FROM STDIN WITH (FORMAT csv)'
+    success = 0
+    cur = hg_conn.cursor()
     try:
-        if col_type == "TEXT":
-            return str(value).strip()
-        elif col_type in ("INTEGER", "BIGINT"):
-            return int(float(str(value).strip()))
-        elif col_type.startswith("NUMERIC"):
-            return float(str(value).strip())
-        elif col_type == "BOOLEAN":
-            return str(value).strip().lower() in ("true", "1", "是", "yes", "y")
-        elif col_type == "DATE":
-            s = str(value).strip()
-            for fmt in DATE_FORMATS:
-                try:
-                    return datetime.strptime(s, fmt).date()
-                except ValueError:
-                    continue
-            return None
-        elif col_type == "TIMESTAMP":
-            s = str(value).strip()
-            for fmt in TIMESTAMP_FORMATS:
-                try:
-                    return datetime.strptime(s, fmt)
-                except ValueError:
-                    continue
-            return None
+        for frame in frames:
+            cur.copy_expert(copy_sql, io.StringIO(_frame_to_csv_text(frame, col_names, types)))
+            success += len(frame)
+            if on_progress is not None:
+                on_progress(success)
+        hg_conn.commit()
     except Exception:
-        return None
-    return str(value).strip()
+        hg_conn.rollback()
+        raise
+    finally:
+        cur.close()
+    return success
 
 
 def _ensure_unique_col_names(headers: list[str]) -> list[str]:
@@ -353,35 +452,6 @@ def _load_persisted_schema(table_id: str) -> tuple[list[str], dict[str, str]] | 
     return col_names, types
 
 
-def _batch_insert(hg_conn, table_name: str, col_names: list[str], df: pd.DataFrame, types: list[str], batch_size: int = 1000) -> tuple[int, list[dict]]:
-    placeholders = ", ".join(["%s"] * len(col_names))
-    # 必须对列名逐一双引号，否则 PG 会把 订单ID 这样的混合大小写列名
-    # 折叠成小写 订单id，导致查询不到列。_create_real_table 里建表时已加引号。
-    quoted_cols = ", ".join('"' + c + '"' for c in col_names)
-    insert_sql = f'INSERT INTO "{table_name}" ({quoted_cols}) VALUES ({placeholders})'
-    success = 0
-    errors: list[dict] = []
-    for start in range(0, len(df), batch_size):
-        batch = df.iloc[start : start + batch_size]
-        values = []
-        for _, row in batch.iterrows():
-            vals = []
-            for i, cname in enumerate(col_names):
-                vals.append(_parse_value(row[cname], types[i]))
-            values.append(tuple(vals))
-        try:
-            with hg_conn.cursor() as cur:
-                psycopg2.extras.execute_batch(cur, insert_sql, values, page_size=batch_size)
-            hg_conn.commit()
-            success += len(batch)
-        except Exception as e:
-            hg_conn.rollback()
-            errors.append({"row": start, "column": "", "message": f"批次写入失败: {str(e)[:200]}"})
-            if len(errors) >= 100:
-                break
-    return success, errors
-
-
 def _process_file_headers(df: pd.DataFrame, user_comments: list[str], filename: str) -> tuple[list[str], list[str]]:
     """Return (actual_column_names, comments_by_column).
 
@@ -408,9 +478,8 @@ def _remap_frame_columns(df: pd.DataFrame, col_names: list[str]) -> pd.DataFrame
     raw_headers = list(df.columns)
     if len(raw_headers) != len(col_names):
         raise ValueError(f"文件列数不匹配：数据表有 {len(col_names)} 列，文件有 {len(raw_headers)} 列")
-    remapped = df.copy()
-    remapped.columns = col_names
-    return remapped
+    df.columns = col_names
+    return df
 
 
 def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
@@ -511,25 +580,35 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                         put_sys_conn(conn)
                 else:
                     col_names, types = persisted_schema
-                    first_frame = _remap_frame_columns(first_frame, col_names)
 
-            success = 0
-            insert_errors: list[dict] = []
-            for frame in chain((first_frame,), frames):
-                frame = _remap_frame_columns(frame, col_names)
-                total += len(frame)
-                inserted, errors = _batch_insert(
-                    hg_conn,
-                    table_name,
-                    col_names,
-                    frame,
-                    [types[c] for c in col_names],
-                )
-                success += inserted
-                insert_errors.extend(errors)
-                if len(insert_errors) >= 100:
-                    break
-            status = "completed" if not insert_errors else ("partial" if success > 0 else "failed")
+            def _report_progress(loaded: int) -> None:
+                # Written over the *system* connection so it is visible while the
+                # COPY transaction is still open (and so it does not disturb it).
+                pconn = get_sys_conn()
+                try:
+                    with pconn.cursor() as cur:
+                        cur.execute(
+                            f"UPDATE {SYSTEM_TABLE_IMPORT_JOB} SET success_rows=%s, total_rows=%s WHERE id=%s",
+                            (loaded, loaded, job_id),
+                        )
+                        pconn.commit()
+                finally:
+                    put_sys_conn(pconn)
+
+            remapped = (
+                _remap_frame_columns(frame, col_names)
+                for frame in chain((first_frame,), frames)
+            )
+            success = _copy_insert_frames(
+                hg_conn,
+                table_name,
+                col_names,
+                remapped,
+                [types[c] for c in col_names],
+                on_progress=_report_progress,
+            )
+            total = success
+            status = "completed"
         finally:
             if hg_conn is not None:
                 put_target_connection(hg_conn, db_name, table_schema)
@@ -543,7 +622,7 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                         status=%s, total_rows=%s, success_rows=%s, failed_rows=%s, errors=%s, finished_at=now()
                     WHERE id=%s
                 """,
-                    (status, total, success, total - success, json.dumps(insert_errors[:100]), job_id),
+                    (status, total, success, total - success, json.dumps([]), job_id),
                 )
                 cur.execute(f"UPDATE {SYSTEM_TABLE_REGISTRY} SET row_count = row_count + %s, updated_at=now() WHERE id=%s", (success, table_id))
                 conn.commit()
@@ -564,7 +643,7 @@ def run_import_job(job_id: str, table_id: str, file_path: str, filename: str):
                 retry = attempts <= 3
                 cur.execute(
                     f"""UPDATE {SYSTEM_TABLE_IMPORT_JOB} SET status=%s, errors=%s,
-                        log_excerpt=%s, next_retry_at=%s,
+                        success_rows=0, log_excerpt=%s, next_retry_at=%s,
                         finished_at=CASE WHEN %s THEN NULL ELSE now() END WHERE id=%s""",
                     ("pending" if retry else "failed",
                      json.dumps([{"row": 0, "column": "", "message": str(e)[:500]}]),

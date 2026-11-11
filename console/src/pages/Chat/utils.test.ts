@@ -320,6 +320,16 @@ describe("toDisplayUrl", () => {
     expect(toDisplayUrl("https://cdn.com/file")).toBe("https://cdn.com/file");
   });
 
+  it("keeps inline data URLs intact", () => {
+    const dataUrl = "data:image/jpeg;base64,/9j/4AAQSkZJRg==";
+    expect(toDisplayUrl(dataUrl)).toBe(dataUrl);
+  });
+
+  it("keeps blob URLs intact", () => {
+    const blobUrl = "blob:http://localhost:8088/abc-123";
+    expect(toDisplayUrl(blobUrl)).toBe(blobUrl);
+  });
+
   it("returns empty string for undefined", () => {
     expect(toDisplayUrl(undefined)).toBe("");
   });

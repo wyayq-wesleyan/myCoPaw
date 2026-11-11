@@ -281,6 +281,10 @@ class Store:
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_documents_space ON documents(space_id)",
+            # The path tree and document picker now read ids by owner; without
+            # this index each account's list is a sequential scan of every
+            # account's documents.
+            "CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id)",
             "CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)",
             "CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_chunks_space_document ON chunks(space_id, document_id, sequence)",
@@ -2154,6 +2158,40 @@ class Store:
                 [*params, page_size, offset],
             ).fetchall()
         return [dict(row) for row in rows], int(count["total"] if count else 0)
+
+    def list_user_document_ids(self, owner_id: str, is_admin: bool = False) -> list[str]:
+        """All de-duplicated document ids for one account, without page metadata.
+
+        The path tree only needs the id set; fetching full document rows through
+        ten pages made opening the knowledge page pay for columns it never used.
+        """
+        del is_admin
+        deduplicated = """
+            SELECT DISTINCT ON (
+                d.owner_id,
+                d.space_id,
+                d.filename,
+                CASE WHEN d.content_hash IS NULL
+                     THEN d.filename || ':' || d.size::text
+                     ELSE d.content_hash END,
+                d.size
+            )
+                   d.id
+            FROM documents d
+            WHERE d.owner_id = %s
+            ORDER BY d.owner_id, d.space_id, d.filename,
+                     CASE WHEN d.content_hash IS NULL
+                          THEN d.filename || ':' || d.size::text
+                          ELSE d.content_hash END,
+                     d.size,
+                     d.created_at DESC, d.id DESC
+        """
+        with self._connect() as db:
+            rows = db.execute(
+                f"WITH deduplicated AS ({deduplicated}) SELECT id FROM deduplicated",
+                (owner_id,),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
 
     def list_user_jobs(self, owner_id: str, is_admin: bool = False) -> list[dict[str, Any]]:
         """列出该用户所有 job 状态。"""

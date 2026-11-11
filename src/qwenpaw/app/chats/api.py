@@ -681,6 +681,32 @@ async def import_chat(
     return new_spec
 
 
+async def _stop_runs_before_delete(workspace, chat_ids: list[str]) -> None:
+    """Best-effort stop of live runs before their chats are deleted.
+
+    A deleted chat used to keep its producer running: it kept spending model
+    tokens, kept writing orphan session files, and kept a "running" entry in
+    the tracker (so the aggregate counter never came back down). Stopping
+    first is what makes deletion mean deletion.
+
+    Never blocks the delete: ``request_stop`` awaits the producer, and a
+    crashed producer re-raises here. Each chat is independent — one failure
+    must not prevent the others from being deleted.
+    """
+    tracker = getattr(workspace, "task_tracker", None)
+    if tracker is None:
+        return
+    for chat_id in chat_ids:
+        try:
+            await tracker.request_stop(chat_id)
+        except Exception:  # noqa: BLE001 - deletion must proceed
+            logger.warning(
+                "chats: could not stop run for deleted chat %s",
+                chat_id,
+                exc_info=True,
+            )
+
+
 @router.post("/batch-delete", response_model=dict)
 async def batch_delete_chats(
     chat_ids: list[str],
@@ -697,6 +723,7 @@ async def batch_delete_chats(
 
     """
     chats = {chat.id: chat for chat in await mgr.list_chats(archived=None)}
+    await _stop_runs_before_delete(workspace, chat_ids)
     deleted = await mgr.delete_chats(chat_ids=chat_ids)
     if deleted:
         await CHECKPOINT_RUNTIME.delete_session_checkpoints(
@@ -960,7 +987,10 @@ async def get_chat(
     )
     if durable:
         return ChatHistory(
-            messages=agentscope_msg_to_message(durable),
+            messages=agentscope_msg_to_message(
+                durable,
+                truncate_oversized_outputs=True,
+            ),
             status=status,
         )
 
@@ -987,7 +1017,10 @@ async def get_chat(
         if memory_raw:
             memories, _summary = parse_legacy_memory_state(memory_raw)
 
-    messages = agentscope_msg_to_message(memories)
+    messages = agentscope_msg_to_message(
+        memories,
+        truncate_oversized_outputs=True,
+    )
     return ChatHistory(messages=messages, status=status)
 
 
@@ -1044,6 +1077,7 @@ async def delete_chat(
         HTTPException: If chat not found (404)
     """
     chat = await mgr.get_chat(chat_id)
+    await _stop_runs_before_delete(workspace, [chat_id])
     deleted = await mgr.delete_chats(chat_ids=[chat_id])
     if not deleted:
         raise HTTPException(

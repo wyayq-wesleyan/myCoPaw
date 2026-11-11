@@ -129,7 +129,10 @@ def _get_pool() -> ThreadedConnectionPool:
         return _pool
 
     configured_host = os.getenv("QWENPAW_DATA_TABLES_DB_HOST", "").strip()
-    hosts = [configured_host] if configured_host else ["host.docker.internal", "127.0.0.1"]
+    # 默认只试回环：所有容器都跑 host 网络，PostgreSQL 就在宿主机 127.0.0.1:15432。
+    hosts = (
+        [configured_host] if configured_host else ["127.0.0.1"]
+    )
     last_error: Exception | None = None
     for host in hosts:
         try:

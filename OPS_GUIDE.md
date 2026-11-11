@@ -100,7 +100,7 @@ services:
 | 端口 | `18088` |
 | 代码路径（容器内） | `/workspace/app/` |
 | 前端静态文件 | `/workspace/app/console/dist/` |
-| 模型服务 | `http://host.docker.internal:9988/v1` |
+| 模型服务 | `http://127.0.0.1:9988/v1`（容器与模型服务同机） |
 | API Key | `thinker` |
 
 ### 3.2 常见操作
@@ -135,6 +135,29 @@ bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-arm64
 docker logs huizhi-v210-check --tail 100
 ```
 
+### 3.3 大文件上传与解压
+
+文件页的上传按钮固定写入账号工作区的 `upload/`（不存在时自动创建）。zip、tar、
+tar.gz、tgz、gz 由后台线程解压到同名目录；**解压成功后自动删除原压缩包，解压失败
+则保留原包**。7z、rar 只保存、不解压。
+
+文件页支持在 `upload/` 内重命名、单选/多选删除（选中目录即递归删除其内容）。
+智能体可通过 `delete_upload_files` 工具按路径或通配规则删除，默认 `dry_run=true`
+先列出待删除项与可释放空间，确认后执行；该工具同样只能访问当前账号的 `upload/`。
+
+| 项 | 默认值 / 配置 |
+|----|---------------|
+| 单文件上限 | `QWENPAW_INBOX_MAX_FILE_MB`（默认 10240，即 10 GiB） |
+| 单包解压上限 | `QWENPAW_INBOX_MAX_EXTRACT_GB`（默认 50） |
+| 解压并发 | 固定 2 个后台任务 |
+| 安全限制 | 文件数 20 万、目录深度 32、压缩比 200、拒绝穿越/符号链接 |
+
+注意：multipart 请求会先把每个文件暂存到系统临时目录（默认 `/tmp`），再复制到
+`upload/`。因此上传 10GB 文件时，`/tmp` 与数据盘各需约一份文件大小的空闲空间。
+容器部署建议把 `TMPDIR` 指到数据盘（例如 `TMPDIR=/data/tmp`），并在反向代理上
+放开请求体与超时限制（例如 nginx `client_max_body_size 10g;`、
+`proxy_read_timeout 1800s;`）。
+
 ## 4. 知识服务
 
 ### 4.1 容器信息
@@ -143,8 +166,13 @@ docker logs huizhi-v210-check --tail 100
 |------|------|------|------|
 | `huizhi-knowledge-api` | `huizhi-runtime:2.2.1-arm64` | `18100` | REST API |
 | `huizhi-knowledge-worker` | `huizhi-runtime:2.2.1-arm64` | — | 异步文档处理 |
-| `huizhi-lightrag` | `huizhi-runtime:2.2.1-arm64` | `19621` | 知识图谱 |
+| `huizhi-lightrag` | `huizhi-runtime:2.2.1-arm64` | `9621` | 知识图谱 |
 | `huizhi-knowledge-postgres` | `pgvector/pgvector:pg17` | `15432` | 数据库 |
+
+四个容器都以 `network_mode: host` 运行：**端口直接开在宿主机上**，与宿主机同网段的其他机器
+可直接访问；容器之间、容器与宿主机之间一律用 `127.0.0.1` 互访（不要写容器名或
+`host.docker.internal`）。PostgreSQL 默认只监听回环，需要局域网直连时把
+`KNOWLEDGE_POSTGRES_BIND=0.0.0.0` 写进 `knowledge-service/.env`。
 
 ### 4.2 容器内路径
 
@@ -161,7 +189,7 @@ docker logs huizhi-v210-check --tail 100
 | 数据库 | `huizhi_knowledge` |
 | 用户 | `huizhi_knowledge` |
 | 密码 | `huizhi_knowledge` |
-| 连接 | `host.docker.internal:15432` |
+| 连接 | `127.0.0.1:15432`（容器与库同机，host 网络） |
 
 ### 4.4 已安装的关键依赖
 
@@ -179,7 +207,7 @@ docker logs huizhi-v210-check --tail 100
 ```bash
 docker exec huizhi-knowledge-worker python3 -c "
 import psycopg2
-conn = psycopg2.connect('postgresql://huizhi_knowledge:huizhi_knowledge@host.docker.internal:15432/huizhi_knowledge')
+conn = psycopg2.connect('postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge')
 cur = conn.cursor()
 cur.execute(\"UPDATE documents SET status = 'pending', error = NULL WHERE id = '<DOCUMENT_ID>'\")
 cur.execute(\"UPDATE jobs SET status = 'queued', attempts = 0, error = NULL WHERE document_id = '<DOCUMENT_ID>'\")
@@ -192,7 +220,7 @@ conn.close()
 ```bash
 docker exec huizhi-knowledge-worker python3 -c "
 import psycopg2
-conn = psycopg2.connect('postgresql://huizhi_knowledge:huizhi_knowledge@host.docker.internal:15432/huizhi_knowledge')
+conn = psycopg2.connect('postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge')
 cur = conn.cursor()
 cur.execute('SELECT id, filename, status, backend, error FROM documents ORDER BY created_at DESC LIMIT 10')
 for row in cur.fetchall(): print(row)

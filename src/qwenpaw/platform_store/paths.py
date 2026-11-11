@@ -271,6 +271,51 @@ def list_path_tree(owner_username: str) -> list[PathNode]:
     return roots
 
 
+def path_enrichment_index(
+    owner_username: str,
+) -> tuple[
+    dict[tuple[str, str], set[str]],
+    dict[str, set[str]],
+    dict[str, list[str]],
+]:
+    """Bulk-load bindings and agent grants for an account's path tree.
+
+    The tree page used to call ``effective_*_for_path`` and ``agents_for_path``
+    per node. Each of those does 2-3 synchronous queries, so a 30-case tree was
+    150+ serial round-trips before the response could render. This returns the
+    same facts in two queries, letting the router compute every node's counts in
+    memory.
+    """
+    _ensure_ready()
+    rows = _query(
+        'SELECT b.path_id, b.resource_kind, b.resource_id '
+        'FROM "platform".resource_bindings b '
+        'JOIN "platform".paths p ON p.id = b.path_id '
+        'WHERE p.owner_username = %s',
+        (owner_username,),
+    )
+    bindings: dict[tuple[str, str], set[str]] = {}
+    any_bound: dict[str, set[str]] = {kind: set() for kind in RESOURCE_KINDS}
+    for row in rows:
+        kind = str(row["resource_kind"])
+        path_id = str(row["path_id"])
+        resource_id = str(row["resource_id"])
+        bindings.setdefault((kind, path_id), set()).add(resource_id)
+        any_bound.setdefault(kind, set()).add(resource_id)
+
+    agent_rows = _query(
+        'SELECT ab.path_id, ab.agent_id '
+        'FROM "platform".agent_path_bindings ab '
+        'JOIN "platform".paths p ON p.id = ab.path_id '
+        'WHERE p.owner_username = %s ORDER BY ab.agent_id',
+        (owner_username,),
+    )
+    agents: dict[str, list[str]] = {}
+    for row in agent_rows:
+        agents.setdefault(str(row["path_id"]), []).append(str(row["agent_id"]))
+    return bindings, any_bound, agents
+
+
 def path_by_id(path_id: str) -> dict[str, Any] | None:
     """Raw path row (no tree), or ``None``."""
     _ensure_ready()

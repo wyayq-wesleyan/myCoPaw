@@ -11,7 +11,9 @@
 #   bash scripts/derive_resource_limits.sh --cores 256 --mem-gb 1512
 #   bash scripts/derive_resource_limits.sh --cpu-budget-pct 55 --mem-budget-pct 35
 #
-# 写入位置：`deploy/.env` 与 `knowledge-service/.env` 的受管区块。区块以
+# 写入位置：两套部署目录下的 `.env` 受管区块。仓库布局为 `deploy/` 与
+# `knowledge-service/`，交付包布局为 `xiaozhushou/` 与 `zhishifuwu/`，
+# 脚本按实际存在的目录自动选择。区块以
 # `# >>> huizhi resource limits >>>` / `# <<< huizhi resource limits <<<` 标记，
 # 重复执行会原地替换，不会堆积，也不会碰你在区块之外写的其它变量。
 #
@@ -27,6 +29,19 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# 两套目录命名：源码仓库 vs 交付包。优先认仓库布局，避免交付包里恰好也
+# 存在一个无关的 deploy/ 目录时写错位置。
+if [ -d "${ROOT_DIR}/deploy" ] && [ -d "${ROOT_DIR}/knowledge-service" ]; then
+  ASSIST_DIR="deploy"
+  KNOWLEDGE_DIR="knowledge-service"
+elif [ -d "${ROOT_DIR}/xiaozhushou" ] && [ -d "${ROOT_DIR}/zhishifuwu" ]; then
+  ASSIST_DIR="xiaozhushou"
+  KNOWLEDGE_DIR="zhishifuwu"
+else
+  echo "找不到部署目录：需要 deploy/ + knowledge-service/ 或 xiaozhushou/ + zhishifuwu/" >&2
+  exit 2
+fi
 
 # ── 参数与探测 ────────────────────────────────────────────────────────────
 CORES=""
@@ -238,21 +253,21 @@ echo
 if [ "$DRY_RUN" = "1" ]; then
   echo "--dry-run：未写入。以下内容将写入两处 .env ——"
   echo
-  echo "【deploy/.env】"
+  echo "【${ASSIST_DIR}/.env】"
   printf '%s\n' "$ASSIST_BLOCK"
   echo
-  echo "【knowledge-service/.env】"
+  echo "【${KNOWLEDGE_DIR}/.env】"
   printf '%s\n' "$KNOWLEDGE_BLOCK"
   exit 0
 fi
 
-for dir in "deploy" "knowledge-service"; do
+for dir in "$ASSIST_DIR" "$KNOWLEDGE_DIR"; do
   target="${ROOT_DIR}/${dir}/.env"
   if [ ! -f "$target" ]; then
     echo "  跳过 ${target}（文件不存在；先按 .env.example 建好再运行本脚本）"
     continue
   fi
-  if [ "$dir" = "deploy" ]; then
+  if [ "$dir" = "$ASSIST_DIR" ]; then
     write_block "$target" "$ASSIST_BLOCK"
   else
     write_block "$target" "$KNOWLEDGE_BLOCK"
@@ -260,6 +275,11 @@ for dir in "deploy" "knowledge-service"; do
 done
 
 echo
-echo "完成。重启使上限生效："
-echo "  docker compose -f deploy/docker-compose.code-mount.amd64.yml up -d --force-recreate"
-echo "  docker compose -f knowledge-service/docker-compose.code-mount.amd64.yml up -d --force-recreate"
+echo "完成。重启使上限生效（按实际目录选择 compose 文件）："
+if [ "$ASSIST_DIR" = "deploy" ]; then
+  echo "  docker compose -f deploy/docker-compose.code-mount.amd64.yml up -d --force-recreate"
+  echo "  docker compose -f knowledge-service/docker-compose.code-mount.amd64.yml up -d --force-recreate"
+else
+  echo "  (cd xiaozhushou && docker compose up -d --force-recreate)"
+  echo "  (cd zhishifuwu && docker compose up -d --force-recreate)"
+fi

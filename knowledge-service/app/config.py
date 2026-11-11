@@ -80,7 +80,9 @@ class Settings:
         dimensions = _env("EMBEDDING_DIMENSIONS")
 
         # Provider configuration
-        provider_base_url = _env("PROVIDER_BASE_URL", "http://host.docker.internal:9988/v1")
+        # 模型服务与容器同机：host 网络下直接用回环地址。（模型服务在别的机器时
+        # 由 .env 的 CHAT_BASE_URL / PROVIDER_BASE_URL 指向它的局域网地址。）
+        provider_base_url = _env("PROVIDER_BASE_URL", "http://127.0.0.1:9988/v1")
         provider_api_key = _env("PROVIDER_API_KEY", "")
 
         # Chat model
@@ -127,9 +129,13 @@ class Settings:
 
         return cls(
             data_dir=Path(_env("KNOWLEDGE_DATA_DIR", "/data")).expanduser(),
+            # 默认指向宿主机的回环地址：所有容器都用 network_mode: host，
+            # PostgreSQL 就监听在宿主机的 15432（见 docker-compose.postgres.yml）。
+            # 这里曾写成容器名 knowledge-postgres:5432 —— bridge 网络下才成立，
+            # 一旦容器不再共享同一个 compose 网络就会连不上（线上出过一次）。
             database_url=_env(
                 "KNOWLEDGE_DATABASE_URL",
-                "postgresql://huizhi_knowledge:huizhi_knowledge@knowledge-postgres:5432/huizhi_knowledge",
+                "postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge",
             ),
             api_key=_env("KNOWLEDGE_API_KEY"),
             worker_interval=max(0.2, float(_env("KNOWLEDGE_WORKER_INTERVAL", "1"))),

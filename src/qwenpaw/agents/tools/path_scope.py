@@ -19,6 +19,8 @@ resolves *who is asking* and adapts failures into "deny", never "allow":
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +331,154 @@ def resolve_writable_path_id(owner_username: str, reference: str) -> str:
     )
 
 
+def resolve_or_create_writable_path(
+    owner_username: str,
+    reference: str,
+) -> str:
+    """Resolve a writable path, creating the named folder when it is missing.
+
+    This is the knowledge-upload behaviour a user expects from "存到知识空间
+    「反诈宣传知识库」": an explicitly named folder is created (and granted to
+    the current agent) instead of silently filing the document into the public
+    root. An empty reference still means the public root, and an ambiguous name
+    is still reported rather than guessed.
+    """
+    reference = (reference or "").strip()
+    try:
+        return resolve_writable_path_id(owner_username, reference)
+    except PathAmbiguous:
+        raise
+    except PathNotWritable:
+        # An explicit UUID that is not in the granted set is a stale/bad id,
+        # not a folder name; do not create a folder named after it.
+        try:
+            uuid.UUID(reference)
+        except (ValueError, AttributeError, TypeError):
+            pass
+        else:
+            raise
+        if not reference:
+            raise
+        agent_id = current_agent_id()
+        if not agent_id:
+            raise PathNotWritable(
+                "无法确定当前智能体，不能新建知识空间路径。",
+            )
+
+        from ...platform_store.paths import PathScopeError
+        from ...platform_store import paths as path_store
+
+        segments = [
+            part.strip()
+            for part in re.split(r"[/\\]+", reference)
+            if part.strip()
+        ]
+        if not segments:
+            raise PathNotWritable("知识空间路径名称不能为空。")
+
+        root_id = path_store.ensure_root_path(owner_username)
+        current_id = root_id
+        tree = path_store.list_path_tree(owner_username)
+        root_node = next((node for node in tree if node.is_root), None)
+        check_segments = list(segments)
+        if (
+            root_node is not None
+            and check_segments
+            and check_segments[0] == root_node.name
+        ):
+            check_segments = check_segments[1:]
+        if check_segments:
+            top_children = root_node.children if root_node else []
+            first_node = next(
+                (node for node in top_children if node.name == check_segments[0]),
+                None,
+            )
+            granted_ids = set(path_store.agent_path_ids(agent_id))
+            if first_node is not None and first_node.id not in granted_ids:
+                raise PathNotWritable(
+                    f"路径「{first_node.name}」已存在，但没有授权给当前智能体；"
+                    "请先在知识空间或数据分析中挂载该路径，再上传。",
+                )
+            cursor_children = top_children
+            chain_exists = True
+            for segment in check_segments:
+                node = next(
+                    (child for child in cursor_children if child.name == segment),
+                    None,
+                )
+                if node is None:
+                    chain_exists = False
+                    break
+                cursor_children = node.children
+            if chain_exists:
+                raise PathNotWritable(
+                    f"路径「{reference}」已存在，但没有授权给当前智能体；"
+                    "请先在知识空间或数据分析中挂载该路径，再上传。",
+                )
+        try:
+            for segment in segments:
+                tree = path_store.list_path_tree(owner_username)
+                root_node = next((node for node in tree if node.is_root), None)
+                children = root_node.children if root_node else []
+                if current_id != root_id:
+                    # Walk to the current node so its children are the ones we
+                    # search; fail closed if the tree changed underneath us.
+                    stack = list(tree)
+                    found = None
+                    while stack:
+                        node = stack.pop()
+                        if node.id == current_id:
+                            found = node
+                            break
+                        stack.extend(node.children)
+                    if found is None:
+                        raise PathNotWritable("知识空间路径在创建过程中被移除。")
+                    children = found.children
+                if (
+                    root_node is not None
+                    and current_id == root_id
+                    and segment == root_node.name
+                ):
+                    continue
+                existing = next(
+                    (node for node in children if node.name == segment),
+                    None,
+                )
+                if existing is not None:
+                    current_id = existing.id
+                    continue
+                try:
+                    current_id = path_store.create_path(
+                        owner_username,
+                        segment,
+                        parent_id=None if current_id == root_id else current_id,
+                    )
+                except PathScopeError:
+                    # A concurrent caller created it first; reuse it.
+                    tree = path_store.list_path_tree(owner_username)
+                    retry_children = []
+                    stack = list(tree)
+                    while stack:
+                        node = stack.pop()
+                        if node.id == current_id:
+                            retry_children = node.children
+                            break
+                        stack.extend(node.children)
+                    existing = next(
+                        (node for node in retry_children if node.name == segment),
+                        None,
+                    )
+                    if existing is None:
+                        raise
+                    current_id = existing.id
+            if current_id == root_id:
+                return ""
+            path_store.bind_agent(agent_id, current_id)
+            return current_id
+        except PathScopeError as exc:
+            raise PathNotWritable(f"新建知识空间路径失败：{exc}") from exc
+
+
 __all__ = [
     "ROOT_SCHEMA",
     "PathAmbiguous",
@@ -336,6 +486,7 @@ __all__ = [
     "current_agent_id",
     "data_search_path",
     "granted_path_nodes",
+    "resolve_or_create_writable_path",
     "resolve_writable_path_id",
     "root_path_id",
     "visible_data_path_ids",
