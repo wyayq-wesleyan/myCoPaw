@@ -171,20 +171,25 @@ def test_upload_inbox_explains_the_fixed_destination_and_extraction():
     assert "another account" in en
 
 
-def test_data_analysis_gates_queries_but_not_write_tools():
-    """Only the read/query tools stay behind「通过数据分析」.
+def test_data_analysis_queries_are_intent_based():
+    """Read/query tools trigger on intent, not a fixed phrase.
 
-    The write tools are the ingestion path for an attached spreadsheet; gating
-    them behind the exact phrase is what made the agent upload an Excel file to
-    the knowledge space instead of creating a data table.
+    Requiring the exact phrase made the agent ignore ordinary requests such as
+    "分析一下数据空间里的表". The prompt must accept intent, and ask the user
+    only when the request is genuinely ambiguous between a table and a document.
     """
     fragment = DataAnalysisContributor().contribute_sync(SimpleNamespace(extras={}))
 
     assert fragment is not None
     assert "Reading / querying existing tables" in fragment
     assert "Creating / importing a table (write tools)" in fragment
-    assert "「通过数据分析」" in fragment
-    assert "Do NOT use them" in fragment
+    assert "Do NOT require a fixed phrase" in fragment
+    assert "Typical triggers include" in fragment
+    assert "分析 / 查一下 / 统计" in fragment
+    assert "ask one short question" in fragment
+    # An explicit example is still recognized; it is just no longer the only one.
+    assert "「通过数据分析…」" in fragment
+    # Write tools remain explicitly exempt from the old phrase gate.
     assert "are NOT gated by「通过数据分析」" in fragment
     assert "Never use `upload_knowledge_document`" in fragment
 
