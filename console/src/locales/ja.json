@@ -2590,6 +2590,11 @@
       "today": "今日",
       "recent": "過去7日間",
       "earlier": "それ以前"
+    },
+    "references": {
+      "title": "参考資料",
+      "more": "もっと見る（{{count}}）",
+      "less": "折りたたむ"
     }
   },
   "security": {

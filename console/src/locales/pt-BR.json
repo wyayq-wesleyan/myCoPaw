@@ -2834,6 +2834,11 @@
       "today": "Hoje",
       "recent": "Últimos 7 dias",
       "earlier": "Anteriores"
+    },
+    "references": {
+      "title": "Referências",
+      "more": "Mais ({{count}})",
+      "less": "Mostrar menos"
     }
   },
   "security": {

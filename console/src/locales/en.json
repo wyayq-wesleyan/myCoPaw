@@ -3143,6 +3143,11 @@
       "today": "Today",
       "recent": "Last 7 days",
       "earlier": "Earlier"
+    },
+    "references": {
+      "title": "References",
+      "more": "More ({{count}})",
+      "less": "Show less"
     }
   },
   "security": {

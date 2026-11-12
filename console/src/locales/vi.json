@@ -371,6 +371,11 @@
       "today": "Hôm nay",
       "recent": "7 ngày qua",
       "earlier": "Trước đó"
+    },
+    "references": {
+      "title": "Tài liệu tham khảo",
+      "more": "Xem thêm ({{count}})",
+      "less": "Thu gọn"
     }
   },
   "debug": {

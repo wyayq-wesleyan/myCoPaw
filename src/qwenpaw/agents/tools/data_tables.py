@@ -11,6 +11,9 @@ import uuid
 
 from pathlib import Path
 
+from agentscope.message import TextBlock, ToolResultState
+from agentscope.tool import ToolChunk
+
 from ...runtime.tool_registry import tool_descriptor
 from ...utils.io_utils import run_sync_io
 from .user_files import resolve_user_file, user_facing_name
@@ -169,6 +172,53 @@ def _ensure_limit(sql: str, max_rows: int = 100) -> str:
     if re.search(r"\b(LIMIT|OFFSET)\b", sanitized, re.IGNORECASE):
         return sql
     return f"{sanitized} LIMIT {max_rows}"
+
+
+_REFERENCE_TABLE_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+([`\"\[]?[\w.]+[`\"\]]?)",
+    re.IGNORECASE,
+)
+_CTE_NAME_RE = re.compile(
+    r"(?:\bWITH\b|,)\s*([`\"\[]?[\w]+[`\"\]]?)\s+AS\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _references_from_sql(sql: str) -> list[dict[str, str]]:
+    """Extract the table names a read-only SQL query actually reads.
+
+    This feeds the chat's "参考资料" footer. It is deliberately best-effort:
+    a CTE name is excluded, duplicates are removed, and a schema-qualified
+    name is shown by its table part. A false positive here is cosmetic; the
+    SQL itself is still constrained by the connection's search_path.
+    """
+    sanitized = _sanitize_sql(sql or "")
+    cte_names = {
+        match.group(1).strip("`\"[]").lower()
+        for match in _CTE_NAME_RE.finditer(sanitized)
+    }
+    references: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in _REFERENCE_TABLE_RE.finditer(sanitized):
+        raw = match.group(1).strip("`\"[]")
+        name = raw.split(".")[-1].strip("`\"[]")
+        key = name.lower()
+        if not name or key in cte_names or key in seen:
+            continue
+        seen.add(key)
+        references.append({"kind": "data_table", "name": name})
+    return references
+
+
+def _query_tool_chunk(text: str, sql: str = "") -> ToolChunk:
+    """Wrap a query result and attach structured references for the UI."""
+    references = _references_from_sql(sql) if sql else []
+    return ToolChunk(
+        is_last=True,
+        state=ToolResultState.SUCCESS,
+        content=[TextBlock(type="text", text=text)],
+        metadata={"references": references} if references else {},
+    )
 
 
 def _table_visible_to_agent(username: str, path_id: str | None) -> bool:
@@ -455,9 +505,11 @@ def describe_data_table(table_name: str) -> str:
     default_policy="allow",
     policy_reason="Read-only SQL query scoped to the current user's database",
 )
-def query_data_table(sql: str) -> str:
+def query_data_table(sql: str) -> ToolChunk:
     if not _is_read_only(sql):
-        return "安全限制：仅允许 SELECT 查询。不允许 INSERT/UPDATE/DELETE/DROP 等写入操作。"
+        return _query_tool_chunk(
+            "安全限制：仅允许 SELECT 查询。不允许 INSERT/UPDATE/DELETE/DROP 等写入操作。",
+        )
     username = _resolve_username()
     sql = _ensure_limit(sql, 100)
 
@@ -476,9 +528,9 @@ def query_data_table(sql: str) -> str:
 
     search_path = data_search_path(username)
     if search_path is None:
-        return (
+        return _query_tool_chunk(
             "当前智能体没有可访问的数据分析路径，请先在数据分析中为该智能体"
-            "挂载对应的路径。"
+            "挂载对应的路径。",
         )
 
     db_name = ensure_user_database(username)
@@ -489,7 +541,7 @@ def query_data_table(sql: str) -> str:
     try:
         _enforce_schema_scope(sql, search_path, _known_path_schemas(db_name))
     except SchemaScopeError as exc:
-        return f"查询被拒绝：{exc}"
+        return _query_tool_chunk(f"查询被拒绝：{exc}", sql)
 
     hg_conn = get_target_connection(db_name, search_path)
     try:
@@ -499,7 +551,7 @@ def query_data_table(sql: str) -> str:
             col_names = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
         if not rows:
-            return "查询结果为空。"
+            return _query_tool_chunk("查询结果为空。", sql)
         lines = [" | ".join(col_names)]
         lines.append("-" * 50)
         for row in rows[:100]:
@@ -507,9 +559,9 @@ def query_data_table(sql: str) -> str:
         result = "\n".join(lines)
         if len(rows) >= 100:
             result += f"\n\n（结果已截断，共 {len(rows)}+ 行）"
-        return result
+        return _query_tool_chunk(result, sql)
     except Exception as e:
-        return f"查询执行失败: {str(e)}"
+        return _query_tool_chunk(f"查询执行失败: {str(e)}", sql)
     finally:
         put_target_connection(hg_conn, db_name, search_path)
 

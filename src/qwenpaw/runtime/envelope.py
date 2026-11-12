@@ -575,6 +575,12 @@ class Envelope:
             if hasattr(tool_state, "value"):
                 tool_state = tool_state.value
 
+            # ToolChunk.metadata carries structured references (knowledge
+            # documents / data tables) that the chat UI renders under the
+            # answer. It must travel with the final output, not only in the
+            # in-process ToolResultBlock.
+            state["metadata"] = dict(getattr(event, "metadata", {}) or {})
+
             final_content = self._build_tool_result_content(
                 call_id,
                 state,
@@ -762,6 +768,9 @@ class Envelope:
         ).model_dump()
         if tool_state is not None:
             data_dict["state"] = tool_state
+        metadata = state.get("metadata")
+        if isinstance(metadata, dict) and metadata:
+            data_dict["metadata"] = metadata
 
         return DataContent(
             type=ContentType.DATA,

@@ -3002,6 +3002,11 @@
       "today": "今天",
       "recent": "近 7 天",
       "earlier": "更早"
+    },
+    "references": {
+      "title": "参考资料",
+      "more": "更多（{{count}}）",
+      "less": "收起"
     }
   },
   "security": {

@@ -2605,6 +2605,11 @@
       "today": "Сегодня",
       "recent": "За 7 дней",
       "earlier": "Ранее"
+    },
+    "references": {
+      "title": "Источники",
+      "more": "Ещё ({{count}})",
+      "less": "Свернуть"
     }
   },
   "security": {

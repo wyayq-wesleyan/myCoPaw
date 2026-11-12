@@ -150,6 +150,43 @@ def _filter_search_payload(
     return filtered
 
 
+def _knowledge_references(
+    targets: list[tuple[str, dict[str, Any]]],
+) -> list[dict[str, str]]:
+    """Collect every document cited by the search, for the chat footer.
+
+    The formatted text only shows the first five documents; the UI's
+    "参考资料" list must be able to show all of them, so the full set travels
+    as structured metadata instead of being parsed back out of the text.
+    """
+    references: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for space_name, payload in targets:
+        documents = payload.get("documents")
+        if not isinstance(documents, list):
+            continue
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            document_id = str(document.get("document_id") or "")
+            filename = str(document.get("filename") or "")
+            if not filename:
+                continue
+            key = document_id or filename
+            if key in seen:
+                continue
+            seen.add(key)
+            references.append(
+                {
+                    "kind": "knowledge",
+                    "id": document_id,
+                    "name": filename,
+                    "space": space_name,
+                },
+            )
+    return references
+
+
 def _workspaces_for_agent(username: str) -> list[str]:
     """Graph workspaces for the paths this agent was granted.
 
@@ -242,6 +279,7 @@ async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
     url = _service_url()
     username = _resolve_account_username()
     query = query.strip()
+    references: list[dict[str, str]] = []
     if not url:
         text = "知识服务尚未配置，无法检索本地知识空间。"
     elif not query:
@@ -323,6 +361,7 @@ async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
                         raise failures[0]
                     useful = [(name, payload) for name, payload in results if payload.get("evidence")]
                     target = useful or results
+                    references = _knowledge_references(target)
                     text = "\n\n".join(f"知识空间：{name}\n{_format_search_result(payload)}" for name, payload in target)
         except httpx.HTTPStatusError as exc:
             text = f"知识检索失败：服务返回 {exc.response.status_code}。"
@@ -334,6 +373,7 @@ async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
         is_last=True,
         state=ToolResultState.SUCCESS,
         content=[TextBlock(type="text", text=text)],
+        metadata={"references": references} if references else {},
     )
 
 
@@ -397,6 +437,7 @@ async def get_document_detail(document_id: str, page_start: int = 0, page_end: i
     url = _service_url()
     username = _resolve_account_username()
     document_id = document_id.strip()
+    references: list[dict[str, str]] = []
 
     if not url:
         text = "知识服务尚未配置，无法检索本地知识空间。"
@@ -441,7 +482,19 @@ async def get_document_detail(document_id: str, page_start: int = 0, page_end: i
                     json=payload,
                 )
                 response.raise_for_status()
-                text = _format_document_detail(response.json())
+                detail = response.json()
+                text = _format_document_detail(detail)
+                filename = str(
+                    detail.get("filename") or detail.get("name") or "",
+                ).strip()
+                if filename:
+                    references = [
+                        {
+                            "kind": "knowledge",
+                            "id": document_id,
+                            "name": filename,
+                        },
+                    ]
         except httpx.HTTPStatusError as exc:
             text = f"获取文档详情失败：服务返回 {exc.response.status_code}。"
         except httpx.HTTPError as exc:
@@ -453,6 +506,7 @@ async def get_document_detail(document_id: str, page_start: int = 0, page_end: i
         is_last=True,
         state=ToolResultState.SUCCESS,
         content=[TextBlock(type="text", text=text)],
+        metadata={"references": references} if references else {},
     )
 
 

@@ -178,6 +178,45 @@ async def test_metadata_is_added_to_existing_stream_outputs():
 
 
 @pytest.mark.asyncio
+async def test_tool_result_metadata_is_attached_to_the_data_payload():
+    """Structured references must survive into the SSE tool output."""
+    envelope = Envelope()
+    references = [
+        {"kind": "knowledge", "id": "doc-1", "name": "采购合同.pdf"},
+    ]
+    events = [
+        _event(
+            EventType.TOOL_RESULT_START,
+            tool_call_id="result",
+            tool_call_name="query_knowledge",
+        ),
+        _event(
+            EventType.TOOL_RESULT_TEXT_DELTA,
+            tool_call_id="result",
+            delta="找到 1 个相关文档",
+        ),
+        _event(
+            EventType.TOOL_RESULT_END,
+            tool_call_id="result",
+            state="success",
+            metadata={"references": references},
+        ),
+    ]
+
+    payloads: list[dict[str, Any]] = []
+    for event in events:
+        payloads.extend(await _translate(envelope, event))
+
+    data_payloads = [
+        payload
+        for payload in payloads
+        if payload.get("type") == "data" and isinstance(payload.get("data"), dict)
+    ]
+    assert data_payloads
+    assert data_payloads[-1]["data"]["metadata"] == {"references": references}
+
+
+@pytest.mark.asyncio
 async def test_tool_metadata_is_scoped_to_its_own_outputs():
     envelope = Envelope()
     text_metadata = {"route": "text"}

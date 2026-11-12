@@ -49,6 +49,8 @@ import type {
   ChatRequestData,
   ChatResponseData,
 } from "../../plugins/registry/types";
+import { ResponseReferences } from "./ResponseReferences";
+import { extractReferences } from "./references";
 
 function sortByOrder<T extends { item: { order?: number } }>(arr: T[]): T[] {
   return arr
@@ -285,6 +287,10 @@ const DefaultHostResponseCard = React.memo(function DefaultHostResponseCard({
     () => mergeToolMessagesLinear(data.output),
     [data.output],
   );
+  const references = useMemo(
+    () => extractReferences(data.output),
+    [data.output],
+  );
 
   if (
     !messages.length &&
@@ -328,6 +334,9 @@ const DefaultHostResponseCard = React.memo(function DefaultHostResponseCard({
       })}
       {data.error ? <ResponseError data={data.error} /> : null}
       {contentAppend}
+      {references.length > 0 ? (
+        <ResponseReferences references={references} />
+      ) : null}
       <ResponseActions data={data} isLast={isLast} />
     </>
   );
