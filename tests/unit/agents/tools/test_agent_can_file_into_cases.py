@@ -35,6 +35,20 @@ class _FakePathsStore:
     def path_by_id(self, path_id: str):
         return self._paths.get(path_id)
 
+    def list_path_tree(self, owner_username: str):
+        """Return the account's full tree, including paths not granted."""
+        nodes = {pid: dict(node) for pid, node in self._paths.items()}
+        for node in nodes.values():
+            node.setdefault("children", [])
+        roots = []
+        for node in nodes.values():
+            parent = nodes.get(node.get("parent_id")) if node.get("parent_id") else None
+            if parent is None:
+                roots.append(node)
+            else:
+                parent["children"].append(node)
+        return roots
+
 
 def _node(path_id: str, name: str, *, is_root=False, parent=None):
     return {
@@ -61,6 +75,7 @@ def store(monkeypatch):
 
     monkeypatch.setattr(real, "agent_path_ids", fake.agent_path_ids)
     monkeypatch.setattr(real, "path_by_id", fake.path_by_id)
+    monkeypatch.setattr(real, "list_path_tree", fake.list_path_tree)
     monkeypatch.setattr(ps, "current_agent_id", lambda: "agent-1")
     return fake
 
@@ -98,8 +113,13 @@ class TestIsolationOnTheWriteSide:
         """「别人的案件」存在于账号里，但没有授权给这个智能体。"""
         with pytest.raises(ps.PathNotWritable) as exc:
             ps.resolve_writable_path_id("admin", "别人的案件")
+        message = str(exc.value)
+        # Distinguish "exists but not mounted" from "does not exist": the UI
+        # shows this path, so claiming it is absent sends the user in circles.
+        assert "已存在" in message
+        assert "还没有挂载" in message
         # The message must name what IS available, so the model can correct itself.
-        assert "案件A" in str(exc.value)
+        assert "案件A" in message
 
     def test_an_unknown_name_is_refused(self, store):
         with pytest.raises(ps.PathNotWritable):

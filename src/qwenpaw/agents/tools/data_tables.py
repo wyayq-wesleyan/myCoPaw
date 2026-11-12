@@ -205,8 +205,10 @@ def _resolve_username() -> str:
 @tool_descriptor(
     name="list_paths",
     description=(
-        "列出当前智能体可以访问的路径（案件/数据空间分区），含路径名称与默认区标记。"
-        "在需要把数据表或知识文档归入某个案件之前调用，以确认案件是否存在、名称怎么写。"
+        "列出当前智能体已挂载的路径（案件/数据空间分区），含路径名称与默认区标记。"
+        "在需要把数据表或知识文档归入某个案件之前调用，以确认有哪些路径可用。"
+        "注意：这里只列已挂载路径；用户提到的路径不在列表里，可能是存在但未挂载，"
+        "不代表不存在。请让用户在「数据分析」中挂载，不要改用知识空间上传。"
     ),
     parameters={"type": "object", "properties": {}, "required": []},
     tool_type="internal",
@@ -243,7 +245,10 @@ def list_paths() -> str:
         else:
             lines.append(f"- {node['name']}")
     lines.append(
-        "\n把数据表或知识文档归入某个案件时，把上面的名称原样传给对应工具的 "
+        "\n以上只包含已挂载给当前智能体的路径。用户提到的路径如果不在列表里，"
+        "可能是存在但未挂载；不要因此说它不存在，也不要改用知识空间上传。"
+        "请让用户在「数据分析」中挂载后再重试。\n"
+        "把数据表或知识文档归入某个案件时，把上面的名称原样传给对应工具的 "
         "path 参数即可。",
     )
     return "\n".join(lines)
@@ -649,10 +654,12 @@ async def _await_import(job_id: str, table_name: str, filename: str) -> str:
 @tool_descriptor(
     name="create_data_table",
     description=(
-        "在当前用户的数据空间中新建一张数据表。仅在用户上传了表格文件且明确要求建表、"
-        "入库或以后能直接查询时使用。表名由描述自动生成，列名和类型会在导入文件时按文件"
-        "表头自动推断，所以这里不需要提供列定义。创建后用 import_data_table 导入数据。"
+        "在当前用户的数据空间中新建一张数据表。用户上传了表格文件并要求建表、"
+        "入库、导入、录入或放进数据空间时使用；不需要用户说「通过数据分析」。"
+        "表名由描述自动生成，列名和类型会在导入文件时按文件表头自动推断，"
+        "所以这里不需要提供列定义。创建后用 import_data_table 导入数据。"
         "如果用户要求放到某个案件下，用 path 参数指定案件名称（可先调用 list_paths 确认）。"
+        "如果目标路径存在但未挂载，提示用户去「数据分析」挂载；不要改用知识空间上传。"
     ),
     async_execution=True,
     tool_type="internal",
@@ -741,6 +748,7 @@ def _describe_path_label(username: str, path_id: str) -> str:
         "把已经存在的数据表归入某个案件（或在需要时移回默认区）。"
         "当用户说「把某张表放到案件X下」「这张表归到X案件」时使用。"
         "用 path 指定目标案件名称（可先调用 list_paths 确认）；path 留空表示移回默认区。"
+        "如果目标路径存在但未挂载，提示用户去「数据分析」挂载，不要改用知识空间上传。"
     ),
     parameters={
         "type": "object",
@@ -843,7 +851,9 @@ async def move_data_table_to_path(table_name: str, path: str = "") -> str:
     description=(
         "把用户上传的表格文件（CSV/XLSX/XLS）导入当前用户已有的数据表中。"
         "文件必须属于当前用户的工作区，例如用户在聊天框里上传的附件。"
+        "用户要求建表/入库/导入/录入/放进数据空间时使用，不需要说「通过数据分析」。"
         "需要先有数据表（用 create_data_table 新建或 list_data_tables 查看已有的表）。"
+        "不要用 upload_knowledge_document 代替这个工具。"
     ),
     async_execution=True,
     tool_type="file",

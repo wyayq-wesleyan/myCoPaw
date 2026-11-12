@@ -270,6 +270,75 @@ def granted_path_nodes(owner_username: str) -> list[dict[str, str]] | None:
         return None
 
 
+def _iter_path_nodes(nodes: list) -> list:
+    """Flatten the platform path tree, accepting dicts or ``PathNode`` objects."""
+    flattened: list = []
+    for node in nodes or []:
+        flattened.append(node)
+        if isinstance(node, dict):
+            children = node.get("children") or []
+        else:
+            children = getattr(node, "children", []) or []
+        if children:
+            flattened.extend(_iter_path_nodes(children))
+    return flattened
+
+
+def _as_path_node_dict(node: object) -> dict[str, str]:
+    """Normalise one path node for the diagnostic messages below."""
+    if isinstance(node, dict):
+        return {
+            "id": str(node.get("id") or ""),
+            "name": str(node.get("name") or ""),
+            "is_root": bool(node.get("is_root")),
+            "parent_id": str(node.get("parent_id") or ""),
+        }
+    return {
+        "id": str(getattr(node, "id", "") or ""),
+        "name": str(getattr(node, "name", "") or ""),
+        "is_root": bool(getattr(node, "is_root", False)),
+        "parent_id": str(getattr(node, "parent_id", "") or ""),
+    }
+
+
+def _owner_path_matches(owner_username: str, reference: str) -> list[dict[str, str]]:
+    """Find paths in the account's whole tree, regardless of agent grants.
+
+    ``resolve_writable_path_id`` may only *write* into granted paths. This
+    helper exists solely to produce a truthful refusal: when the named path
+    exists but was never mounted, the model (and the user) must be told
+    "存在但未挂载", not "不存在". It never grants access.
+    """
+    try:
+        from ...platform_store import paths as path_store
+
+        tree = path_store.list_path_tree(owner_username)
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the refusal
+        logger.debug(
+            "path_scope: could not inspect the account path tree",
+            exc_info=True,
+        )
+        return []
+
+    all_nodes = [
+        _as_path_node_dict(node) for node in _iter_path_nodes(tree)
+    ]
+    exact = [
+        node
+        for node in all_nodes
+        if node["id"] == reference or node["name"] == reference
+    ]
+    if exact:
+        return exact
+
+    lowered = reference.lower()
+    return [
+        node
+        for node in all_nodes
+        if not node["is_root"] and lowered in node["name"].lower()
+    ]
+
+
 def resolve_writable_path_id(owner_username: str, reference: str) -> str:
     """Turn what the user said (a case name or an id) into a writable path id.
 
@@ -325,9 +394,31 @@ def resolve_writable_path_id(owner_username: str, reference: str) -> str:
         f"{node['name']}（默认区）" if node["is_root"] else node["name"]
         for node in nodes
     )
+
+    # The name did not resolve inside the mounted set. Before saying "not
+    # found", check whether the account owns a matching path that was simply
+    # never mounted — the UI shows it, so "不存在" would be actively misleading.
+    owner_matches = _owner_path_matches(owner_username, reference)
+    if len(owner_matches) == 1:
+        match = owner_matches[0]
+        raise PathNotWritable(
+            f"路径「{match['name']}」已存在，但还没有挂载给当前智能体。"
+            f"请先在「数据分析」中把该路径挂载给当前智能体，再重试；"
+            f"不要改用知识空间上传。当前已挂载：{visible}。",
+        )
+    if len(owner_matches) > 1:
+        described = "、".join(
+            f"{node['name']}（{node['id']}）" for node in owner_matches
+        )
+        raise PathNotWritable(
+            f"找到多个匹配「{reference}」的已存在路径：{described}。"
+            f"请先在「数据分析」中挂载要使用的那一个，再用路径 id 指定。"
+            f"当前已挂载：{visible}。",
+        )
+
     raise PathNotWritable(
-        f"没有找到名为「{reference}」的可写入路径。当前可写入：{visible}。"
-        f"如需新案件，请先在「数据分析」中创建并挂载给该智能体。",
+        f"没有找到名为「{reference}」的路径。请先在「数据分析」中创建并挂载给该智能体；"
+        f"不要改用知识空间上传。当前可写入：{visible}。",
     )
 
 

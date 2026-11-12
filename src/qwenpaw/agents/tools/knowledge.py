@@ -591,6 +591,11 @@ async def upload_knowledge_document(
 ) -> ToolChunk:
     """Upload a user's file into a knowledge space so it can be searched later.
 
+    Only for knowledge-space document retrieval. A CSV/XLSX/XLS that the user
+    wants as a queryable data table (建表 / 入库 / 导入 / 录入 / 数据空间) must
+    use `create_data_table` + `import_data_table` instead — do not upload it
+    here.
+
     Args:
         file: 要上传的文件名或路径，例如"采购合同.pdf"。聊天附件直接传文件名即可。
         space_name: 目标知识空间名称；留空则上传到当前用户的默认知识空间。

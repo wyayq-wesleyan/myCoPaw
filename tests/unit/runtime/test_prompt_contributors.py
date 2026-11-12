@@ -171,13 +171,22 @@ def test_upload_inbox_explains_the_fixed_destination_and_extraction():
     assert "another account" in en
 
 
-def test_data_analysis_keeps_the_exact_phrase_gate_for_queries():
-    """Query tools stay behind「通过数据分析」; the write tools must not loosen it."""
+def test_data_analysis_gates_queries_but_not_write_tools():
+    """Only the read/query tools stay behind「通过数据分析」.
+
+    The write tools are the ingestion path for an attached spreadsheet; gating
+    them behind the exact phrase is what made the agent upload an Excel file to
+    the knowledge space instead of creating a data table.
+    """
     fragment = DataAnalysisContributor().contribute_sync(SimpleNamespace(extras={}))
 
     assert fragment is not None
+    assert "Reading / querying existing tables" in fragment
+    assert "Creating / importing a table (write tools)" in fragment
     assert "「通过数据分析」" in fragment
-    assert "DO NOT invoke these" in fragment
+    assert "Do NOT use them" in fragment
+    assert "are NOT gated by「通过数据分析」" in fragment
+    assert "Never use `upload_knowledge_document`" in fragment
 
 
 def test_data_analysis_describes_the_write_tools_and_their_both_conditions():
@@ -203,6 +212,19 @@ def test_knowledge_contributor_covers_saving_an_uploaded_file(monkeypatch):
     assert "pass it as `path`" in fragment
     assert "missing folder is created" in fragment
     assert "Only upload when the user asks you to keep the file" in fragment
+
+
+def test_knowledge_contributor_sends_tabular_files_to_the_data_tools(monkeypatch):
+    """A spreadsheet for the data space must not be uploaded as a document."""
+    monkeypatch.setenv("QWENPAW_KNOWLEDGE_URL", "http://127.0.0.1:18100")
+
+    fragment = KnowledgeRetrievalContributor().contribute_sync(SimpleNamespace(extras={}))
+
+    assert fragment is not None
+    assert "Tabular files are different" in fragment
+    assert "create_data_table" in fragment
+    assert "import_data_table" in fragment
+    assert "Never use `upload_knowledge_document` as a fallback" in fragment
 
 
 def test_knowledge_contributor_is_absent_without_a_service(monkeypatch):
