@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
+    "design:dev": "vite --config design-lab/vite.config.ts --host 127.0.0.1 --port 5174",
     "build": "tsc -b && vite build && npm run verify:monaco-css",
     "build:prod": "tsc -b && vite build --mode production && npm run verify:monaco-css",
     "build:tauri-bootstrap": "tsc -b && vite build --mode tauri --config src-tauri/vite.bootstrap.config.ts && node ../scripts/pack-tauri/finalize_tauri_bootstrap.mjs",
