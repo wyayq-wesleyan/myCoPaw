@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ app_title }} · {{ code }}{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">ERROR {{ code }}</span>
+      <h1>{{ code }}</h1>
+      <p>{{ message }}</p>
+    </div>
+    <div class="page-head-side">
+      <a class="btn btn-primary" href="{{ url_for('main.index') }}">回到控制台</a>
+    </div>
+  </section>
+{% endblock %}

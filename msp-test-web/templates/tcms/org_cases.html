@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 组织案件{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">TCMS / ORG CASES</span>
+      <h1>组织案件</h1>
+      <p>GET /api/v1/tcms/cases/{caseId}/org?userId=...&orgId=...&status=...</p>
+    </div>
+    <div class="page-head-side">
+      <span class="badge">{{ cases|length }} 条</span>
+      <a class="btn" href="{{ url_for('tcms.cases') }}">返回案件</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>查询条件</h2></div>
+    <form method="get" action="{{ url_for('tcms.org_cases') }}" class="inline-form-wrap">
+      <label>orgId（部门 ID，不是编码）
+        <input name="orgId" value="{{ org_id }}" required>
+      </label>
+      <label>userId
+        <input name="userId" value="{{ user_id }}" required>
+      </label>
+      <label>status
+        <input name="status" value="{{ status }}" placeholder="可选，默认 1">
+      </label>
+      <button class="btn btn-primary" type="submit">查询</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>案件列表</h2></div>
+    {% if cases %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>案件编号</th><th>案件名称</th><th>类型</th><th>状态</th><th>主办部门</th><th>负责人</th><th>操作</th></tr></thead>
+          <tbody>
+            {% for item in cases %}
+              <tr>
+                <td><code>{{ item.caseCode or '-' }}</code></td>
+                <td>{{ item.caseName or '-' }}</td>
+                <td>{{ item.caseTypeName or item.caseType or '-' }}</td>
+                <td><span class="pill">{{ item.status or '-' }}</span></td>
+                <td>{{ item.caseDeptOneName or '-' }}</td>
+                <td>{{ item.principal or '-' }}</td>
+                <td class="nowrap">
+                  <a class="link" href="{{ url_for('tcms.case_detail', caseCode=item.caseCode) }}">详情</a>
+                  <a class="link" href="{{ url_for('tcms.archives', caseId=item.caseId) }}">档案</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">没有数据。orgId 必须是部门 ID（MspOrganization.id），不是 orgCode。</div>
+    {% endif %}
+  </section>
+
+  {{ response_panel(response, '组织案件原始响应') }}
+{% endblock %}

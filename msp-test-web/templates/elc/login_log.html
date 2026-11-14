@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 登录日志{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">ELC / LOGIN</span>
+      <h1>登录日志</h1>
+      <p>POST /api/v1/elc/log/login?loginName=...&amp;clientIp=...</p>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head"><h2>参数</h2></div>
+      <form method="post" class="form">
+        <label>loginName
+          <input name="login_name" value="{{ login_name }}" required>
+        </label>
+        <label>clientIp（可选）
+          <input name="client_ip" placeholder="例如 192.168.1.10">
+        </label>
+        <button class="btn btn-primary" type="submit">写入登录日志</button>
+      </form>
+    </article>
+    <article class="card">
+      <div class="card-head"><h2>说明</h2></div>
+      <ul class="notes">
+        <li>middleware 的 <code>/api/v1/platform/session</code> 登录成功时也会自动写一条登录日志。</li>
+        <li>日志 module 固定为 <code>CK</code>，opType 为「用户登录」。</li>
+        <li>ELC 关闭时返回 DISABLED，不算失败。</li>
+      </ul>
+    </article>
+  </section>
+
+  {{ response_panel(response, 'ELC 原始响应') }}
+{% endblock %}

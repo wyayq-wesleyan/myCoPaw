@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel, data_table %}
+{% block title %}{{ app_title }} · 档案详情{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">TCMS / ARCHIVE</span>
+      <h1>档案详情</h1>
+      <p>GET /api/v1/tcms/cases/{{ case_id }}/archives/{{ archive_code }}</p>
+    </div>
+    <div class="page-head-side">
+      <a class="btn" href="{{ url_for('tcms.archives', caseId=case_id, systemCode=system_code_value, archiveKindCode=kind_code) }}">返回档案列表</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>{{ archive.archiveName or '(未命名档案)' }}</h2>
+      <span class="badge">{{ archive.archiveCode or '-' }}</span>
+    </div>
+    {% if archive %}
+      <dl class="kv kv-wide">
+        <dt>档案编号</dt><dd class="mono">{{ archive.archiveCode or '-' }}</dd>
+        <dt>公文编码</dt><dd class="mono">{{ archive.letterCode or '-' }}</dd>
+        <dt>档案名称</dt><dd>{{ archive.archiveName or '-' }}</dd>
+        <dt>档案状态</dt><dd><span class="pill">{{ archive.archiveStatus or '-' }}</span></dd>
+        <dt>审批结果</dt><dd><span class="pill">{{ archive.approveResult or '-' }}</span></dd>
+        <dt>公文类型</dt><dd>{{ archive.archiveKindName or '-' }} <code>{{ archive.archiveKindCode or '' }}</code></dd>
+        <dt>案件编号</dt><dd class="mono">{{ archive.caseCode or '-' }}</dd>
+        <dt>案件名称</dt><dd>{{ archive.caseName or '-' }}</dd>
+        <dt>填表人</dt><dd>{{ archive.fillingUserName or '-' }}</dd>
+        <dt>填表单位</dt><dd>{{ archive.fillingUnitName or '-' }}</dd>
+        <dt>创建时间</dt><dd class="mono">{{ archive.createDate or '-' }}</dd>
+        <dt>流程实例</dt><dd class="mono">{{ archive.instId or '-' }}</dd>
+      </dl>
+      {% if archive.pageUrl %}
+        <div class="button-row">
+          <a class="btn btn-primary" href="{{ archive.pageUrl }}" target="_blank" rel="noopener">打开公文页面</a>
+        </div>
+      {% endif %}
+    {% else %}
+      <div class="empty">没有取到档案信息。</div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>全部字段</h2></div>
+    {{ data_table(archive) }}
+  </section>
+
+  {{ response_panel(response, '档案详情原始响应') }}
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel, render_menu %}
+{% block title %}{{ app_title }} · 菜单{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">MSP / MENUS</span>
+      <h1>菜单获取</h1>
+      <p>GET /api/v1/msp/user/{loginName}/menus?systemCode=...；测试台按 parentCode 还原菜单树。</p>
+    </div>
+    <div class="page-head-side">
+      <span class="badge">{{ menus|length }} 个菜单</span>
+      <a class="btn" href="{{ url_for('msp.rights') }}">查看权限</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>查询参数</h2></div>
+    <form method="get" action="{{ url_for('msp.menus') }}" class="inline-form-wrap">
+      <label>systemCode
+        <input name="systemCode" value="{{ system_code_value }}">
+      </label>
+      <button class="btn btn-primary" type="submit">重新获取菜单</button>
+    </form>
+    <p class="muted">systemCode 是目标系统在 MSP 中配置的菜单/权限编码，不一定是 middleware 自身编码。</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>菜单树</h2></div>
+    {{ render_menu(menu_tree) }}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>菜单明细</h2></div>
+    {% if menus %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>menuId</th><th>menuCode</th><th>menuName</th><th>parentCode</th><th>orderNum</th><th>menuUrl</th></tr></thead>
+          <tbody>
+            {% for menu in menus %}
+              <tr>
+                <td><code>{{ menu.get('menuId') or '' }}</code></td>
+                <td><code>{{ menu.get('menuCode') or '' }}</code></td>
+                <td>{{ menu.get('menuName') or '' }}</td>
+                <td><code>{{ menu.get('parentCode') or '' }}</code></td>
+                <td>{{ menu.get('orderNum') if menu.get('orderNum') is not none else '' }}</td>
+                <td class="break">{{ menu.get('menuUrl') or '' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">没有菜单数据。检查 systemCode 是否为目标系统在 MSP 中登记的编码。</div>
+    {% endif %}
+  </section>
+
+  {{ response_panel(response, '菜单接口原始响应') }}
+{% endblock %}

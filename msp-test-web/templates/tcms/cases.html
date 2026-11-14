@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 案件列表{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">TCMS / CASES</span>
+      <h1>案件查询</h1>
+      <p>GET /api/v1/tcms/user/{userId}/cases，userId 来自登录会话（MspUser.id）。caseKind / caseStatus 可选。</p>
+    </div>
+    <div class="page-head-side">
+      <span class="badge">{{ cases|length }} 条</span>
+      <a class="btn" href="{{ url_for('tcms.flows') }}">流程工具</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>查询条件</h2></div>
+    <form method="get" action="{{ url_for('tcms.cases') }}" class="inline-form-wrap">
+      <label>userId
+        <input name="userId" value="{{ user_id }}" placeholder="登录返回的 userId" required>
+      </label>
+      <label>caseKind
+        <input name="caseKind" value="{{ case_kind }}" placeholder="可选，例如 caseKind.28">
+      </label>
+      <label>caseStatus
+        <input name="caseStatus" value="{{ case_status }}" placeholder="可选，默认 1">
+      </label>
+      <button class="btn btn-primary" type="submit">查询案件</button>
+    </form>
+    <p class="muted">
+      caseKind 是 MSP/TCMS 的字典编码，常见值：<code>caseKind.28</code> 刑事、<code>caseKind.29</code> 情报、
+      <code>caseKind.23</code> 警情、<code>caseKind.34</code> 初查。留空表示不限。
+    </p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>案件列表</h2>
+      {% if cases %}<span class="muted">点击案件编码查看详情</span>{% endif %}
+    </div>
+    {% if cases %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>案件编号</th><th>案件名称</th><th>类型</th><th>状态</th>
+              <th>主办部门</th><th>负责人</th><th>开始时间</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in cases %}
+              <tr>
+                <td><code>{{ item.caseCode or '-' }}</code></td>
+                <td>{{ item.caseName or '-' }}</td>
+                <td>
+                  {{ item.caseTypeName or item.caseType or '-' }}
+                  {% if item.caseKindId %}<div class="muted mono">{{ item.caseKindId }}</div>{% endif %}
+                </td>
+                <td><span class="pill">{{ item.status or '-' }}</span></td>
+                <td>{{ item.caseDeptOneName or item.caseDeptOne or '-' }}</td>
+                <td>{{ item.principal or '-' }}</td>
+                <td class="mono">{{ item.beginTime or '-' }}</td>
+                <td class="nowrap">
+                  <a class="link" href="{{ url_for('tcms.case_detail', caseCode=item.caseCode) }}">详情</a>
+                  <a class="link" href="{{ url_for('tcms.archives', caseId=item.caseId) }}">档案</a>
+                  <a class="link" href="{{ url_for('tcms.targets', caseId=item.caseId, userId=user_id) }}">目标</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">
+        没有案件数据。常见原因：userId 不对（必须是 MspUser.id，不是登录名）、该用户无案件权限、
+        caseStatus 过滤过严、或 middleware 的 TCMS Ice 未连通。请看下方原始响应。
+      </div>
+    {% endif %}
+  </section>
+
+  {{ response_panel(response, '案件查询原始响应') }}
+{% endblock %}

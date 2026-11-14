@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 统一认证{% endblock %}
+{% block content %}
+  {% set bundle = bundle|default(none) %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">AUTH / SSO</span>
+      <h1>统一认证</h1>
+      <p>先走标准 SSO 跳转；现场回调参数不稳定时，可用手工 token 或 loginName 查询做对照。</p>
+    </div>
+    <div class="page-head-side">
+      <span class="muted">回调地址</span>
+      <code class="break">{{ callback_url }}</code>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head">
+        <h2>1. SSO 登录跳转</h2>
+        <span class="badge">/api/v1/sso/login-url</span>
+      </div>
+      <p class="muted">targetUrl 必须是浏览器和 SSO 都能访问的地址。middleware 用它拼统一登录页地址。</p>
+      <form method="post" class="form">
+        <label>targetUrl（登录成功后回跳）
+          <input name="target_url" value="{{ callback_url }}" required>
+        </label>
+        <label>systemCode（MSP 菜单/权限编码）
+          <input name="system_code" value="{{ system_code }}">
+        </label>
+        <div class="button-row">
+          <button class="btn" type="submit" formaction="{{ url_for('auth.login_url_only') }}">只获取登录 URL</button>
+          <button class="btn btn-primary" type="submit" formaction="{{ url_for('auth.login_redirect') }}">直接跳转 SSO</button>
+        </div>
+      </form>
+
+      {% if login_url %}
+        <div class="divider"></div>
+        <label class="field-label">上次获取到的登录 URL</label>
+        <div class="copy-box"><code class="break">{{ login_url }}</code></div>
+        <div class="button-row">
+          <a class="btn btn-primary" href="{{ login_url }}" target="_blank" rel="noopener">新窗口打开登录页</a>
+        </div>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="card-head">
+        <h2>2. 手工 tssotoken</h2>
+        <span class="badge">/api/v1/platform/session</span>
+      </div>
+      <p class="muted">从浏览器地址栏或抓包拿到 token 后直接建立平台会话；sessionId 可留空。</p>
+      <form method="post" action="{{ url_for('auth.login_token') }}" class="form">
+        <label>tssotoken
+          <input name="tssotoken" placeholder="粘贴 tssotoken" autocomplete="off" required>
+        </label>
+        <label>sessionId（可选）
+          <input name="session_id" placeholder="消费方会话 ID / sId" autocomplete="off">
+        </label>
+        <label>systemCode
+          <input name="system_code" value="{{ system_code }}">
+        </label>
+        <div class="button-row">
+          <button class="btn btn-primary" type="submit">校验 token 并建立会话</button>
+          <button class="btn" type="submit" formaction="{{ url_for('auth.login_validate') }}">只校验 token</button>
+        </div>
+      </form>
+
+      <div class="divider"></div>
+
+      <div class="card-head">
+        <h2>3. 按 loginName 查询</h2>
+        <span class="badge badge-warn">不校验 token</span>
+      </div>
+      <p class="muted">直接查 MSP 用户/权限/菜单，用于快速确认 Ice 链路和数据。</p>
+      <form method="post" action="{{ url_for('auth.login_username') }}" class="form">
+        <label>loginName
+          <input name="login_name" placeholder="例如 zhangsan" required>
+        </label>
+        <label>systemCode
+          <input name="system_code" value="{{ system_code }}">
+        </label>
+        <button class="btn" type="submit">按 loginName 加载</button>
+      </form>
+    </article>
+  </section>
+
+  {% if bundle %}
+    <section class="card">
+      <div class="card-head"><h2>loginName 查询原始响应</h2></div>
+      <div class="stack">
+        {{ response_panel(bundle.user_response, '用户信息') }}
+        {{ response_panel(bundle.rights_response, '权限列表') }}
+        {{ response_panel(bundle.menus_response, '菜单列表') }}
+      </div>
+    </section>
+  {% endif %}
+
+  {{ response_panel(response, '接口响应') }}
+
+  <section class="card note-card">
+    <h2>排查提示</h2>
+    <ul class="notes">
+      <li>回调必须回到 <code>/sso/callback</code> 并带 <code>tssotoken</code> 或 <code>username</code>。</li>
+      <li>登录页 404 时，检查 middleware 的 <code>ssoServer</code> + <code>loginEndpoint</code> 是否多了一层 <code>/msp/</code>。</li>
+      <li>middleware 没有独立 logout 接口；测试台默认只清理本地会话，配置 <code>MSP_TEST_SSO_LOGOUT_URL</code> 后可跳 SSO 登出。</li>
+    </ul>
+  </section>
+{% endblock %}

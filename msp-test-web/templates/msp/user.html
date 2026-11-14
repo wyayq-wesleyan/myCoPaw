@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel, data_table %}
+{% block title %}{{ app_title }} · 用户信息{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">MSP / USER</span>
+      <h1>用户信息</h1>
+      <p>GET /api/v1/sso/user/{loginName}，失败时回退 /api/v1/msp/users/by-login/{loginName}。</p>
+    </div>
+    <div class="page-head-side">
+      <a class="btn" href="{{ url_for('auth.login') }}">切换登录</a>
+      <a class="btn btn-primary" href="{{ url_for('msp.rights') }}">查看权限</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>{{ user.realName or user.loginName or login_name }}</h2>
+      <span class="badge">userId {{ user.userId or '-' }}</span>
+    </div>
+    {{ data_table(user) }}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>角色</h2></div>
+    {% set role_list = user.get('roles') or state.roles %}
+    {% if role_list %}
+      <div class="tag-list">
+        {% for role in role_list %}
+          <span class="tag">{{ role.get('roleName') or role.get('roleCode') }} <code>{{ role.get('roleCode') }}</code></span>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty">没有角色数据</div>
+    {% endif %}
+  </section>
+
+  {{ response_panel(response, '用户信息原始响应') }}
+{% endblock %}

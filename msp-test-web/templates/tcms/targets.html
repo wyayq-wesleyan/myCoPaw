@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 目标对象{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">TCMS / TARGETS</span>
+      <h1>目标对象</h1>
+      <p>GET /api/v1/tcms/cases/{caseId}/targets?userId=...</p>
+    </div>
+    <div class="page-head-side">
+      <span class="badge">{{ targets|length }} 条</span>
+      <a class="btn" href="{{ url_for('tcms.cases') }}">返回案件</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>查询条件</h2></div>
+    <form method="get" action="{{ url_for('tcms.targets') }}" class="inline-form-wrap">
+      <label>caseId
+        <input name="caseId" value="{{ case_id }}" required>
+      </label>
+      <label>userId
+        <input name="userId" value="{{ user_id }}" required>
+      </label>
+      <button class="btn btn-primary" type="submit">查询目标</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>目标列表</h2></div>
+    {% if targets %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>目标 ID</th><th>目标名称</th><th>标识码</th><th>号码类型</th><th>网络制式</th><th>激活状态</th><th>侦控开始</th><th>侦控结束</th></tr>
+          </thead>
+          <tbody>
+            {% for item in targets %}
+              <tr>
+                <td><code>{{ item.targetId or '-' }}</code></td>
+                <td>{{ item.targetName or '-' }}</td>
+                <td class="mono">{{ item.targetNum or '-' }}</td>
+                <td>{{ item.numberType or '-' }}</td>
+                <td>{{ item.netWorkName or '-' }}</td>
+                <td><span class="pill">{{ item.activeStatus or item.status or '-' }}</span></td>
+                <td class="mono">{{ item.spyBeginTime or '-' }}</td>
+                <td class="mono">{{ item.spyEndTime or '-' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">没有目标对象数据。检查 caseId / userId，或该案件下确实没有目标。</div>
+    {% endif %}
+  </section>
+
+  {{ response_panel(response, '目标对象原始响应') }}
+{% endblock %}

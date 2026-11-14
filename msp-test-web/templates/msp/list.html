@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel, data_table %}
+{% block title %}{{ app_title }} · {{ title }}{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">MSP / DATA</span>
+      <h1>{{ title }}</h1>
+      <p>{{ subtitle }}</p>
+    </div>
+    <div class="page-head-side">
+      <a class="btn" href="{{ url_for('tools.raw_api') }}">原始 API</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>数据</h2></div>
+    {{ data_table(data) }}
+  </section>
+
+  {{ response_panel(response, title ~ '原始响应') }}
+{% endblock %}

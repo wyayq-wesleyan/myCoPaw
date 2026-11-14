@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel, data_table %}
+{% block title %}{{ app_title }} · 案件详情{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">TCMS / CASE</span>
+      <h1>案件详情</h1>
+      <p>
+        {% if query.caseCode %}GET /api/v1/tcms/case/{{ query.caseCode }}
+        {% else %}GET /api/v1/tcms/cases/id/{{ query.caseId }}{% endif %}
+      </p>
+    </div>
+    <div class="page-head-side">
+      {% if case.caseId %}
+        <a class="btn" href="{{ url_for('tcms.archives', caseId=case.caseId) }}">档案列表</a>
+        <a class="btn" href="{{ url_for('tcms.targets', caseId=case.caseId, userId=state.user.userId) }}">目标对象</a>
+      {% endif %}
+      <a class="btn" href="{{ url_for('tcms.cases') }}">返回列表</a>
+    </div>
+  </section>
+
+  {% if case %}
+    <section class="card">
+      <div class="card-head">
+        <h2>{{ case.caseName or '(未命名案件)' }}</h2>
+        <span class="badge">{{ case.caseCode or case.caseId }}</span>
+      </div>
+      <dl class="kv kv-wide">
+        <dt>caseId</dt><dd class="mono">{{ case.caseId or '-' }}</dd>
+        <dt>caseCode</dt><dd class="mono">{{ case.caseCode or '-' }}</dd>
+        <dt>案件类型</dt><dd>{{ case.caseTypeName or case.caseType or '-' }}</dd>
+        <dt>案件种类</dt><dd class="mono">{{ case.caseKindId or '-' }}</dd>
+        <dt>状态</dt><dd><span class="pill">{{ case.status or '-' }}</span></dd>
+        <dt>主办部门</dt><dd>{{ case.caseDeptOneName or case.caseDeptOne or '-' }}</dd>
+        <dt>负责人</dt><dd>{{ case.principal or '-' }}</dd>
+        <dt>创建人</dt><dd>{{ case.creator or '-' }}</dd>
+        <dt>开始时间</dt><dd class="mono">{{ case.beginTime or '-' }}</dd>
+        <dt>到期时间</dt><dd class="mono">{{ case.matureTime or '-' }}</dd>
+        <dt>结案时间</dt><dd class="mono">{{ case.endTime or '-' }}</dd>
+        <dt>创建时间</dt><dd class="mono">{{ case.createTime or '-' }}</dd>
+      </dl>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>全部字段</h2></div>
+      {{ data_table(case) }}
+    </section>
+  {% else %}
+    <section class="card">
+      <div class="empty">没有取到案件信息。检查 caseCode / caseId 是否正确，以及该用户是否有案件权限。</div>
+    </section>
+  {% endif %}
+
+  {{ response_panel(response, '案件详情原始响应') }}
+{% endblock %}

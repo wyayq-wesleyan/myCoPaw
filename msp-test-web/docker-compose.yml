@@ -1,0 +1,32 @@
+# 联调测试台（Integration Console）
+#
+# 使用 huizhi-assistant-v2.2.1 的 Python 运行镜像，不额外安装依赖。
+# 默认 host 网络：测试台可以直接访问宿主机 127.0.0.1:9089 上的 middleware，
+# 浏览器/SSO 也能通过宿主机 IP:18080 访问回调地址。
+#
+#   cp .env.example .env && vi .env
+#   docker compose up -d
+#   docker compose logs -f
+
+services:
+  integration-console:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-huizhi-runtime:2.2.1-amd64}
+    image: integration-console:local
+    container_name: integration-console
+    network_mode: host
+    environment:
+      MIDDLEWARE_BASE_URL: ${MIDDLEWARE_BASE_URL:-http://127.0.0.1:9089}
+      MSP_TEST_SYSTEM_CODE: ${MSP_TEST_SYSTEM_CODE:-middleware}
+      MSP_TEST_TCMS_SYSTEM_CODE: ${MSP_TEST_TCMS_SYSTEM_CODE:-}
+      MSP_TEST_ELC_SYSTEM_CODE: ${MSP_TEST_ELC_SYSTEM_CODE:-}
+      MSP_TEST_PORT: ${MSP_TEST_PORT:-18080}
+      MSP_TEST_SSO_LOGOUT_URL: ${MSP_TEST_SSO_LOGOUT_URL:-}
+      MSP_TEST_VERIFY_TLS: ${MSP_TEST_VERIFY_TLS:-false}
+      MSP_TEST_SECRET_KEY: ${MSP_TEST_SECRET_KEY:-integration-console-internal-only}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./:/opt/msp-test-web:ro
+    restart: "no"

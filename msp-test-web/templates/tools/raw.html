@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 原始 API{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">RAW HTTP CONSOLE</span>
+      <h1>原始 API 调试台</h1>
+      <p>直接调用 middleware 任意路径，查看状态码、耗时和完整 JSON。用于 Swagger 之外的排查。</p>
+    </div>
+  </section>
+
+  <section class="grid-2 raw-layout">
+    <article class="card">
+      <div class="card-head"><h2>请求</h2></div>
+      <form method="post" class="form">
+        <div class="field-row">
+          <label style="width:110px">Method
+            <select name="method">
+              {% for item in ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] %}
+                <option value="{{ item }}" {{ 'selected' if method == item else '' }}>{{ item }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="grow">Path
+            <input name="path" value="{{ path }}" placeholder="/api/v1/msp/systems" required>
+          </label>
+        </div>
+        <label>Query string（可选）
+          <input name="query" value="{{ query }}" placeholder="systemCode=middleware&amp;caseStatus=1">
+        </label>
+        <label>JSON body（POST/PUT/PATCH）
+          <textarea name="body" rows="9" placeholder='{"tssotoken":"..."}'>{{ body }}</textarea>
+        </label>
+        <button class="btn btn-primary" type="submit">发送请求</button>
+      </form>
+
+      <div class="divider"></div>
+      <h3 class="subhead">快速填入</h3>
+      <div class="quick-links">
+        {% for name, preset_method, preset_path, preset_query in presets %}
+          <a href="{{ url_for('tools.raw_api', method=preset_method, path=preset_path, query=preset_query) }}">{{ name }}</a>
+        {% endfor %}
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>响应</h2></div>
+      {% if error %}
+        <div class="notice notice-error">{{ error }}</div>
+      {% endif %}
+      {% if response %}
+        {{ response_panel(response, 'HTTP 响应') }}
+      {% elif not error %}
+        <div class="empty">发送请求后在这里查看结果。</div>
+      {% endif %}
+    </article>
+  </section>
+{% endblock %}

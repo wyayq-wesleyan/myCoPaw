@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 审计日志{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">ELC / LOG</span>
+      <h1>写入审计日志</h1>
+      <p>POST /api/v1/elc/log，对应 3.1 的 <code>ElcLogVO</code>：systemCode / module / opType / opDesc / opUserName / busiUrl / formData / logDataType。</p>
+    </div>
+    <div class="page-head-side">
+      {% if log_id %}<span class="badge badge-ok">logId {{ log_id }}</span>{% endif %}
+      <a class="btn" href="{{ url_for('elc.batch') }}">批量写入</a>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head"><h2>日志内容</h2></div>
+      <form method="post" class="form">
+        <div class="field-row">
+          <label class="grow">module
+            <input name="module" value="{{ default_module }}" placeholder="查询类 / 导出类 / 分析类" required>
+          </label>
+          <label class="grow">loginName
+            <input name="login_name" value="{{ login_name }}" required>
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="grow">operationType
+            <input name="operation_type" placeholder="例如 数据查询" required>
+          </label>
+          <label class="grow">result
+            <select name="result">
+              <option value="SUCCESS">SUCCESS</option>
+              <option value="FAILURE">FAILURE</option>
+            </select>
+          </label>
+        </div>
+        <label>operationDesc
+          <input name="operation_desc" placeholder="例如 查询案件 XXX 的话单" required>
+        </label>
+        <div class="field-row">
+          <label class="grow">requestUrl
+            <input name="request_url" value="/api/v1/tcms/user/cases" required>
+          </label>
+          <label style="width:110px">method
+            <select name="request_method">
+              <option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option>
+            </select>
+          </label>
+        </div>
+        <label>requestParams
+          <input name="request_params" placeholder='{"caseId":"..."}'>
+        </label>
+        <div class="field-row">
+          <label class="grow">clientIp
+            <input name="client_ip" placeholder="可选">
+          </label>
+          <label class="grow">costTime（毫秒）
+            <input name="cost_time" type="number" min="0" placeholder="可选">
+          </label>
+        </div>
+        <button class="btn btn-primary" type="submit">写入日志</button>
+      </form>
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>其他接口</h2></div>
+      <div class="action-list">
+        <a class="action-item" href="{{ url_for('elc.login_log') }}">
+          <span class="action-icon">登</span>
+          <span><strong>登录日志</strong><small>POST /api/v1/elc/log/login</small></span>
+        </a>
+        <a class="action-item" href="{{ url_for('elc.operation_log') }}">
+          <span class="action-icon">操</span>
+          <span><strong>操作日志</strong><small>POST /api/v1/elc/log/operation</small></span>
+        </a>
+        <a class="action-item" href="{{ url_for('elc.batch') }}">
+          <span class="action-icon">批</span>
+          <span><strong>批量写入</strong><small>POST /api/v1/elc/logs/batch</small></span>
+        </a>
+      </div>
+      <div class="divider"></div>
+      <h3 class="subhead">注意</h3>
+      <ul class="notes">
+        <li>ELC 关闭时接口返回 <code>DISABLED</code>，不会报错。</li>
+        <li>客户端异步发送，接口成功只代表已入本地队列。</li>
+        <li>要确认 ELC 服务端收到，需在 ELC 侧查日志，并检查 <code>/usr/elcLog</code> 落盘。</li>
+      </ul>
+    </article>
+  </section>
+
+  {{ response_panel(response, 'ELC 原始响应') }}
+{% endblock %}

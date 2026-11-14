@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 流程工具{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">TCMS / FLOW</span>
+      <h1>审批流程</h1>
+      <p>流程状态、关联档案、状态更新、发起流程。发起类接口目前仍有已知限制，见页面底部说明。</p>
+    </div>
+    <div class="page-head-side">
+      <a class="btn" href="{{ url_for('tcms.cases') }}">案件查询</a>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head"><h2>查询流程状态</h2><span class="badge">GET /flow/{taskId}/status</span></div>
+      <form method="post" class="form">
+        <input type="hidden" name="action" value="status">
+        <label>taskId
+          <input name="task_id" placeholder="业务任务 ID" required>
+        </label>
+        <button class="btn btn-primary" type="submit">查询状态</button>
+      </form>
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>按流程查档案</h2><span class="badge">GET /flow/{flowId}/archive</span></div>
+      <form method="post" class="form">
+        <input type="hidden" name="action" value="archive">
+        <label>flowId
+          <input name="flow_id" placeholder="流程/档案编码" required>
+        </label>
+        <button class="btn btn-primary" type="submit">查询档案</button>
+      </form>
+    </article>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head"><h2>更新流程状态</h2><span class="badge">PUT /flow/{archiveCode}/status</span></div>
+      <form method="post" class="form">
+        <input type="hidden" name="action" value="update">
+        <label>archiveCode
+          <input name="archive_code" placeholder="公文/档案编码" required>
+        </label>
+        <label>status
+          <select name="status">
+            <option value="0">0 - 审批完成</option>
+            <option value="1">1 - 审批中止</option>
+          </select>
+        </label>
+        <button class="btn btn-primary" type="submit">更新状态</button>
+      </form>
+      <p class="muted">这个接口会写 middleware 本地 TCMS 流程表，依赖 DAO；当前 standalone 部署可能失败。</p>
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>发起通用流程</h2><span class="badge">POST /flow/start-common</span></div>
+      <form method="post" class="form">
+        <input type="hidden" name="action" value="start-common">
+        <label>flowType
+          <input name="flow_type" placeholder="applyFun" required>
+        </label>
+        <label>taskId
+          <input name="task_id" placeholder="业务任务 ID" required>
+        </label>
+        <label>reason
+          <textarea name="reason" rows="3" placeholder="申请理由"></textarea>
+        </label>
+        <button class="btn" type="submit">发起</button>
+      </form>
+    </article>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>发起数据查询流程</h2><span class="badge">POST /flow/start</span></div>
+    <form method="post" class="form">
+      <input type="hidden" name="action" value="start">
+      <div class="field-row">
+        <label class="grow">loginName
+          <input name="login_name" value="{{ login_name }}" required>
+        </label>
+        <label class="grow">taskId
+          <input name="task_id" placeholder="业务任务 ID" required>
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="grow">flowType
+          <input name="flow_type" value="applyFun">
+        </label>
+        <label class="grow">systemCode
+          <input name="system_code" value="{{ tcms_system_code }}">
+        </label>
+      </div>
+      <label>callbackUrl
+        <input name="callback_url" value="{{ default_callback }}">
+      </label>
+      <label>reason
+        <textarea name="reason" rows="3" placeholder="申请理由 / 基本情况及工作目的"></textarea>
+      </label>
+      <button class="btn btn-primary" type="submit">发起流程</button>
+    </form>
+  </section>
+
+  {% if result %}
+    <section class="card">
+      <div class="card-head"><h2>结果</h2></div>
+      <pre class="json">{{ result|prettyjson }}</pre>
+    </section>
+  {% endif %}
+
+  {{ response_panel(response, '流程接口原始响应') }}
+
+  <section class="card note-card">
+    <h2>已知限制</h2>
+    <ul class="notes">
+      <li><code>TcmsService</code> 仍在 <code>new TcmsFlowManager()</code>，它需要 <code>TcmsFlowDao</code>、<code>custom.systemCode</code>，standalone 运行会失败。</li>
+      <li><code>FlowStartReq</code> 只有 loginName/taskId/flowType/reason/systemCode/callbackUrl，缺 caseCode、查询对象等 TCMS 必需字段。</li>
+      <li>案件/档案/目标查询走 <code>TcmsCaseService</code> / <code>TcmsFlowService</code> 静态方法，只依赖 MSP Ice，通常可用。</li>
+    </ul>
+  </section>
+{% endblock %}

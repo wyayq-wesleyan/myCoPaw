@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 操作日志{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">ELC / OPERATION</span>
+      <h1>操作日志</h1>
+      <p>POST /api/v1/elc/log/operation，参数全部走 query string。</p>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head"><h2>参数</h2></div>
+      <form method="post" class="form">
+        <label>loginName
+          <input name="login_name" value="{{ login_name }}" required>
+        </label>
+        <div class="field-row">
+          <label class="grow">module
+            <input name="module" value="查询类" required>
+          </label>
+          <label class="grow">operationType
+            <input name="operation_type" placeholder="数据查询" required>
+          </label>
+        </div>
+        <label>operationDesc
+          <input name="operation_desc" placeholder="查询用户列表" required>
+        </label>
+        <label>requestUrl
+          <input name="request_url" value="/api/v1/msp/users" required>
+        </label>
+        <label>costTime（毫秒，可选）
+          <input name="cost_time" type="number" min="0" placeholder="200">
+        </label>
+        <button class="btn btn-primary" type="submit">写入操作日志</button>
+      </form>
+    </article>
+    <article class="card">
+      <div class="card-head"><h2>说明</h2></div>
+      <ul class="notes">
+        <li>该接口只接受 query 参数，body 不生效。</li>
+        <li>内部异常会被吞掉并返回 null，页面显示成功但 logId 可能为空。</li>
+        <li>需要更完整字段（请求参数、结果、客户端 IP）时用「写入审计日志」的 JSON 接口。</li>
+      </ul>
+    </article>
+  </section>
+
+  {{ response_panel(response, 'ELC 原始响应') }}
+{% endblock %}

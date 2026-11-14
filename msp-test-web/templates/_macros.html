@@ -1,0 +1,99 @@
+{% macro response_panel(response, title='原始响应') %}
+  {% if response %}
+    <section class="card response-card">
+      <div class="card-head">
+        <h2>{{ title }}</h2>
+        <div class="meta">
+          {% if response.status %}
+            <span class="badge {{ 'badge-ok' if response.status < 400 else 'badge-bad' }}">HTTP {{ response.status }}</span>
+          {% else %}
+            <span class="badge badge-bad">请求异常</span>
+          {% endif %}
+          <span class="muted">{{ response.elapsed_ms }} ms</span>
+        </div>
+      </div>
+      <div class="url-line"><span class="k">URL</span><code>{{ response.url }}</code></div>
+      {% if response.error %}<div class="notice notice-error">{{ response.error }}</div>{% endif %}
+      {% if response.payload is not none %}
+        <pre class="json">{{ response.payload|prettyjson }}</pre>
+      {% elif response.text %}
+        <pre class="json">{{ response.text|masktext }}</pre>
+      {% else %}
+        <div class="empty">无响应内容</div>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endmacro %}
+
+{% macro render_menu(nodes) %}
+  {% if nodes %}
+    <ul class="menu-tree">
+      {% for node in nodes %}
+        <li>
+          <div class="menu-node">
+            <span class="menu-name">{{ node.menuName or '(未命名菜单)' }}</span>
+            <code>{{ node.menuCode or node.menuId or '' }}</code>
+            {% if node.menuUrl %}<span class="menu-url">{{ node.menuUrl }}</span>{% endif %}
+            {% if node.orderNum is not none %}<span class="muted">#{{ node.orderNum }}</span>{% endif %}
+          </div>
+          {% if node.children %}{{ render_menu(node.children) }}{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">没有菜单数据</div>
+  {% endif %}
+{% endmacro %}
+
+{% macro data_table(rows, columns=None, empty_text='无数据') %}
+  {% if rows is mapping %}
+    <div class="table-wrap">
+      <table><tbody>
+        {% for key, value in rows.items() %}
+          <tr><th>{{ key }}</th><td>{{ value if value is not none else '' }}</td></tr>
+        {% endfor %}
+      </tbody></table>
+    </div>
+  {% elif rows is sequence and rows is not string %}
+    {% if rows %}
+      {% if rows[0] is mapping %}
+        {% set cols = columns if columns else rows[0].keys()|list %}
+        <div class="table-wrap">
+          <table>
+            <thead><tr>{% for col in cols %}<th>{{ col }}</th>{% endfor %}</tr></thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>{% for col in cols %}<td>{{ row.get(col, '') if row is mapping else '' }}</td>{% endfor %}</tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="tag-list">
+          {% for item in rows %}<span class="tag">{{ item }}</span>{% endfor %}
+        </div>
+      {% endif %}
+    {% else %}
+      <div class="empty">{{ empty_text }}</div>
+    {% endif %}
+  {% elif rows is not none %}
+    <pre class="json">{{ rows|prettyjson }}</pre>
+  {% else %}
+    <div class="empty">{{ empty_text }}</div>
+  {% endif %}
+{% endmacro %}
+
+{% macro stat_tile(label, value, hint=None) %}
+  <div class="stat">
+    <span class="stat-label">{{ label }}</span>
+    <strong>{{ value }}</strong>
+    {% if hint %}<small>{{ hint }}</small>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro field(name, label, value='', placeholder='', type='text', required=False) %}
+  <label>{{ label }}
+    <input name="{{ name }}" type="{{ type }}" value="{{ value }}"
+           placeholder="{{ placeholder }}" {{ 'required' if required else '' }}>
+  </label>
+{% endmacro %}

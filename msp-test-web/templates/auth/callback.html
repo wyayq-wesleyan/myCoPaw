@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · SSO 回调{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">CALLBACK</span>
+      <h1>SSO 回调结果</h1>
+      <p>保留回调参数和 middleware 原始响应，便于判断 SSO 到底回了什么。</p>
+    </div>
+    <div class="page-head-side">
+      <a class="btn" href="{{ url_for('auth.login') }}">返回登录</a>
+      <a class="btn btn-primary" href="{{ url_for('main.index') }}">回到控制台</a>
+    </div>
+  </section>
+
+  <div class="notice {{ 'notice-success' if success else 'notice-error' }}">
+    {{ '回调已处理，平台会话已建立。' if success else '回调处理失败。' }}
+  </div>
+  {% if message %}<div class="notice notice-warning">{{ message }}</div>{% endif %}
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head"><h2>回调参数</h2></div>
+      {% if params %}
+        <div class="table-wrap">
+          <table><thead><tr><th>参数</th><th>值</th></tr></thead>
+            <tbody>
+              {% for key, value in params.items() %}
+                <tr><td><code>{{ key }}</code></td><td class="break">{{ value }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="empty">没有 query 参数</div>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>接下来</h2></div>
+      {% if logged_in %}
+        <dl class="kv">
+          <dt>loginName</dt><dd>{{ login_name }}</dd>
+          <dt>realName</dt><dd>{{ state.user.realName or '-' }}</dd>
+          <dt>userId</dt><dd>{{ state.user.userId or '-' }}</dd>
+          <dt>orgName</dt><dd>{{ state.user.orgName or '-' }}</dd>
+        </dl>
+        <div class="button-row">
+          <a class="btn" href="{{ url_for('msp.rights') }}">权限（{{ state.rights|length }}）</a>
+          <a class="btn" href="{{ url_for('msp.menus') }}">菜单（{{ state.menus|length }}）</a>
+          <a class="btn btn-primary" href="{{ url_for('tcms.cases') }}">查案件</a>
+        </div>
+      {% else %}
+        <div class="empty">未建立会话</div>
+      {% endif %}
+    </article>
+  </section>
+
+  {% if bundle %}
+    <section class="card">
+      <div class="card-head"><h2>loginName 查询原始响应</h2></div>
+      <div class="stack">
+        {{ response_panel(bundle.user_response, '用户信息') }}
+        {{ response_panel(bundle.rights_response, '权限列表') }}
+        {{ response_panel(bundle.menus_response, '菜单列表') }}
+      </div>
+    </section>
+  {% endif %}
+
+  {{ response_panel(response, '平台会话响应') }}
+{% endblock %}

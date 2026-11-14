@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 权限{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">MSP / RIGHTS</span>
+      <h1>权限获取</h1>
+      <p>GET /api/v1/msp/user/{loginName}/rights；单权限校验走 /rights/{rightsCode}。</p>
+    </div>
+    <div class="page-head-side">
+      <span class="badge">{{ rights|length }} 个权限</span>
+      <a class="btn" href="{{ url_for('msp.menus') }}">查看菜单</a>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <article class="card">
+      <div class="card-head">
+        <h2>权限编码</h2>
+        <span class="muted">loginName = {{ login_name }}</span>
+      </div>
+      {% if rights %}
+        <div class="tag-list">
+          {% for right in rights %}<span class="tag tag-blue">{{ right }}</span>{% endfor %}
+        </div>
+      {% else %}
+        <div class="empty">没有权限数据；可能是用户未配置权限或 MSP 调用失败，请看原始响应。</div>
+      {% endif %}
+    </article>
+
+    <article class="card">
+      <div class="card-head"><h2>单权限校验</h2></div>
+      <form method="post" action="{{ url_for('msp.rights_check') }}" class="form">
+        <label>rightsCode
+          <input name="right_code" value="{{ right_code|default('') }}" placeholder="例如 case:query" required>
+        </label>
+        <button class="btn btn-primary" type="submit">检查权限</button>
+      </form>
+      {% if check_result %}
+        <div class="divider"></div>
+        <div class="result-banner {{ 'ok' if check_result.get('hasRight') else 'bad' }}">
+          <strong>{{ '拥有权限' if check_result.get('hasRight') else '没有权限' }}</strong>
+          <span><code>{{ check_result.get('rightsCode') }}</code> · userCode <code>{{ check_result.get('userCode') }}</code></span>
+        </div>
+      {% endif %}
+    </article>
+  </section>
+
+  {{ response_panel(response, '权限接口原始响应') }}
+{% endblock %}

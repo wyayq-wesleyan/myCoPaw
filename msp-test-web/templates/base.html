@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_title }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="{{ url_for('main.index') }}">
+      <span class="brand-mark">联</span>
+      <span class="brand-text">
+        <strong>{{ app_title }}</strong>
+        <small>middleware integration</small>
+      </span>
+    </a>
+
+    <nav class="side-nav">
+      <span class="nav-label">总览</span>
+      <a class="nav-item {{ 'active' if request.endpoint == 'main.index' }}" href="{{ url_for('main.index') }}">
+        <span class="nav-icon">◎</span><span>控制台</span>
+      </a>
+
+      <span class="nav-label">模块</span>
+      {% for module in modules %}
+        <a class="nav-item {{ 'active' if active_module == module.key }}"
+           href="{{ url_for(module.route) }}">
+          <span class="nav-icon">{{ module.short[0] }}</span>
+          <span>{{ module.name }}</span>
+        </a>
+      {% endfor %}
+
+      <span class="nav-label">工具</span>
+      <a class="nav-item {{ 'active' if active_module == 'tools' }}" href="{{ url_for('tools.raw_api') }}">
+        <span class="nav-icon">▤</span><span>原始 API</span>
+      </a>
+      <a class="nav-item {{ 'active' if active_module == 'settings' }}" href="{{ url_for('settings.index') }}">
+        <span class="nav-icon">⚙</span><span>连接设置</span>
+      </a>
+    </nav>
+
+    <div class="side-status">
+      <div class="status-row">
+        <span class="status-dot {{ 'on' if logged_in else 'off' }}"></span>
+        <span>{{ '已登录' if logged_in else '未登录' }}</span>
+      </div>
+      {% if logged_in %}
+        <div class="side-user">{{ state.user.realName or login_name }}</div>
+        <div class="side-meta">{{ login_name }}</div>
+      {% endif %}
+      <div class="side-meta mono" title="{{ base_url }}">{{ base_url }}</div>
+      <div class="side-meta">systemCode <code>{{ system_code }}</code></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="crumbs">
+        <a href="{{ url_for('main.index') }}">控制台</a>
+        {% if active_module != 'main' %}
+          <span class="sep">/</span>
+          <span>{{ modules|selectattr('key','equalto',active_module)|map(attribute='name')|first or active_module }}</span>
+        {% endif %}
+      </div>
+      <div class="topbar-actions">
+        <span class="chip mono">{{ base_url }}</span>
+        {% if logged_in %}
+          <span class="chip">{{ state.user.realName or login_name }}</span>
+          <form method="post" action="{{ url_for('auth.logout') }}" class="inline">
+            <button class="btn btn-ghost btn-sm" type="submit">登出</button>
+          </form>
+        {% else %}
+          <a class="btn btn-primary btn-sm" href="{{ url_for('auth.login') }}">登录</a>
+        {% endif %}
+      </div>
+    </header>
+
+    <main class="content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack">
+            {% for category, msg in messages %}
+              <div class="notice notice-{{ category if category in ['success','warning','error','info'] else 'info' }}">{{ msg }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+      <span>{{ app_title }} · 内网联调工具，无网关鉴权，请勿暴露公网</span>
+      <span>systemCode <code>{{ system_code }}</code> · tcms <code>{{ tcms_system_code }}</code></span>
+    </footer>
+  </div>
+</div>
+</body>
+</html>

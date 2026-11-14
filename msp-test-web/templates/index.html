@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% from "_macros.html" import stat_tile %}
+{% block title %}{{ app_title }} · 控制台{% endblock %}
+{% block content %}
+  <section class="page-hero">
+    <div>
+      <span class="eyebrow">INTEGRATION CONSOLE</span>
+      <h1>{{ app_title }}</h1>
+      <p>把 middleware 的 HTTP 接口按模块串起来验证：统一认证 → MSP 用户/权限/菜单 → TCMS 案件与流程 → ELC 审计日志。
+         每个页面都保留 middleware 的原始响应，方便判断问题出在 middleware、Ice 还是平台侧。</p>
+      <div class="hero-actions">
+        {% if logged_in %}
+          <a class="btn btn-primary" href="{{ url_for('tcms.cases') }}">查询案件</a>
+          <a class="btn" href="{{ url_for('msp.rights') }}">查看权限</a>
+          <a class="btn" href="{{ url_for('tools.raw_api') }}">原始 API</a>
+        {% else %}
+          <a class="btn btn-primary" href="{{ url_for('auth.login') }}">开始联调</a>
+          <a class="btn" href="{{ url_for('settings.index') }}">配置连接</a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="hero-status">
+        <span class="status-dot {{ 'on' if logged_in else 'off' }}"></span>
+        <div>
+          <strong>{{ '会话已建立' if logged_in else '尚未建立会话' }}</strong>
+          <small>{{ login_source or '先走 SSO 或按 loginName 加载' }}</small>
+        </div>
+      </div>
+      <dl class="hero-kv">
+        <dt>middleware</dt><dd class="mono">{{ base_url }}</dd>
+        <dt>systemCode</dt><dd class="mono">{{ system_code }}</dd>
+        <dt>TCMS</dt><dd class="mono">{{ tcms_system_code }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  {% if logged_in %}
+    <section class="stats">
+      {{ stat_tile('当前用户', user.realName or login_name, user.loginName) }}
+      {{ stat_tile('userId', user.userId or '-', user.orgName or '未返回组织') }}
+      {{ stat_tile('角色 / 菜单 / 权限', roles|length ~ ' / ' ~ menus|length ~ ' / ' ~ rights|length, '来自登录聚合结果') }}
+      {{ stat_tile('登录时间', login_at or '-', login_source or '') }}
+    </section>
+  {% endif %}
+
+  <section class="module-grid">
+    {% for module in modules %}
+      <a class="module-card module-{{ module.color }}" href="{{ url_for(module.route) }}">
+        <div class="module-top">
+          <span class="module-short">{{ module.short }}</span>
+          <span class="module-arrow">→</span>
+        </div>
+        <h3>{{ module.name }}</h3>
+        <p>{{ module.desc }}</p>
+        <ul class="module-items">
+          {% for item in module['items'] %}<li>{{ item }}</li>{% endfor %}
+        </ul>
+      </a>
+    {% endfor %}
+  </section>
+
+  {% if logged_in %}
+    <section class="grid-2">
+      <article class="card">
+        <div class="card-head">
+          <h2>后续操作</h2>
+          <a class="btn btn-ghost btn-sm" href="{{ url_for('msp.user') }}">用户详情</a>
+        </div>
+        <div class="action-list">
+          <a class="action-item" href="{{ url_for('tcms.cases') }}">
+            <span class="action-icon">案</span>
+            <span><strong>按 userId 查案件</strong><small>GET /api/v1/tcms/user/{userId}/cases</small></span>
+          </a>
+          <a class="action-item" href="{{ url_for('tcms.flows') }}">
+            <span class="action-icon">流</span>
+            <span><strong>流程状态与发起</strong><small>/api/v1/tcms/flow/*</small></span>
+          </a>
+          <a class="action-item" href="{{ url_for('elc.log') }}">
+            <span class="action-icon">审</span>
+            <span><strong>写一条审计日志</strong><small>POST /api/v1/elc/log</small></span>
+          </a>
+          <a class="action-item" href="{{ url_for('tools.raw_api') }}">
+            <span class="action-icon">原</span>
+            <span><strong>原始 API 调试台</strong><small>任意路径 + 完整响应</small></span>
+          </a>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2>会话摘要</h2>
+          <span class="muted">/api/v1/platform/session</span>
+        </div>
+        <dl class="kv">
+          <dt>loginName</dt><dd>{{ login_name or '-' }}</dd>
+          <dt>userId</dt><dd>{{ user.userId or '-' }}</dd>
+          <dt>orgId</dt><dd>{{ user.orgId or '-' }}</dd>
+          <dt>orgName</dt><dd>{{ user.orgName or '-' }}</dd>
+          <dt>tssotoken</dt><dd class="mono">{{ tssotoken|masktoken or '-' }}</dd>
+        </dl>
+        <details>
+          <summary>展开完整 JSON</summary>
+          <pre class="json">{{ session_payload|prettyjson }}</pre>
+        </details>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <div class="card-head">
+          <h2>菜单预览</h2>
+          <a class="btn btn-ghost btn-sm" href="{{ url_for('msp.menus') }}">全部菜单</a>
+        </div>
+        {% if menus %}
+          <ul class="simple-list">
+            {% for menu in menus[:8] %}
+              <li><span>{{ menu.menuName or '(未命名)' }}</span><code>{{ menu.menuCode or menu.menuId }}</code></li>
+            {% endfor %}
+          </ul>
+          {% if menus|length > 8 %}<div class="muted">共 {{ menus|length }} 个，仅显示前 8 个</div>{% endif %}
+        {% else %}
+          <div class="empty">没有菜单数据</div>
+        {% endif %}
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2>权限预览</h2>
+          <a class="btn btn-ghost btn-sm" href="{{ url_for('msp.rights') }}">全部权限</a>
+        </div>
+        {% if rights %}
+          <div class="tag-list">
+            {% for right in rights[:12] %}<span class="tag tag-blue">{{ right }}</span>{% endfor %}
+          </div>
+          {% if rights|length > 12 %}<div class="muted">共 {{ rights|length }} 个，仅显示前 12 个</div>{% endif %}
+        {% else %}
+          <div class="empty">没有权限数据</div>
+        {% endif %}
+      </article>
+    </section>
+  {% else %}
+    <section class="grid-2">
+      <article class="card">
+        <div class="card-head"><h2>联调顺序</h2></div>
+        <ol class="steps">
+          <li><strong>配置连接</strong><span>在“连接设置”里填 middleware 地址和 systemCode。</span></li>
+          <li><strong>统一认证</strong><span>SSO 跳转或手工 tssotoken，建立平台会话。</span></li>
+          <li><strong>MSP 校验</strong><span>确认用户、组织、角色、权限、菜单都能取到。</span></li>
+          <li><strong>TCMS 案件</strong><span>用登录返回的 userId 查案件、档案、目标对象。</span></li>
+          <li><strong>ELC 审计</strong><span>写单条/登录/操作/批量日志，到 ELC 侧核对。</span></li>
+        </ol>
+      </article>
+      <article class="card">
+        <div class="card-head"><h2>没有 token 也能先查</h2></div>
+        <p class="muted">用 loginName 直接查 MSP 用户/权限/菜单，跳过 SSO；这条路径只用于联调，不校验 tssotoken。</p>
+        <form method="post" action="{{ url_for('auth.login_username') }}" class="form">
+          <label>loginName
+            <input name="login_name" placeholder="例如 zhangsan" required>
+          </label>
+          <label>systemCode
+            <input name="system_code" value="{{ system_code }}">
+          </label>
+          <button class="btn btn-primary" type="submit">按 loginName 加载</button>
+        </form>
+      </article>
+    </section>
+  {% endif %}
+{% endblock %}

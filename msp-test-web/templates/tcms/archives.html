@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 档案列表{% endblock %}
+{% block content %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">TCMS / ARCHIVES</span>
+      <h1>公文档案</h1>
+      <p>
+        {% if approved_only %}GET /api/v1/tcms/cases/{caseId}/archives/approved
+        {% else %}GET /api/v1/tcms/cases/{caseId}/archives{% endif %}
+      </p>
+    </div>
+    <div class="page-head-side">
+      <span class="badge">{{ archives|length }} 条</span>
+      <a class="btn" href="{{ url_for('tcms.cases') }}">返回案件</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>查询条件</h2></div>
+    <form method="get" action="{{ url_for('tcms.archives') }}" class="inline-form-wrap">
+      <label>caseId
+        <input name="caseId" value="{{ case_id }}" placeholder="案件 ID" required>
+      </label>
+      <label>systemCode
+        <input name="systemCode" value="{{ system_code_value }}">
+      </label>
+      <label>archiveKindCode
+        <input name="archiveKindCode" value="{{ kind_code }}" placeholder="可选，例如 1217">
+      </label>
+      <label class="checkbox">
+        <input type="checkbox" name="approved" value="1" {{ 'checked' if approved_only else '' }}>
+        只看已审批
+      </label>
+      <button class="btn btn-primary" type="submit">查询档案</button>
+    </form>
+    <p class="muted">
+      常见 archiveKindCode：<code>1217</code> 数据查询、<code>1218</code> 数据分析、<code>1219</code> 数据监测、
+      <code>139</code> 特定对象查询、<code>400</code> 数据比对。留空表示不限类型。
+    </p>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>档案列表</h2></div>
+    {% if archives %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>档案编号</th><th>名称</th><th>类型</th><th>档案状态</th><th>审批结果</th><th>填表人</th><th>创建时间</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            {% for item in archives %}
+              <tr>
+                <td><code>{{ item.archiveCode or '-' }}</code></td>
+                <td>{{ item.archiveName or '-' }}</td>
+                <td>
+                  {{ item.archiveKindName or '-' }}
+                  {% if item.archiveKindCode %}<div class="muted mono">{{ item.archiveKindCode }}</div>{% endif %}
+                </td>
+                <td><span class="pill">{{ item.archiveStatus or '-' }}</span></td>
+                <td><span class="pill">{{ item.approveResult or '-' }}</span></td>
+                <td>{{ item.fillingUserName or '-' }}</td>
+                <td class="mono">{{ item.createDate or '-' }}</td>
+                <td>
+                  <a class="link" href="{{ url_for('tcms.archive_detail', caseId=case_id, archiveCode=item.archiveCode, systemCode=system_code_value, archiveKindCode=item.archiveKindCode) }}">详情</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">没有档案数据。检查 caseId 是否正确、systemCode 是否是 middleware 注册的编码、archiveKindCode 是否过滤过窄。</div>
+    {% endif %}
+  </section>
+
+  {{ response_panel(response, '档案列表原始响应') }}
+{% endblock %}

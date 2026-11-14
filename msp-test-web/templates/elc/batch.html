@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_macros.html" import response_panel %}
+{% block title %}{{ app_title }} · 批量日志{% endblock %}
+{% block content %}
+  {% set default_body = body if body else '[{"module":"查询类","operationType":"数据查询","operationDesc":"查询案件列表","loginName":"' ~ (login_name or 'zhangsan') ~ '","clientIp":"192.168.1.10","requestUrl":"/api/v1/tcms/user/cases","requestMethod":"GET","requestParams":"{}","result":"SUCCESS","costTime":120}]' %}
+  <section class="page-head">
+    <div>
+      <span class="eyebrow">ELC / BATCH</span>
+      <h1>批量写入</h1>
+      <p>POST /api/v1/elc/logs/batch，body 是 <code>ElcLogReq</code> 数组。</p>
+    </div>
+    <div class="page-head-side">
+      {% if success_count is not none %}<span class="badge badge-ok">successCount {{ success_count }}</span>{% endif %}
+      <a class="btn" href="{{ url_for('elc.log') }}">单条写入</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>请求体</h2></div>
+    <form method="post" class="form">
+      <label>JSON 数组
+        <textarea name="body" rows="16">{{ default_body }}</textarea>
+      </label>
+      <button class="btn btn-primary" type="submit">批量写入</button>
+    </form>
+  </section>
+
+  {{ response_panel(response, 'ELC 原始响应') }}
+{% endblock %}
