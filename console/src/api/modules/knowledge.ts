@@ -20,6 +20,12 @@ export interface KnowledgeDocument {
   size?: number;
   created_at?: string;
   updated_at?: string;
+  /** Present on upload responses. A duplicate is idempotent, never a move. */
+  duplicate?: boolean;
+  moved?: boolean;
+  path_id?: string | null;
+  requested_path_id?: string | null;
+  message?: string;
 }
 
 export interface KnowledgeEvidence {
@@ -103,6 +109,10 @@ export interface KnowledgeHealth {
     embedding_available?: boolean;
     upload_block_reason?: string | null;
     upload_notice?: string | null;
+    /** Server-side single-file limit; the UI must not hard-code its own. */
+    max_file_mb?: number;
+    document_filter?: boolean;
+    identity_required?: boolean;
     worker?: {
       available?: boolean;
       status?: string | null;
@@ -170,10 +180,14 @@ export const knowledgeApi = {
     const link = document.createElement("a"); link.href = url; link.download = `job-${jobId}.log`; link.click(); URL.revokeObjectURL(url);
   },
 
-  searchFilter: (query: string) =>
+  searchFilter: (query: string, pathId?: string) =>
     request<KnowledgeSearchFilterResult>("/knowledge/search/filter", {
       method: "POST",
-      body: JSON.stringify({ query, top_k: 50 }),
+      body: JSON.stringify({
+        query,
+        top_k: 50,
+        ...(pathId ? { path_id: pathId } : {}),
+      }),
     }),
 
   /**
@@ -183,10 +197,15 @@ export const knowledgeApi = {
    * area. It is sent because the console uploads while a path is selected, and the
    * file must land where the user is looking rather than always in 公共区.
    */
-  upload: async (file: File, pathId?: string | null): Promise<KnowledgeDocument> => {
+  upload: async (
+    file: File,
+    pathId?: string | null,
+    copy = false,
+  ): Promise<KnowledgeDocument> => {
     const form = new FormData();
     form.append("file", file);
     if (pathId) form.append("path_id", pathId);
+    form.append("copy", copy ? "true" : "false");
     const response = await fetch(getApiUrl("/knowledge/documents/upload"), {
       method: "POST",
       headers: buildAuthHeaders(),

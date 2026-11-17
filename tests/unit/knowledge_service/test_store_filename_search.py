@@ -31,6 +31,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STORE_PATH = REPO_ROOT / "knowledge-service" / "app" / "store.py"
 MAIN_PATH = REPO_ROOT / "knowledge-service" / "app" / "main.py"
+FUSION_PATH = REPO_ROOT / "knowledge-service" / "app" / "fusion.py"
 
 try:  # only present in the knowledge-service environment
     import psycopg  # noqa: F401
@@ -100,35 +101,36 @@ def test_hybrid_search_fuses_filename_hits():
     assert "search_by_filename" in main, (
         "_hybrid_search must call the filename path"
     )
-    # The results have to enter the merge list, or the call is inert.
-    merge = re.search(
-        r"for item in \[(.*?)\]:", main, re.S,
+    # The results have to enter the ranked lists fed to the fusion stage, or
+    # the call is inert regardless of how good the filename query is.
+    assert '"filename": by_filename' in main, (
+        "filename hits must be a named ranked list in _hybrid_search"
     )
-    assert merge, "could not locate the fusion loop in _hybrid_search"
-    assert "by_filename" in merge.group(1), (
-        "filename hits must be part of the fused candidate list"
+    assert "fuse(ranked_lists)" in main, (
+        "_hybrid_search must use the shared RRF fusion stage"
     )
 
 
-def test_filename_hits_are_merged_before_content_hits():
-    """``merged`` is insertion-ordered and truncated to top_k.
+def test_fusion_is_rank_based_not_insertion_order():
+    """The old implementation concatenated lists and truncated by position.
 
-    Appending filename hits at the end would let content hits push them out of
-    the result — defeating the case where the query term is only in a filename.
+    A weak lexical hit could therefore push every semantic hit out of the
+    answer. The replacement must score by rank in each source.
     """
-    merge = re.search(r"for item in \[(.*?)\]:", _main_source(), re.S)
-    assert merge, "could not locate the fusion loop in _hybrid_search"
-    order = [part.strip() for part in merge.group(1).split(",") if part.strip()]
-
-    assert order and order[0] == "*by_filename", (
-        f"filename hits must be merged first, got order {order}"
+    main = _main_source()
+    assert "for item in [*by_filename" not in main, (
+        "insertion-order concatenation must not come back"
     )
+    fusion = FUSION_PATH.read_text(encoding="utf-8")
+    assert "RRF_K" in fusion and "fusion_score" in fusion, (
+        "fusion must compute an RRF-style score"
+    )
+    assert "rank" in fusion, "fusion must use per-source rank"
 
 
 def test_filename_source_has_a_weight():
-    weights = re.search(r"SOURCE_WEIGHT = \{(.*?)\}", _main_source(), re.S)
-    assert weights, "SOURCE_WEIGHT not found in _hybrid_search"
-    assert '"filename"' in weights.group(1), (
+    fusion = FUSION_PATH.read_text(encoding="utf-8")
+    assert '"filename"' in fusion, (
         "the filename source needs a weight, or it falls back to 0.5 and is "
         "reported as low confidence"
     )

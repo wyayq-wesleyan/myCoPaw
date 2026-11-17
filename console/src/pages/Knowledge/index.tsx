@@ -11,6 +11,7 @@ import {
   Row,
   Select,
   Col,
+  Checkbox,
   Space,
   Spin,
   Statistic,
@@ -50,7 +51,10 @@ import styles from "./index.module.less";
 const { RangePicker } = DatePicker;
 
 const ACCEPTED_FILES = ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.csv,.txt,.md,.json";
-const MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024;
+// Fallback only: the effective limit comes from the knowledge service's health
+// payload (KNOWLEDGE_MAX_FILE_MB). A hard-coded 10 GB made the UI accept files
+// the server rejected as soon as an operator lowered the limit.
+const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024;
 
 type DocumentListFilters = {
   filename?: string;
@@ -411,6 +415,11 @@ export default function KnowledgePage() {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [uploadBlockReason, setUploadBlockReason] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [maxFileSize, setMaxFileSize] = useState(DEFAULT_MAX_FILE_SIZE);
+  // Off by default: a duplicate is normally "already here", not "copy it".
+  // Turning this on is the explicit way to file the same material in a second
+  // case without moving it out of the first.
+  const [copyDuplicates, setCopyDuplicates] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [reprocessingId, setReprocessingId] = useState<string>();
@@ -573,6 +582,9 @@ export default function KnowledgePage() {
           : null,
       );
       setUploadNotice(health.service?.upload_notice || null);
+      if (typeof health.service?.max_file_mb === "number" && health.service.max_file_mb > 0) {
+        setMaxFileSize(health.service.max_file_mb * 1024 * 1024);
+      }
       if (health.configured && docsResult.status === "rejected") {
         message.error("无法加载文档列表");
       } else if (
@@ -649,7 +661,10 @@ export default function KnowledgePage() {
       let docIds: string[] | undefined;
 
       if (keywordFilter.trim()) {
-        const filterResult = await knowledgeApi.searchFilter(keywordFilter.trim());
+        const filterResult = await knowledgeApi.searchFilter(
+          keywordFilter.trim(),
+          selectedPath && selectedPath !== ALL_PATHS ? selectedPath : undefined,
+        );
         docIds = filterResult.document_ids;
         if (docIds.length === 0) {
           setAppliedFilters({ doc_ids: "__no_match__" });
@@ -1084,6 +1099,14 @@ export default function KnowledgePage() {
                   </Button>
                 </Popconfirm>
               )}
+              <Tooltip title="开启后，内容相同的文件会在当前路径再存一份（重新解析、占用额外空间）；关闭时只提示已存在，不移动原文件。">
+                <Checkbox
+                  checked={copyDuplicates}
+                  onChange={(event) => setCopyDuplicates(event.target.checked)}
+                >
+                  重复文件复制到当前路径
+                </Checkbox>
+              </Tooltip>
               <Upload
                 accept={ACCEPTED_FILES}
                 showUploadList={false}
@@ -1098,28 +1121,51 @@ export default function KnowledgePage() {
                     setUploading(true);
                     let success = 0;
                     let fail = 0;
+                    let duplicates = 0;
+                    const duplicateDetails: string[] = [];
                     for (const f of fileList.slice()) {
-                      if (f.size > MAX_FILE_SIZE) { fail++; continue; }
+                      if (f.size > maxFileSize) { fail++; continue; }
                       // Upload straight into the path the user is looking at.
                       // Without this the file became public no matter which path
                       // was selected (the picker above says where it will go).
                       try {
-                        await knowledgeApi.upload(f, uploadTargetPathId);
+                        const uploaded = await knowledgeApi.upload(
+                          f, uploadTargetPathId, copyDuplicates,
+                        );
+                        if (uploaded.duplicate) {
+                          duplicates++;
+                          if (uploaded.moved === false && uploaded.path_id) {
+                            const existingName =
+                              pathNames.get(uploaded.path_id)?.name || "其他路径";
+                            duplicateDetails.push(`${f.name}（已在「${existingName}」）`);
+                            continue;
+                          }
+                          if (uploaded.moved === false) {
+                            duplicateDetails.push(`${f.name}（已在公共区）`);
+                            continue;
+                          }
+                        }
                         success++;
                       } catch { fail++; }
                     }
                     await loadDocuments();
                     refreshTree();
                     setUploading(false);
-                    if (fail === 0) message.success(`${success} 个文件已归入「${uploadTargetName}」`);
-                    else message.warning(`${success} 个成功，${fail} 个失败`);
+                    if (duplicates > 0) {
+                      message.warning(
+                        `${duplicates} 个文件已存在，未移动：${duplicateDetails.slice(0, 3).join("、")}` +
+                          (duplicateDetails.length > 3 ? " 等" : ""),
+                      );
+                    }
+                    if (fail === 0 && duplicates === 0) message.success(`${success} 个文件已归入「${uploadTargetName}」`);
+                    else if (fail > 0) message.warning(`${success} 个成功，${fail} 个失败${duplicates ? `，${duplicates} 个重复未移动` : ""}`);
                     window.setTimeout(() => { uploadBatchGuard.current = false; }, 0);
                   })();
                   return false;
                 }}
                 disabled={uploading || Boolean(uploadBlockReason)}
               >
-                <Tooltip title={uploadBlockReason || `上传资料（归入「${uploadTargetName}」）`}>
+                <Tooltip title={uploadBlockReason || `上传资料（归入「${uploadTargetName}」，单个文件最大 ${Math.round(maxFileSize / 1024 / 1024)} MB）`}>
                   <Button
                     type="primary"
                     icon={<UploadOutlined />}

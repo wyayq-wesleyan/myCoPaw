@@ -240,6 +240,27 @@ bash scripts/docker_build_allinone.sh huizhi-runtime:2.2.1-arm64
 docker logs huizhi-knowledge-worker --tail 100
 ```
 
+### 4.6 调用方身份签名
+
+知识服务监听在宿主机网络（18100），同网段可直接访问，因此它不能只凭
+`X-User-Id` 判断调用者是谁。主应用会用共享密钥对 `用户名\n时间戳` 做 HMAC-SHA256，
+放进 `X-User-Ts` / `X-User-Sig`；服务端校验签名和时间偏差（默认 ±300 秒），失败返回
+401。
+
+| 变量 | 位置 | 说明 |
+|------|------|------|
+| `QWENPAW_KNOWLEDGE_IDENTITY_SECRET` | 主应用 `.env` | 签名密钥；留空时回退使用 `QWENPAW_KNOWLEDGE_API_KEY` |
+| `KNOWLEDGE_IDENTITY_SECRET` | 知识服务 `.env` | 必须与主应用一致；留空时回退使用 `KNOWLEDGE_API_KEY` |
+| `KNOWLEDGE_IDENTITY_MAX_SKEW_SECONDS` | 知识服务 `.env` | 允许的时钟偏差，默认 300 秒 |
+
+两边都留空时仍保持旧行为（信任 `X-User-Id`），仅建议本机开发使用。正式环境请配置
+独立的 `*_IDENTITY_SECRET`（不要复用 API Key：API Key 每次请求都会发送，复用只能证明
+“持有 Key”，不能证明身份由主应用签发）。`GET /health` 的 `identity_required` 字段可
+确认服务端是否已进入校验模式。
+
+**升级顺序**：先更新/重启主应用，再更新/重启知识服务 API。新主应用会带签名，旧知识
+服务会忽略该头；反过来（先更新知识服务）旧主应用不带签名，会被 401 拒绝。
+
 ## 5. 紧急重置
 
 ⚠️ **仅在容器损坏无法修复时使用，会丢失容器内所有变更。**

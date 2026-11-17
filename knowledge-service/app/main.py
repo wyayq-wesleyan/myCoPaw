@@ -18,6 +18,8 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
+from .fusion import MAX_FUSED_CANDIDATES, apply_rerank, fuse
+from .identity import DEFAULT_MAX_SKEW_SECONDS, verify_identity
 from .lightrag_bridge import LightRAGBridge
 from .logging_setup import attach_to_uvicorn, configure_logging
 from .parsers import extract_text_from_file
@@ -31,6 +33,13 @@ _log_file_handler = configure_logging("knowledge-api")
 logger = logging.getLogger("knowledge-api")
 store = Store(settings.database_url)
 lightrag = LightRAGBridge(settings)
+
+if not (settings.identity_secret or settings.api_key):
+    logger.warning(
+        "knowledge: no KNOWLEDGE_IDENTITY_SECRET / KNOWLEDGE_API_KEY configured; "
+        "X-User-Id is trusted as-is and callers are not authenticated. "
+        "This is a development-only mode."
+    )
 
 # 语义检索相关性地板（余弦分数）：实测分布 相关查询 0.45+，无关查询 <=0.36
 SEMANTIC_MIN_SCORE = 0.40
@@ -88,8 +97,33 @@ def require_api_key(
 def request_scope(
     x_user_id: str | None = Header(default=None),
     x_is_admin: str | None = Header(default=None),
+    x_user_ts: str | None = Header(default=None),
+    x_user_sig: str | None = Header(default=None),
 ) -> tuple[str, bool]:
-    return x_user_id or "default", (x_is_admin or "").lower() in {"1", "true", "yes"}
+    """Resolve the calling account from a signed, main-app-minted identity.
+
+    ``X-Is-Admin`` is accepted for wire compatibility but **always returns
+    False**: the store never honoured it, and leaving a client-controlled
+    privilege flag in place invites someone to "fix" it into a cross-account
+    bypass later. Admin access is decided by the main app's own session.
+    """
+    del x_is_admin
+    secret = settings.identity_secret or settings.api_key
+    if secret:
+        ok, reason = verify_identity(
+            secret,
+            x_user_id,
+            x_user_ts,
+            x_user_sig,
+            max_skew_seconds=settings.identity_max_skew_seconds
+            or DEFAULT_MAX_SKEW_SECONDS,
+        )
+        if not ok:
+            logger.warning("knowledge: rejected unsigned identity: %s", reason)
+            raise HTTPException(status_code=401, detail="Invalid caller identity")
+    elif not x_user_id:
+        raise HTTPException(status_code=401, detail="Missing caller identity")
+    return x_user_id or "default", False
 
 
 class SpaceRequest(BaseModel):
@@ -102,6 +136,12 @@ class QueryRequest(BaseModel):
     top_k: int = Field(default=20, ge=1, le=100)
     include_relations: bool = True
     include_evidence: bool = True
+    # Document-level reachability supplied by the main app (the owner of the
+    # path model). ``None`` means "no document filter" (account-wide view);
+    # an empty list means "deny everything" and must never be read as "no
+    # filter".
+    document_ids: list[str] | None = None
+    workspaces: list[str] = Field(default_factory=list)
 
 
 class SearchRequest(BaseModel):
@@ -114,6 +154,10 @@ class SearchRequest(BaseModel):
     # by the main app (which owns the path model); the knowledge service never
     # derives it, so there is exactly one place that decides reachability.
     workspaces: list[str] = Field(default_factory=list)
+    # Document-level filter from the same path model. Applied inside SQL, so a
+    # restricted caller cannot lose its own hits to other cases' documents and
+    # cannot receive a document it was not granted.
+    document_ids: list[str] | None = None
 
 
 class DocumentDetailRequest(BaseModel):
@@ -204,6 +248,11 @@ async def health() -> dict[str, Any]:
         "lightrag": await lightrag.health(),
         **await asyncio.to_thread(upload_readiness),
         "reranker_configured": settings.reranker_enabled and bool(settings.reranker_base_url and settings.reranker_model),
+        # The console reads this instead of hard-coding a limit that silently
+        # drifts from the server (the UI allowed 10 GB while .env said 100 MB).
+        "max_file_mb": settings.max_file_mb,
+        "identity_required": bool(settings.identity_secret or settings.api_key),
+        "document_filter": True,
     }
 
 
@@ -224,6 +273,7 @@ async def upload_document(
     file: UploadFile = File(...),
     space_id: str = Form(default=""),
     workspace: str = Form(default=""),
+    copy: bool = Form(default=False),
     scope: tuple[str, bool] = Depends(request_scope),
 ) -> dict[str, Any]:
     readiness = await asyncio.to_thread(upload_readiness)
@@ -261,16 +311,24 @@ async def upload_document(
         target_path.unlink(missing_ok=True)
         raise
     content_hash = content_digest.hexdigest()
-    existing = await asyncio.to_thread(store.find_document_by_hash, space_id, owner_id, content_hash, size)
+    # An explicit copy is the supported way to have one piece of material in
+    # two cases. It creates a distinct document (and pays for its own parsing /
+    # embedding); the default remains idempotent dedup.
+    existing = None
+    if not copy:
+        existing = await asyncio.to_thread(
+            store.find_document_by_hash, space_id, owner_id, content_hash, size,
+        )
     if existing:
         target_path.unlink(missing_ok=True)
-        if workspace:
-            # Content-addressed dedup returns the existing row; record the workspace
-            # so the graph follows *this* upload's path. Without it a file uploaded
-            # into case B after being uploaded into case A kept A's workspace.
-            await asyncio.to_thread(
-                store.set_document_workspace, existing["id"], workspace,
-            )
+        # Dedup must be *idempotent*, not a silent move. The existing document's
+        # graph workspace and its path binding belong to the case it was first
+        # filed in; overwriting either here made a re-upload in case B remove the
+        # document from case A. The main app decides whether to offer an explicit
+        # "copy to this case" action; the upload itself never relocates data.
+        existing_workspace = await asyncio.to_thread(
+            store.get_document_workspace, existing["id"],
+        )
         return {
             "id": existing["id"],
             "job_id": existing.get("job_id"),
@@ -278,7 +336,8 @@ async def upload_document(
             "filename": existing["filename"],
             "duplicate": True,
             "size": existing.get("size", size),
-            "workspace": workspace or None,
+            "workspace": existing_workspace,
+            "requested_workspace": workspace or None,
         }
     created = await asyncio.to_thread(
         store.create_document,
@@ -514,6 +573,12 @@ async def preview_document(
 class FilterRequest(BaseModel):
     query: str = Field(min_length=2, max_length=100000)
     top_k: int = Field(default=20, ge=1, le=100)
+    document_ids: list[str] | None = None
+    workspaces: list[str] = Field(default_factory=list)
+    # Optional space narrowing. When omitted the filter covers **every** space
+    # the account owns, matching the account-wide document list. Searching only
+    # the default space made documents visible in the list unfindable here.
+    space_id: str | None = None
 
 
 @app.post("/v1/search/filter", dependencies=[Depends(require_api_key)])
@@ -522,11 +587,40 @@ async def search_filter(
     scope: tuple[str, bool] = Depends(request_scope),
 ) -> dict[str, Any]:
     owner_id, is_admin = scope
-    space_obj = await asyncio.to_thread(store.get_or_create_user_space, owner_id)
-    space_id = space_obj["id"]
-    evidence, _relations, _semantic = await _hybrid_search(space_id, body.query, body.top_k)
-    doc_ids = list({e.get("document_id") for e in evidence if e.get("document_id")})
-    return {"document_ids": doc_ids, "total_count": len(evidence), "document_count": len(doc_ids)}
+    if body.space_id:
+        if not await asyncio.to_thread(
+            store.space_exists, body.space_id, owner_id, is_admin
+        ):
+            raise HTTPException(status_code=404, detail="Knowledge space not found")
+        space_ids = [body.space_id]
+    else:
+        spaces = await asyncio.to_thread(store.list_spaces, owner_id, is_admin)
+        space_ids = [str(space["id"]) for space in spaces][:50]
+
+    document_ids: list[str] = []
+    seen: set[str] = set()
+    for space_id in space_ids:
+        evidence, _relations, _semantic = await _hybrid_search(
+            space_id,
+            body.query,
+            body.top_k,
+            workspaces=body.workspaces,
+            document_ids=body.document_ids,
+        )
+        for item in evidence:
+            document_id = str(item.get("document_id") or "")
+            if document_id and document_id not in seen:
+                seen.add(document_id)
+                document_ids.append(document_id)
+                if len(document_ids) >= max(body.top_k, 1):
+                    break
+        if len(document_ids) >= max(body.top_k, 1):
+            break
+    return {
+        "document_ids": document_ids,
+        "total_count": len(document_ids),
+        "document_count": len(document_ids),
+    }
 
 
 @app.get("/v1/spaces/{space_id}/documents", dependencies=[Depends(require_api_key)])
@@ -608,6 +702,7 @@ async def _hybrid_search(
     query: str,
     top_k: int,
     workspaces: list[str] | None = None,
+    document_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     """融合检索：PostgreSQL 文件名/全文/字面/向量 + 实体上下文 + LightRAG 图检索。
 
@@ -615,73 +710,69 @@ async def _hybrid_search(
     source（主来源 = 最高权重路径）。
     返回 (evidence, relations, semantic_enabled)。
     """
-    local_evidence = await asyncio.to_thread(store.entity_context, space_id, query, top_k)
-    direct = await asyncio.to_thread(store.search, space_id, query, top_k)
-    by_filename = await asyncio.to_thread(store.search_by_filename, space_id, query, top_k)
+    if document_ids is not None and not document_ids:
+        # An explicit empty allow-list means "reach nothing". Treating it as
+        # "no filter" is the exact bug that made path isolation leak.
+        return [], [], False
+
+    local_evidence = await asyncio.to_thread(
+        store.entity_context, space_id, query, top_k, document_ids
+    )
+    direct = await asyncio.to_thread(
+        store.search, space_id, query, top_k, document_ids
+    )
+    by_filename = await asyncio.to_thread(
+        store.search_by_filename, space_id, query, top_k, document_ids
+    )
     vector = await asyncio.to_thread(ModelClient(settings).embed, [query])
     semantic = (
         await asyncio.to_thread(
-            store.search_by_embedding, space_id, vector[0], top_k, SEMANTIC_MIN_SCORE
+            store.search_by_embedding,
+            space_id,
+            vector[0],
+            top_k,
+            SEMANTIC_MIN_SCORE,
+            document_ids,
         )
         if vector
         else []
     )
 
-    # 聚合多路命中：按 chunk id 收集所有命中来源。
-    # 文件名命中排在合并序列最前：merged 是插入序且后面直接被 top_k 截断，放在末尾会
-    # 被内容命中挤掉，而「查询词只出现在文件名里」正是这一路要救的场景。文件名命中
-    # 只在查询词确实出现在文件名时就产生，精度高于内容/语义的模糊匹配，优先合理。
-    merged: dict[str, dict[str, Any]] = {}
-    for item in [*by_filename, *local_evidence, *direct, *semantic]:
-        key = item.get("id") or f"{item.get('document_id')}:{item.get('page')}:{item.get('location')}"
-        source = item.pop("source", "unknown")
-        if key in merged:
-            existing = merged[key]
-            if source not in existing["match_reasons"]:
-                existing["match_reasons"].append(source)
-            existing_score = existing.get("score") or 0
-            new_score = item.get("score") or 0
-            if new_score > existing_score:
-                existing["score"] = new_score
-        else:
-            item["match_reasons"] = [source]
-            merged[key] = item
-
-    # 归一化置信度：多路命中 = 高置信；单路按来源权重分档
-    SOURCE_WEIGHT = {
-        "fulltext": 1.0,
-        "filename": 0.95,
-        "literal": 0.9,
-        "semantic": 0.8,
-        "entity": 0.7,
+    # Each route keeps its own order; RRF turns those orders into one ranking.
+    # Raw scores are not comparable (ts_rank vs cosine vs bigram coverage), so
+    # merging them by value — or by list position — was always arbitrary.
+    ranked_lists: dict[str, list[dict[str, Any]]] = {
+        "filename": by_filename,
+        "entity": local_evidence,
+        "fulltext": [item for item in direct if item.get("source") == "fulltext"],
+        "literal": [item for item in direct if item.get("source") == "literal"],
+        "semantic": semantic,
     }
-    for item in merged.values():
-        reasons = item.get("match_reasons", [])
-        if len(reasons) >= 2:
-            item["confidence"] = "high"
-        else:
-            weight = SOURCE_WEIGHT.get(reasons[0], 0.5)
-            item["confidence"] = "high" if weight >= 0.9 else "medium" if weight >= 0.7 else "low"
-        item["source"] = max(reasons, key=lambda r: SOURCE_WEIGHT.get(r, 0))
 
-    # LightRAG 图检索：本地关键词匹配对语义改写和跨文档关联较弱，
-    # 为图谱证据保留约 1/3 配额，避免被低质量字面匹配挤占。
-    graph_results = []
-    if merged:
+    # Graph evidence has no document id, so it may only be used when the caller
+    # supplied the path workspaces it is scoped to. Without a workspace list a
+    # document-filtered query would leak graph chunks from other paths.
+    allow_graph = document_ids is None or bool(workspaces)
+    if allow_graph and any(ranked_lists.values()):
         graph_results = await lightrag.search(
             query, space_id, top_k, workspaces=workspaces,
         )
-    if graph_results:
-        for g in graph_results:
-            g["match_reasons"] = [g.get("source", "lightrag")]
-            g["confidence"] = "medium"
-        reserved = min(len(graph_results), max(2, top_k // 3))
-        local_items = list(merged.values())
-        evidence = [*local_items[:max(0, top_k - reserved)], *graph_results[:reserved]]
-    else:
-        evidence = list(merged.values())[:top_k]
+        if graph_results:
+            ranked_lists["lightrag"] = graph_results
 
-    relations = await asyncio.to_thread(store.relation_context, space_id, query, top_k)
+    fused = fuse(ranked_lists)
+    candidate_limit = min(
+        max(top_k * 4, 40), MAX_FUSED_CANDIDATES,
+    )
+    candidates = fused[:candidate_limit]
+    ordering = await asyncio.to_thread(
+        ModelClient(settings).rerank, query, candidates, top_k,
+    ) if candidates else None
+    evidence = apply_rerank(candidates, ordering)[:top_k]
+
+    relations = await asyncio.to_thread(
+        store.relation_context, space_id, query, top_k, document_ids
+    )
     return evidence, relations, bool(vector)
 
 
@@ -691,7 +782,11 @@ async def query(body: QueryRequest, scope: tuple[str, bool] = Depends(request_sc
     if not await asyncio.to_thread(store.space_exists, body.space_id, owner_id, is_admin):
         raise HTTPException(status_code=404, detail="Knowledge space not found")
     evidence, relations, semantic_enabled = await _hybrid_search(
-        body.space_id, body.query, body.top_k
+        body.space_id,
+        body.query,
+        body.top_k,
+        workspaces=body.workspaces,
+        document_ids=body.document_ids,
     )
     relations = relations if body.include_relations else []
     # Answers must be generated from the already space-filtered evidence. The
@@ -729,7 +824,13 @@ async def query_stream(body: QueryRequest, scope: tuple[str, bool] = Depends(req
         raise HTTPException(status_code=404, detail="Knowledge space not found")
 
     # 融合检索（本地 + LightRAG 图检索）
-    evidence, relations, _ = await _hybrid_search(body.space_id, body.query, body.top_k)
+    evidence, relations, _ = await _hybrid_search(
+        body.space_id,
+        body.query,
+        body.top_k,
+        workspaces=body.workspaces,
+        document_ids=body.document_ids,
+    )
     relations = relations if body.include_relations else []
 
     def generate():
@@ -757,7 +858,11 @@ async def search(body: SearchRequest, scope: tuple[str, bool] = Depends(request_
 
     # 融合检索（本地 + LightRAG 图检索）
     evidence, relations, semantic_enabled = await _hybrid_search(
-        body.space_id, body.query, body.top_k, workspaces=body.workspaces,
+        body.space_id,
+        body.query,
+        body.top_k,
+        workspaces=body.workspaces,
+        document_ids=body.document_ids,
     )
     relations = relations if body.include_relations else []
 

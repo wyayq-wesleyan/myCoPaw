@@ -26,6 +26,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .. import knowledge_client as knowledge_http
 from ...platform_store import paths as path_store
 from ..user_space import get_request_username, user_agent_ids
 from ...utils.io_utils import run_sync_io
@@ -704,6 +705,43 @@ def _move_table_storage(resource_kind: str, resource_id: str, path_id: str | Non
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+async def _assert_resource_owned(
+    username: str, resource_kind: str, resource_id: str,
+) -> None:
+    """Refuse to bind a resource the calling account does not own.
+
+    The path store keeps only ids, and the knowledge documents live in another
+    database, so a plain "does this path belong to me" check is not enough: a
+    caller who knew another account's document id could bind it to their own
+    path. That does not expose the bytes (the knowledge service still filters by
+    owner), but it removes the document from the victim's public area and makes
+    the path tree lie about where it is. Verify ownership at the source.
+    """
+    if resource_kind not in path_store.RESOURCE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"未知的资源类型 {resource_kind!r}，可选：{', '.join(path_store.RESOURCE_KINDS)}",
+        )
+    if resource_kind != path_store.KIND_KNOWLEDGE_DOCUMENT:
+        # Data tables are checked by the physical move below: an unknown table
+        # raises TableNotFound before the binding row is written.
+        return
+    if not knowledge_http.service_url():
+        # Knowledge integration is not configured at all: there are no
+        # knowledge documents to bind, so there is nothing to verify. Failing
+        # here would only break the data-table/legacy paths in a deployment that
+        # intentionally runs without the standalone service.
+        return
+    owned = await knowledge_http.document_exists(username, resource_id)
+    if owned is False:
+        raise HTTPException(status_code=404, detail="知识文档不存在或不属于当前账号。")
+    if owned is None:
+        raise HTTPException(
+            status_code=503,
+            detail="知识服务暂不可用，无法校验文档归属；请稍后重试。",
+        )
+
+
 @router.put("/{path_id}/resources")
 async def bind_resource(
     request: Request, path_id: str, body: BindResourceRequest,
@@ -722,6 +760,7 @@ async def bind_resource(
     """
     username = _username(request)
     _path_or_404(path_id, username)
+    await _assert_resource_owned(username, body.resource_kind, body.resource_id)
     _move_table_storage(body.resource_kind, body.resource_id, path_id)
     try:
         path_store.bind_resource(path_id, body.resource_kind, body.resource_id)
@@ -759,6 +798,7 @@ async def unbind_resource(
     """
     username = _username(request)
     _path_or_404(path_id, username)
+    await _assert_resource_owned(username, resource_kind, resource_id)
     try:
         path_store.unbind_resource(resource_kind, resource_id)
     except path_store.PathScopeError as exc:
@@ -793,6 +833,7 @@ async def unbind_resource_any_path(
     current = path_store.path_of_resource(resource_kind, resource_id)
     if current is not None:
         _path_or_404(current, username)
+    await _assert_resource_owned(username, resource_kind, resource_id)
     try:
         path_store.unbind_resource(resource_kind, resource_id)
     except path_store.PathScopeError as exc:

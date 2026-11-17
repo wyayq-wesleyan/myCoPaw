@@ -201,6 +201,79 @@ class ModelClient:
                 continue
         return described
 
+    # Rerankers are optional: a deployment without one keeps the fused order.
+    # The call is deliberately best-effort — a slow or missing reranker must
+    # degrade to RRF, never fail the search.
+    RERANK_DOCUMENT_MAX_CHARS = 2000
+    RERANK_TIMEOUT_SECONDS = 30
+
+    def rerank(
+        self,
+        query: str,
+        candidates: list[dict[str, Any]],
+        top_n: int,
+    ) -> list[tuple[int, float]] | None:
+        """Return ``[(index_in_candidates, relevance_score), ...]`` or ``None``.
+
+        Accepts the OpenAI-compatible ``/rerank`` shape (``results``/``data``
+        with ``index`` + ``relevance_score``/``score``) and the bare-list shape
+        used by several inference servers.
+        """
+        if not getattr(self.settings, "reranker_enabled", False):
+            return None
+        if not (
+            self.settings.reranker_base_url
+            and self.settings.reranker_model
+            and candidates
+        ):
+            return None
+        documents = [
+            str(item.get("content") or "")[: self.RERANK_DOCUMENT_MAX_CHARS]
+            for item in candidates
+        ]
+        payload = {
+            "model": self.settings.reranker_model,
+            "query": query,
+            "documents": documents,
+            "top_n": max(1, min(int(top_n), len(documents))),
+        }
+        try:
+            response = httpx.post(
+                f"{self.settings.reranker_base_url}/rerank",
+                headers=self._headers(self.settings.reranker_api_key),
+                json=payload,
+                timeout=self.RERANK_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except Exception:
+            return None
+
+        rows: Any = body
+        if isinstance(body, dict):
+            rows = body.get("results") or body.get("data") or body.get("rerank_results")
+        if not isinstance(rows, list):
+            return None
+
+        ordering: list[tuple[int, float]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                index = int(row.get("index"))
+            except (TypeError, ValueError):
+                continue
+            raw = row.get("relevance_score", row.get("score"))
+            try:
+                score = float(raw)
+            except (TypeError, ValueError):
+                score = 0.0
+            ordering.append((index, score))
+        if not ordering:
+            return None
+        ordering.sort(key=lambda pair: pair[1], reverse=True)
+        return ordering
+
     @staticmethod
     def _strip_meta(text: str) -> str:
         """移除模型常见的英文元描述后缀"""

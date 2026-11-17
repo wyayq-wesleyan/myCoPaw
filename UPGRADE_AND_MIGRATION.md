@@ -75,6 +75,9 @@
 | 审计搬离事件循环 | `ResourceGovernor.audit_async()`；工具前置检查 / 沙箱违规 / 审批结果三处改为 `await` | **无需动作**：纯位置变更，审计内容与契约不变（失败仍不传播） |
 | 知识服务启动恢复加 owner 判定 | `recover_interrupted_jobs` 只回收无存活心跳的任务 | **无需动作**，且**是多副本的前置**：起第二个 worker 之前必须先有这一条，否则重启会重复执行任务 |
 | 管理员诊断接口 | 新增 `GET /api/debug/io-pools` | **无需动作**：仅管理员可读，只返回计数 |
+| **知识隔离收口（本轮）** | 自动注入/工具/知识页筛选统一走路径允许集合；检索在 SQL 层按 `document_ids` 过滤；自动注入不再搜整个账号 | **部署动作**：两侧配置相同的 `QWENPAW_KNOWLEDGE_IDENTITY_SECRET` / `KNOWLEDGE_IDENTITY_SECRET`（留空则回退用 API Key），**先重启主应用、再重启知识服务 API**（反向会让旧主应用的未签名请求被 401）。数据库无结构变更 |
+| **检索融合（本轮）** | 来源拼接改为 RRF 排序 + 可选 reranker；`/v1/search` 增加 `document_ids`、`/v1/search/filter` 支持 `path_id` 与跨空间 | **无需数据迁移**；若配置了 reranker，`/health` 的 `reranker_configured` 会变为 true，检索耗时增加一次模型调用 |
+| **重复上传语义（本轮）** | 去重命中返回 `duplicate: true`，不再覆盖图谱 workspace、不再自动移动路径；新增“重复文件复制到当前路径”选项（服务端 `copy=true`） | **无需数据迁移**；前端默认提示“已存在，未移动”，勾选复制后才会在当前路径新建一份（重新解析、额外占空间）。历史上被误移动的文档需人工在知识页转移回原路径（图谱落点需重跑 `/v1/graph/move`） |
 
 ### 2.3 数据库结构变更
 

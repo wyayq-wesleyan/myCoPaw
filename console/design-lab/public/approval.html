@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>查询审批 · 审批中心</title>
+    <style>
+      :root {
+        --ink: #172b4d;
+        --muted: #6b778c;
+        --line: #dfe3ea;
+        --bg: #f4f6f9;
+        --blue: #1f5f9e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      .header {
+        height: 56px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 28px;
+        background: #172b4d;
+        color: #fff;
+      }
+      .mark {
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.12);
+        font-size: 13px;
+      }
+      .header strong { font-size: 14px; letter-spacing: 0.04em; }
+      .header span { color: rgba(255, 255, 255, 0.55); font-size: 10px; }
+      .wrap {
+        width: min(760px, calc(100% - 40px));
+        margin: 28px auto;
+      }
+      .crumb { color: var(--muted); font-size: 11px; margin-bottom: 10px; }
+      .card {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 8px 30px rgba(23, 43, 77, 0.06);
+      }
+      .card-head {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--line);
+      }
+      .card-head h1 { margin: 0; font-size: 18px; font-weight: 600; }
+      .card-head p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+      .body { padding: 18px 20px 20px; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        overflow: hidden;
+        background: var(--line);
+      }
+      .grid div {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 10px 12px;
+        background: #fff;
+      }
+      .grid label { color: var(--muted); font-size: 10px; }
+      .grid strong { font-size: 12px; font-weight: 550; }
+      .field { margin-top: 16px; }
+      .field label { display: block; margin-bottom: 6px; font-size: 11px; font-weight: 550; }
+      textarea {
+        width: 100%;
+        min-height: 86px;
+        resize: vertical;
+        padding: 9px 10px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        font: inherit;
+        font-size: 12px;
+        outline: none;
+      }
+      textarea:focus { border-color: #8aa9c7; }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      button {
+        height: 34px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: #fff;
+        color: var(--ink);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+      button.danger { border-color: #d8b4ae; color: #a33a2a; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .result {
+        display: none;
+        margin-top: 16px;
+        padding: 12px 14px;
+        border: 1px solid #cfe2d4;
+        border-radius: 6px;
+        background: #f2f8f4;
+        color: #2f6f52;
+        font-size: 11px;
+        line-height: 1.7;
+      }
+      .result.show { display: block; }
+      .foot { margin-top: 12px; color: var(--muted); font-size: 10px; line-height: 1.7; }
+    </style>
+  </head>
+  <body>
+    <header class="header">
+      <div class="mark">审</div>
+      <strong>审批中心</strong>
+      <span>查询批次审批 · 原型页面</span>
+    </header>
+
+    <main class="wrap">
+      <div class="crumb">首页 / 审批中心 / 查询批次审批</div>
+      <section class="card">
+        <div class="card-head">
+          <h1>查询批次审批</h1>
+          <p>该页面为审批系统页面，由汇智小助手通过接入服务发起后在新标签页打开。</p>
+        </div>
+        <div class="body">
+          <div class="grid">
+            <div><label>审批流程</label><strong id="flow">—</strong></div>
+            <div><label>查询批次</label><strong id="batch">—</strong></div>
+            <div><label>申请应用</label><strong>汇智小助手</strong></div>
+            <div><label>申请人</label><strong>张三</strong></div>
+            <div style="grid-column: 1 / -1"><label>本批次目标</label><strong id="target">—</strong></div>
+          </div>
+
+          <div class="field">
+            <label for="opinion">审批意见</label>
+            <textarea id="opinion" placeholder="请填写审批意见（原型可留空）"></textarea>
+          </div>
+
+          <div class="actions">
+            <button class="danger" id="reject">驳回</button>
+            <button class="primary" id="approve">通过审批</button>
+          </div>
+
+          <div class="result" id="result"></div>
+          <div class="foot">
+            审批通过后，审批系统会回调 接入服务；接入服务 完成查询后将结果入库，并通知汇智小助手展示数据。
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const flowId = params.get("flow") || "审批-20261116-0031";
+      const batchId = params.get("batch") || "批次-20261116-0042";
+      const target = params.get("target") || "本批次 2 个目标";
+
+      document.getElementById("flow").textContent = flowId;
+      document.getElementById("batch").textContent = batchId;
+      document.getElementById("target").textContent = target;
+
+      function decide(decision) {
+        const result = document.getElementById("result");
+        const approved = decision === "approved";
+        result.className = "result show";
+        result.textContent = approved
+          ? "审批已通过。已回调 接入服务，正在等待查询结果入库并通知小助手。"
+          : "审批已驳回。已通知 接入服务 结束本次查询批次。";
+
+        const payload = {
+          type: "huizhi-tcms-approval",
+          flowId,
+          batchId,
+          decision,
+        };
+
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(payload, "*");
+        }
+
+        // 原型环境用 localStorage 跨标签页通知小助手，避免弹出页 opener 被浏览器策略置空。
+        localStorage.setItem("huizhi-tcms-approval", JSON.stringify(payload));
+
+        document.getElementById("approve").disabled = true;
+        document.getElementById("reject").disabled = true;
+      }
+
+      document.getElementById("approve").addEventListener("click", () => decide("approved"));
+      document.getElementById("reject").addEventListener("click", () => decide("rejected"));
+    </script>
+  </body>
+</html>

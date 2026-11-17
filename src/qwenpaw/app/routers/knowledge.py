@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from .. import knowledge_client as knowledge_http
 from .auth import _request_username
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,10 @@ class KnowledgeSearchRequest(BaseModel):
     top_k: int = Field(default=20, ge=1, le=100)
     include_relations: bool = True
     min_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Optional path narrowing. Never trusted as a document allow-list by the
+    # service: the proxy resolves it through the path store, so a client cannot
+    # widen its own scope by sending ids it was not granted.
+    path_id: str = Field(default="", max_length=200)
 
 
 class DocumentChunksRequest(BaseModel):
@@ -43,7 +48,7 @@ class DocumentChunksRequest(BaseModel):
 
 
 def _service_url() -> str:
-    return os.environ.get("QWENPAW_KNOWLEDGE_URL", "").strip().rstrip("/")
+    return knowledge_http.service_url()
 
 
 def workspace_for_path(path_id: str) -> str:
@@ -70,11 +75,12 @@ def _workspace_for_root(username: str) -> str:
 
 
 def _service_headers(username: str) -> dict[str, str]:
-    headers = {"X-User-Id": username, "X-Is-Admin": "true" if username == "admin" else "false"}
-    key = os.environ.get("QWENPAW_KNOWLEDGE_API_KEY", "").strip()
-    if key:
-        headers["X-Knowledge-Key"] = key
-    return headers
+    """Account-scoped headers, signed by the shared helper.
+
+    Keeping this thin wrapper means the many call sites in this router do not
+    each have to remember to sign; there is exactly one implementation.
+    """
+    return knowledge_http.service_headers(username)
 
 
 @router.get("/health")
@@ -314,6 +320,7 @@ async def upload_knowledge_document(
     request: Request,
     space_id: str = Form(default=""),
     path_id: str = Form(default=""),
+    copy: bool = Form(default=False),
     file: UploadFile = File(...),
 ) -> Any:
     """Upload a document, filing it under *path_id* when one is given.
@@ -365,7 +372,11 @@ async def upload_knowledge_document(
                 f"{url}/v1/documents/upload",
                 headers=_service_headers(username),
                 files={"file": (file.filename or "unnamed", file.file, file.content_type or "application/octet-stream")},
-                data={"space_id": space_id, "workspace": target_workspace},
+                data={
+                    "space_id": space_id,
+                    "workspace": target_workspace,
+                    "copy": "true" if copy else "false",
+                },
             )
             response.raise_for_status()
             payload = response.json()
@@ -377,6 +388,33 @@ async def upload_knowledge_document(
     # File it after a successful upload: binding first would leave a membership row
     # pointing at a document that was never created.
     document_id = str((payload or {}).get("id") or "")
+    duplicate = bool((payload or {}).get("duplicate"))
+    if duplicate and document_id:
+        # Content-addressed dedup is idempotent, not a move. Re-uploading the same
+        # bytes into another case used to overwrite the existing document's graph
+        # workspace and then re-bind it, so the file silently left the case it was
+        # first filed in. Report the existing location instead; an explicit
+        # transfer is the user's decision, not an upload side effect.
+        existing_path = path_store.path_of_resource(
+            path_store.KIND_KNOWLEDGE_DOCUMENT, document_id,
+        )
+        if path_id and existing_path != path_id:
+            payload["moved"] = False
+            payload["path_id"] = existing_path
+            payload["requested_path_id"] = path_id
+            payload["message"] = (
+                "该文件已存在于当前账号的知识库中，未移动。"
+                "如需归入当前路径，请在文档列表中手动转移。"
+            )
+            return payload
+        if path_id and existing_path == path_id:
+            payload["moved"] = False
+            payload["path_id"] = path_id
+            return payload
+        if not path_id:
+            payload["moved"] = False
+            payload["path_id"] = existing_path
+            return payload
     if path_id and document_id:
         try:
             path_store.bind_resource(
@@ -390,6 +428,8 @@ async def upload_knowledge_document(
             ) from exc
     if isinstance(payload, dict):
         payload["path_id"] = path_id or None
+        if duplicate:
+            payload.setdefault("moved", False)
     return payload
 
 
@@ -602,12 +642,17 @@ async def search_knowledge(body: KnowledgeSearchRequest, request: Request) -> di
     url = _service_url()
     if not url:
         raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+    document_ids, workspaces = await _resolve_path_scope(request, body.path_id)
+    payload = body.model_dump()
+    payload.pop("path_id", None)
+    payload["document_ids"] = document_ids
+    payload["workspaces"] = workspaces
     try:
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(
                 f"{url}/v1/search",
                 headers=_service_headers(username),
-                json=body.model_dump(),
+                json=payload,
             )
             response.raise_for_status()
             return response.json()
@@ -621,6 +666,24 @@ async def search_knowledge(body: KnowledgeSearchRequest, request: Request) -> di
 class KnowledgeSearchFilterRequest(BaseModel):
     query: str = Field(min_length=2, max_length=100000)
     top_k: int = Field(default=50, ge=1, le=200)
+    path_id: str = Field(default="", max_length=200)
+
+
+async def _resolve_path_scope(
+    request: Request, path_id: str,
+) -> tuple[list[str] | None, list[str]]:
+    """Turn a path into the explicit allow-list the search service can apply.
+
+    ``None`` documents means "no path filter" (the account-wide view). An empty
+    list means the path is unknown/foreign and the caller must reach nothing —
+    the same fail-closed distinction the service enforces.
+    """
+    if not path_id:
+        return None, []
+    resolved = await _resolve_path_document_filter(request, path_id)
+    if resolved is None:
+        return [], []
+    return resolved, [workspace_for_path(path_id)]
 
 
 @router.post("/search/filter")
@@ -629,12 +692,17 @@ async def search_knowledge_filter(body: KnowledgeSearchFilterRequest, request: R
     url = _service_url()
     if not url:
         raise HTTPException(status_code=503, detail="Knowledge service is not configured")
+    document_ids, workspaces = await _resolve_path_scope(request, body.path_id)
+    payload = body.model_dump()
+    payload.pop("path_id", None)
+    payload["document_ids"] = document_ids
+    payload["workspaces"] = workspaces
     try:
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(
                 f"{url}/v1/search/filter",
                 headers=_service_headers(username),
-                json=body.model_dump(),
+                json=payload,
             )
             response.raise_for_status()
             return response.json()

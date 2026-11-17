@@ -17,6 +17,7 @@ import httpx
 
 from agentscope.message import Base64Source, DataBlock, Msg, TextBlock, URLSource
 
+from ...app import knowledge_client as knowledge_http
 from ...app.channels.utils import file_url_to_local_path
 from ...config import load_config
 from .file_handling import download_file_from_base64, download_file_from_url
@@ -55,10 +56,10 @@ def _truncate_chat_text(text: str, limit: int, marker: str) -> tuple[str, bool]:
 def _get_knowledge_parse_config():
     global _KNOWLEDGE_PARSE_URL, _KNOWLEDGE_PARSE_KEY
     if not _KNOWLEDGE_PARSE_URL:
-        _KNOWLEDGE_PARSE_URL = os.environ.get("QWENPAW_KNOWLEDGE_URL", "")
-        _KNOWLEDGE_PARSE_KEY = os.environ.get(
-            "QWENPAW_KNOWLEDGE_API_KEY", "huizhi-local-knowledge-dev"
-        )
+        _KNOWLEDGE_PARSE_URL = knowledge_http.service_url()
+        # No hard-coded fallback key: an unset key must mean "no key", not a
+        # development credential that happens to match nothing in production.
+        _KNOWLEDGE_PARSE_KEY = knowledge_http.api_key()
     return _KNOWLEDGE_PARSE_URL, _KNOWLEDGE_PARSE_KEY
 
 
@@ -74,7 +75,7 @@ async def _parse_file_via_knowledge(file_path: str, filename: str) -> dict | Non
             with open(file_path, "rb") as f:
                 response = await client.post(
                     parse_url,
-                    headers={"X-Knowledge-Key": key},
+                    headers=knowledge_http.service_key_headers(),
                     files={"file": (filename, f)},
                 )
             if response.status_code != 200:

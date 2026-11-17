@@ -209,12 +209,20 @@ class TestAgainstRealPostgres:
     def test_neighbour_query_uses_the_hnsw_index(self) -> None:
         """查询计划必须出现 HNSW 索引 —— 否则仍是一次全表扫描。"""
         import psycopg  # noqa: PLC0415
+        from psycopg.rows import dict_row  # noqa: PLC0415
 
         store = self._store()
         if not store._vector_column_available():
             pytest.skip("pgvector column not present")
         vec = "[" + ",".join(["0.01"] * 1024) + "]"
-        with psycopg.connect(_DSN) as db:
+        # The index is built by the worker's idle branch, not by Store.__init__
+        # (see the startup contract below). A fresh test database therefore has
+        # the column but not the index yet; create it here so the plan check is
+        # measuring the query, not the fixture.
+        with store._connect() as setup:
+            setup.execute(store._create_hnsw_index_statement())
+        with psycopg.connect(_DSN, row_factory=dict_row) as db:
+            db.execute("SET enable_seqscan = off")
             plan = "\n".join(
                 r["QUERY PLAN"] for r in db.execute(
                     """

@@ -53,6 +53,25 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def document_filter(
+    column: str,
+    document_ids: list[str] | None,
+) -> tuple[str, list[Any]]:
+    """SQL fragment restricting a query to an explicit document allow-list.
+
+    ``None`` means the caller asked for no filter (account-wide listing);
+    an **empty list** means the caller was granted nothing and must reach
+    nothing. Collapsing those two states into "no filter" is exactly how a
+    path-restricted caller used to receive another case's chunks, so the
+    distinction is made once here instead of in every query.
+    """
+    if document_ids is None:
+        return "", []
+    if not document_ids:
+        return " AND FALSE", []
+    return f" AND {column} = ANY(%s)", [list(document_ids)]
+
+
 def _json_value(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
@@ -1571,25 +1590,38 @@ class Store:
         seen: set[str] = set()
         return [t for t in terms if not (t in seen or seen.add(t))]
 
-    def search(self, space_id: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
+    def search(
+        self,
+        space_id: str,
+        query: str,
+        limit: int = 20,
+        document_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Literal retrieval scored by CJK-bigram coverage.
 
         The full-text index is tried first (works for latin-script content);
         CJK queries are additionally scored by how many query bigrams each
         chunk contains, which survives where tsvector tokenization fails.
+
+        ``document_ids`` is the path model's allow-list. It is applied in SQL
+        so a restricted query cannot be crowded out by other cases' chunks and
+        cannot receive a document it was not granted.
         """
+        doc_clause, doc_params = document_filter("c.document_id", document_ids)
+        if document_ids is not None and not document_ids:
+            return []
         with self._connect() as db:
             full_text_rows = db.execute(
-                """
+                f"""
                 SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
                        ts_rank_cd(c.search_vector, plainto_tsquery('simple', %s)) AS score
                 FROM chunks c JOIN documents d ON d.id = c.document_id
-                WHERE c.space_id = %s
-                  AND c.search_vector @@ plainto_tsquery('simple', %s)
+                WHERE c.space_id = %s AND c.search_vector @@ plainto_tsquery('simple', %s)
+                {doc_clause}
                 ORDER BY score DESC
                 LIMIT %s
                 """,
-                (query, space_id, query, limit),
+                [query, space_id, query, *doc_params, limit],
             ).fetchall()
 
             terms = self._cjk_bigrams(query)
@@ -1599,17 +1631,19 @@ class Store:
                     f"(CASE WHEN c.content LIKE %s THEN 1 ELSE 0 END)" for _ in terms
                 )
                 like_params = [f"%{term}%" for term in terms]
-                # 占位符顺序：SELECT 打分 N 个 LIKE → 除数 → WHERE space_id → WHERE 打分 N 个 LIKE → LIMIT
+                # 占位符顺序：SELECT 打分 N 个 LIKE → 除数 → WHERE space_id
+                # → 文档过滤 → WHERE 打分 N 个 LIKE → LIMIT
                 rows = db.execute(
                     f"""
                     SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
                            ({whens})::float / %s AS score
                     FROM chunks c JOIN documents d ON d.id = c.document_id
                     WHERE c.space_id = %s AND ({whens}) > 0
+                    {doc_clause}
                     ORDER BY score DESC
                     LIMIT %s
                     """,
-                    [*like_params, float(len(terms)), space_id, *like_params, limit * 3],
+                    [*like_params, float(len(terms)), space_id, *like_params, *doc_params, limit * 3],
                 ).fetchall()
             else:
                 rows = []
@@ -1626,7 +1660,13 @@ class Store:
                 merged[item["id"]] = item
         return list(merged.values())[:limit]
 
-    def search_by_filename(self, space_id: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
+    def search_by_filename(
+        self,
+        space_id: str,
+        query: str,
+        limit: int = 20,
+        document_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Retrieve documents whose *filename* matches the query terms.
 
         Filenames routinely carry information the body does not: version tags
@@ -1647,6 +1687,9 @@ class Store:
         terms = self._cjk_bigrams(query)
         if not terms:
             return []
+        if document_ids is not None and not document_ids:
+            return []
+        doc_clause, doc_params = document_filter("doc.id", document_ids)
         lowered = [f"%{term.lower()}%" for term in terms]
         whens = " + ".join(
             "(CASE WHEN lower(doc.filename) LIKE %s THEN 1 ELSE 0 END)" for _ in terms
@@ -1661,6 +1704,7 @@ class Store:
                            ({whens}) AS hits
                     FROM documents doc
                     WHERE doc.space_id = %s
+                    {doc_clause}
                 ) s
                 JOIN documents d ON d.id = s.document_id
                 JOIN chunks c ON c.document_id = s.document_id
@@ -1674,8 +1718,8 @@ class Store:
                 LIMIT %s
                 """,
                 # 占位符顺序：SELECT 除数 → 子查询 N 个 LIKE → 外层 space_id
-                #            → 子查询 space_id → LIMIT
-                [float(len(terms)), *lowered, space_id, space_id, limit],
+                #            → 文档过滤 → 子查询 space_id → LIMIT
+                [float(len(terms)), *lowered, space_id, *doc_params, space_id, limit],
             ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -1690,6 +1734,7 @@ class Store:
         vector: list[float],
         limit: int = 20,
         min_score: float = 0.0,
+        document_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Semantic retrieval, scored in the database.
 
@@ -1711,10 +1756,14 @@ class Store:
         """
         if not vector:
             return []
+        if document_ids is not None and not document_ids:
+            return []
 
         with self._connect() as db:
             if self._has_vector_column(db):
-                rows = self._vector_search_sql(db, space_id, vector, limit, min_score)
+                rows = self._vector_search_sql(
+                    db, space_id, vector, limit, min_score, document_ids,
+                )
                 if rows:
                     # The query deliberately fetches more candidates than *limit*
                     # so that discounting scores below *min_score* still leaves
@@ -1748,7 +1797,7 @@ class Store:
                             space_id, self.HNSW_INDEX_NAME,
                         )
                     return []
-            rows = self._load_all_vectors(db, space_id)
+            rows = self._load_all_vectors(db, space_id, document_ids)
 
         return self._score_in_python(rows, vector, limit, min_score)
 
@@ -1821,6 +1870,7 @@ class Store:
         vector: list[float],
         limit: int,
         min_score: float,
+        document_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Nearest neighbours via the HNSW index.
 
@@ -1836,19 +1886,21 @@ class Store:
         """
         literal = "[" + ",".join(f"{float(x):.8g}" for x in vector) + "]"
         candidates = max(limit * 4, limit + 20)
+        doc_clause, doc_params = document_filter("c.document_id", document_ids)
         try:
             return db.execute(
-                """
+                f"""
                 SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
                        1 - (ce.embedding <=> %s::vector) AS score
                 FROM chunk_embeddings ce
                 JOIN chunks c ON c.id = ce.chunk_id
                 JOIN documents d ON d.id = c.document_id
                 WHERE c.space_id = %s AND ce.embedding IS NOT NULL
+                {doc_clause}
                 ORDER BY ce.embedding <=> %s::vector
                 LIMIT %s
                 """,
-                (literal, space_id, literal, candidates),
+                [literal, space_id, *doc_params, literal, candidates],
             ).fetchall()
         except Exception as exc:  # noqa: BLE001 - fall back rather than fail
             logger.warning(
@@ -1858,19 +1910,25 @@ class Store:
             return []
 
     @staticmethod
-    def _load_all_vectors(db: Any, space_id: str) -> list[dict[str, Any]]:
+    def _load_all_vectors(
+        db: Any,
+        space_id: str,
+        document_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Load every vector in the space — the pre-pgvector fallback path."""
+        doc_clause, doc_params = document_filter("c.document_id", document_ids)
         try:
             return db.execute(
-                """
+                f"""
                 SELECT c.id, c.document_id, c.page, c.location, c.content, d.filename,
                        ce.vector_json
                 FROM chunk_embeddings ce
                 JOIN chunks c ON c.id = ce.chunk_id
                 JOIN documents d ON d.id = c.document_id
                 WHERE c.space_id = %s
+                {doc_clause}
                 """,
-                (space_id,),
+                [space_id, *doc_params],
             ).fetchall()
         except Exception:  # noqa: BLE001
             return []
@@ -1951,10 +2009,19 @@ class Store:
             item["source"] = "semantic"
         return ranked[:limit]
 
-    def entity_context(self, space_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]:
+    def entity_context(
+        self,
+        space_id: str,
+        query: str,
+        limit: int = 50,
+        document_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if document_ids is not None and not document_ids:
+            return []
+        doc_clause, doc_params = document_filter("c.document_id", document_ids)
         with self._connect() as db:
             rows = db.execute(
-                """
+                f"""
                 SELECT c.id, e.id AS entity_id, e.name, e.entity_type, m.role, c.document_id, c.page,
                        c.location, c.content, d.filename
                 FROM entities e
@@ -1962,20 +2029,30 @@ class Store:
                 JOIN chunks c ON c.id = m.chunk_id
                 JOIN documents d ON d.id = c.document_id
                 WHERE e.space_id = %s AND e.name ILIKE %s
+                {doc_clause}
                 ORDER BY e.name
                 LIMIT %s
                 """,
-                (space_id, f"%{query}%", limit),
+                [space_id, f"%{query}%", *doc_params, limit],
             ).fetchall()
         results = [dict(row) for row in rows]
         for item in results:
             item["source"] = "entity"
         return results
 
-    def relation_context(self, space_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]:
+    def relation_context(
+        self,
+        space_id: str,
+        query: str,
+        limit: int = 50,
+        document_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if document_ids is not None and not document_ids:
+            return []
+        doc_clause, doc_params = document_filter("c.document_id", document_ids)
         with self._connect() as db:
             rows = db.execute(
-                """
+                f"""
                 SELECT se.name AS subject, r.predicate, oe.name AS object,
                        c.document_id, c.page, d.filename
                 FROM relations r
@@ -1984,9 +2061,10 @@ class Store:
                 LEFT JOIN chunks c ON c.id = r.evidence_chunk_id
                 LEFT JOIN documents d ON d.id = c.document_id
                 WHERE r.space_id = %s AND (se.name ILIKE %s OR oe.name ILIKE %s)
+                {doc_clause}
                 LIMIT %s
                 """,
-                (space_id, f"%{query}%", f"%{query}%", limit),
+                [space_id, f"%{query}%", f"%{query}%", *doc_params, limit],
             ).fetchall()
         return [dict(row) for row in rows]
 

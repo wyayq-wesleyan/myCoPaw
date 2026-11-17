@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal, Optional, TYPE_CHECKING
@@ -1188,16 +1189,15 @@ class QwenPawAgent(CodingModeMixin, Agent):
         self._knowledge_auto_context_key = knowledge_key
         try:
             import httpx
-            from .tools.knowledge import _resolve_account_username
+            from ..app import knowledge_client as knowledge_http
+            from .tools.path_scope import visible_document_ids
+            from .tools.knowledge import (
+                _resolve_account_username,
+                _workspaces_for_agent,
+            )
 
             username = _resolve_account_username()
-            headers = {
-                "X-User-Id": username,
-                "X-Is-Admin": "true" if username == "admin" else "false",
-            }
-            key = os.environ.get("QWENPAW_KNOWLEDGE_API_KEY", "").strip()
-            if key:
-                headers["X-Knowledge-Key"] = key
+            headers = knowledge_http.service_headers(username)
             # Per-space timeout for the automatic injection. Deliberately much
             # shorter than the tool path's budget: this runs before *every* turn
             # and the user is staring at an empty chat while it happens, so a slow
@@ -1216,6 +1216,35 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 )
                 spaces_response.raise_for_status()
                 spaces = spaces_response.json()
+
+                # The automatic injection is a knowledge read like any other:
+                # resolve the agent's granted paths to an explicit document
+                # allow-list and fail closed when there are none. Before this,
+                # it searched the whole account, so an agent scoped to case A
+                # received case B's text on every turn.
+                #
+                # The account's document list changes rarely but is paginated
+                # (100 per request), and this runs before *every* turn. Cache it
+                # briefly; a just-uploaded document is still reachable through
+                # query_knowledge immediately, it only misses auto-injection for
+                # at most one minute.
+                cached_docs = getattr(self, "_knowledge_docs_cache", None)
+                now = time.monotonic()
+                if cached_docs and now - cached_docs[0] < 60:
+                    all_documents = cached_docs[1]
+                else:
+                    all_documents = await knowledge_http.account_document_ids(
+                        client, service_url, username,
+                    )
+                    self._knowledge_docs_cache = (now, all_documents)
+                allowed_docs = set(visible_document_ids(username, all_documents))
+                if not allowed_docs:
+                    logger.info(
+                        "automatic knowledge skipped: no readable document "
+                        "granted to this agent (account=%s)", username,
+                    )
+                    return
+                allowed_workspaces = _workspaces_for_agent(username)
 
                 SOURCE_LABEL = {
                     "fulltext": "全文检索",
@@ -1237,7 +1266,13 @@ class QwenPawAgent(CodingModeMixin, Agent):
                         response = await client.post(
                             f"{service_url}/v1/search",
                             headers=headers,
-                            json={"space_id": space["id"], "query": query, "top_k": 6},
+                            json={
+                                "space_id": space["id"],
+                                "query": query,
+                                "top_k": 6,
+                                "document_ids": sorted(allowed_docs),
+                                "workspaces": allowed_workspaces,
+                            },
                         )
                         response.raise_for_status()
                         payload = response.json()
@@ -1296,7 +1331,10 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 ),
             )
         except Exception:
-            logger.debug("Automatic knowledge retrieval failed", exc_info=True)
+            # A silent debug line made a broken knowledge service look exactly
+            # like "this account has no material". Keep per-space failures at
+            # debug (expected), but the outer failure is operationally visible.
+            logger.warning("Automatic knowledge retrieval failed", exc_info=True)
 
     async def _reply(self, **kwargs: Any) -> Any:
         """Override kept as extension point; hint injection moved to

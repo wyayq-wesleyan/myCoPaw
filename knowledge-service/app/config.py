@@ -39,6 +39,12 @@ class Settings:
     data_dir: Path
     database_url: str
     api_key: str
+    # HMAC secret used to verify the account identity minted by the main app.
+    # Empty means "legacy, trust X-User-Id" (a warning is logged); the API key
+    # is used as a fallback so a key-protected deployment cannot be spoofed by
+    # simply reaching the port.
+    identity_secret: str
+    identity_max_skew_seconds: int
     worker_interval: float
     max_file_mb: int
     parser_backend: str
@@ -129,6 +135,7 @@ class Settings:
 
         return cls(
             data_dir=Path(_env("KNOWLEDGE_DATA_DIR", "/data")).expanduser(),
+
             # 默认指向宿主机的回环地址：所有容器都用 network_mode: host，
             # PostgreSQL 就监听在宿主机的 15432（见 docker-compose.postgres.yml）。
             # 这里曾写成容器名 knowledge-postgres:5432 —— bridge 网络下才成立，
@@ -138,6 +145,12 @@ class Settings:
                 "postgresql://huizhi_knowledge:huizhi_knowledge@127.0.0.1:15432/huizhi_knowledge",
             ),
             api_key=_env("KNOWLEDGE_API_KEY"),
+            # 主应用为每次调用签发 HMAC 身份；未配置时回退到 API Key 作为
+            # 签名密钥（仍比裸 X-User-Id 强），再没有才进入 legacy 模式。
+            identity_secret=_env("KNOWLEDGE_IDENTITY_SECRET"),
+            identity_max_skew_seconds=max(
+                30, int(_env("KNOWLEDGE_IDENTITY_MAX_SKEW_SECONDS", "300") or "300")
+            ),
             worker_interval=max(0.2, float(_env("KNOWLEDGE_WORKER_INTERVAL", "1"))),
             # 上限以 .env 为准，10 GiB 只是**未设置时**的默认值。
             #

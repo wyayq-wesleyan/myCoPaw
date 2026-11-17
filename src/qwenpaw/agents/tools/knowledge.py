@@ -13,6 +13,7 @@ import httpx
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import ToolChunk
 
+from ...app import knowledge_client as knowledge_http
 from ...runtime.tool_registry import tool_descriptor
 from ...utils.io_utils import run_sync_io
 from .user_files import resolve_user_file, user_facing_name
@@ -31,15 +32,12 @@ _UPLOAD_TERMINAL_STATES = frozenset({"completed", "failed"})
 
 
 def _service_url() -> str:
-    return os.environ.get("QWENPAW_KNOWLEDGE_URL", "").strip().rstrip("/")
+    return knowledge_http.service_url()
 
 
 def _headers(username: str) -> dict[str, str]:
-    headers = {"X-User-Id": username, "X-Is-Admin": "true" if username == "admin" else "false"}
-    key = os.environ.get("QWENPAW_KNOWLEDGE_API_KEY", "").strip()
-    if key:
-        headers["X-Knowledge-Key"] = key
-    return headers
+    """Signed, account-scoped headers (single implementation shared with the app)."""
+    return knowledge_http.service_headers(username)
 
 
 def _resolve_account_username() -> str:
@@ -336,6 +334,10 @@ async def query_knowledge(query: str, space_name: str = "") -> ToolChunk:
                                 "query": query,
                                 "top_k": 12,
                                 "workspaces": allowed_workspaces,
+                                # Applied inside SQL: the service returns only
+                                # documents this agent was granted, so another
+                                # case's chunks cannot crowd out its own hits.
+                                "document_ids": sorted(allowed_docs),
                             },
                         )
                         response.raise_for_status()

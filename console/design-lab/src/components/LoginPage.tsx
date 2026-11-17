@@ -1,125 +1,127 @@
 import { useState } from "react";
 import {
   ArrowRightOutlined,
-  AuditOutlined,
-  DatabaseOutlined,
-  LoadingOutlined,
+  CheckCircleFilled,
   LockOutlined,
   SafetyCertificateOutlined,
-  TeamOutlined,
 } from "@ant-design/icons";
+import { Button } from "antd";
+
+import type { Role } from "../mock";
 
 interface LoginPageProps {
-  onLogin: () => void;
+  onLogin: (role: Role) => void;
 }
-
-const points = [
-  {
-    icon: <SafetyCertificateOutlined />,
-    title: "统一身份，一次登录",
-    desc: "对接 MSP 单点登录，组织、角色、菜单、权限自动同步。",
-  },
-  {
-    icon: <DatabaseOutlined />,
-    title: "案件贯通，数据可用",
-    desc: "按账号加载所属案件，知识、数据与研判过程围绕案件展开。",
-  },
-  {
-    icon: <AuditOutlined />,
-    title: "全程留痕，可追溯",
-    desc: "登录、查询、导入、导出与审批动作统一写入审计日志。",
-  },
-];
 
 export function LoginPage({ onLogin }: LoginPageProps) {
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = () => {
-    if (loading) return;
+  const loginWithSso = () => {
     setLoading(true);
-    window.setTimeout(onLogin, 700);
+    window.setTimeout(() => {
+      setLoading(false);
+      onLogin("admin");
+    }, 650);
   };
 
   return (
     <div className="dl-login">
       <section className="dl-login-brand">
-        <div className="dl-login-pattern" />
-        <div className="dl-login-brand-inner">
-          <div className="dl-login-logo">
-            <div className="dl-brand-mark">汇</div>
-            <div>
-              <div className="dl-login-logo-copy">汇智小助手</div>
-              <div className="dl-login-logo-sub">公安内网 · 智能研判工作台</div>
-            </div>
+        <div className="dl-login-brand-top">
+          <div className="dl-brand-mark">汇</div>
+          <div>
+            <div className="dl-login-brand-name">汇智小助手</div>
+            <div className="dl-login-brand-sub">智能业务工作台</div>
           </div>
+        </div>
 
-          <h1 className="dl-login-title">
-            让研判回到
+        <div className="dl-login-statement">
+          <div className="dl-login-eyebrow">智能业务工作台</div>
+          <h1>
+            让核查回到案件，
             <br />
-            <em>案件与证据</em>本身
+            让每一步都有依据。
           </h1>
-          <p className="dl-login-sub">
-            面向警务实战的智能工作台。统一身份接入、案件上下文贯通、
-            数据与知识受控使用，所有操作全程留痕。
+          <p>
+            统一身份、案件权限、查询服务与审批流转在同一条工作链路内完成。
+            助手不绕过平台权限，所有查询结果可回溯、可审计。
           </p>
+        </div>
 
-          <div className="dl-login-points">
-            {points.map((point) => (
-              <div className="dl-login-point" key={point.title}>
-                <div className="dl-login-point-icon">{point.icon}</div>
-                <div className="dl-login-point-copy">
-                  <strong>{point.title}</strong>
-                  <span>{point.desc}</span>
-                </div>
-              </div>
-            ))}
+        <div className="dl-login-grid">
+          <div className="dl-login-proof">
+            <CheckCircleFilled />
+            <span>统一身份登录与组织同步</span>
           </div>
+          <div className="dl-login-proof">
+            <CheckCircleFilled />
+            <span>案件在控目标权限校验</span>
+          </div>
+          <div className="dl-login-proof">
+            <CheckCircleFilled />
+            <span>审批流转与审计留痕</span>
+          </div>
+        </div>
 
-          <div className="dl-login-footer">
-            内部系统 · 仅限授权人员使用 · 所有操作均记录审计日志
-          </div>
+        <div className="dl-login-brand-foot">
+          <span className="dl-live-dot" />
+          身份平台连接正常
+          <span className="dl-login-env">内网环境</span>
         </div>
       </section>
 
       <section className="dl-login-panel">
         <div className="dl-login-card">
-          <div className="dl-login-badge">
-            <LockOutlined /> 统一身份认证
+          <div className="dl-login-card-head">
+            <div className="dl-login-icon">
+              <SafetyCertificateOutlined />
+            </div>
+            <div>
+              <h2>登录工作台</h2>
+              <p>使用统一身份账号登录，菜单与权限由平台角色决定</p>
+            </div>
           </div>
-          <h2 className="dl-login-card-title">登录工作台</h2>
-          <p className="dl-login-card-sub">
-            使用 MSP 统一账号登录。系统将自动同步您的组织、角色与菜单权限，
-            无需在汇智小助手单独维护账号。
-          </p>
 
-          <button
-            className="dl-sso-button"
-            type="button"
-            onClick={handleLogin}
-            disabled={loading}
+          <Button
+            type="primary"
+            size="large"
+            block
+            loading={loading}
+            onClick={loginWithSso}
+            className="dl-login-primary"
           >
-            {loading ? <LoadingOutlined /> : <SafetyCertificateOutlined />}
-            {loading ? "正在连接统一身份平台…" : "使用平台账号登录"}
-            {!loading ? <ArrowRightOutlined /> : null}
-          </button>
-
-          <div className="dl-login-status">
-            <span className="dl-login-status-dot" />
-            <span>平台连接正常</span>
-            <span style={{ marginLeft: "auto", color: "#9b9286" }}>
-              MSP / TCMS / ELC
-            </span>
-          </div>
-
-          <div className="dl-login-secondary">
-            <a onClick={(event) => event.preventDefault()}>管理员应急入口</a>
-            <a onClick={(event) => event.preventDefault()}>登录遇到问题？</a>
-          </div>
+            使用平台账号登录
+            <ArrowRightOutlined />
+          </Button>
 
           <div className="dl-login-note">
-            登录即代表您知悉并同意：本系统仅用于授权范围内的警务工作，
-            登录、查询、导入、导出与审批动作将写入执法监督日志。
+            <LockOutlined />
+            登录后仅能访问平台授权的菜单与案件；无权限案件不会出现在案件树中。
           </div>
+
+          <div className="dl-login-role-note">
+            <div className="dl-login-role-title">角色说明</div>
+            <div className="dl-login-role-row">
+              <span className="dl-login-role-tag">管理角色</span>
+              <span>
+                可在平台侧维护智能体、知识空间、查询客户端，不参与案件业务。
+              </span>
+            </div>
+            <div className="dl-login-role-row">
+              <span className="dl-login-role-tag dl-login-role-tag-user">
+                业务角色
+              </span>
+              <span>可使用信息核查、办公助手等授权业务。</span>
+            </div>
+            <div className="dl-login-role-hint">
+              原型环境：默认登录账号同时具备管理角色，便于测试全部功能。
+            </div>
+          </div>
+        </div>
+
+        <div className="dl-login-foot">
+          <span>汇智小助手 v2.2 · 设计原型</span>
+          <span>身份平台不可用时无法登录</span>
         </div>
       </section>
     </div>
